@@ -17,11 +17,11 @@ FastAPI bleibt die Sicherheitsgrenze: Der normale `OPENAI_API_KEY` existiert aus
 7. Der Browser prüft Tenant, Modell und Stimme der beiden Antworten gegeneinander und verbindet die `RealtimeSession` mit dem `ek_…`-Secret.
 8. Erst nach erfolgreicher Verbindung fordert der Transport die gespeicherte Begrüßung als erste hörbare Antwort an.
 
-Providerfehler werden in kontrollierte Codes wie `realtime_not_configured`, `realtime_provider_timeout`, `realtime_provider_authentication_failed`, `realtime_provider_rejected` oder `realtime_provider_invalid_response` übersetzt. OpenAI-Antwortkörper und Standard-Key werden nicht weitergereicht.
+Providerfehler werden in kontrollierte Codes wie `realtime_not_configured`, `realtime_provider_timeout`, `realtime_provider_authentication_failed`, `realtime_model_unavailable`, `realtime_voice_unavailable`, `realtime_provider_rejected` oder `realtime_provider_invalid_response` übersetzt. OpenAI-Antwortkörper und Standard-Key werden nicht weitergereicht.
 
 ## Browser-Sitzung
 
-Der Browser verwaltet Mikrofonfreigabe, Audioelement, WebRTC-Transport, SDK-Sitzung, Zustand und flüchtige Diagnose. Mehrfachstarts werden während Aufbau und aktiver Sitzung verhindert. `RealtimeSession.mute()` schaltet ohne Neuverbindung stumm; VAD und `interrupt_response` ermöglichen Barge-in. Eine zusätzliche Schaltfläche kann über `RealtimeSession.interrupt()` eine Ausgabe kontrolliert stoppen.
+Der Browser verwaltet Mikrofonfreigabe, Audioelement, WebRTC-Transport, SDK-Sitzung, Zustand und flüchtige Diagnose. Vor dem Start werden sicherer Browserkontext, Media-APIs und WebRTC-Unterstützung geprüft. Der Verbindungsaufbau hat ein 15-Sekunden-Limit. Mehrfachstarts werden während Aufbau und aktiver Sitzung verhindert. `RealtimeSession.mute()` schaltet ohne Neuverbindung stumm; VAD und `interrupt_response` ermöglichen Barge-in. Eine zusätzliche Schaltfläche kann über `RealtimeSession.interrupt()` eine Ausgabe kontrolliert stoppen.
 
 Das Audioelement liefert das Ereignis `playing` für die wahrgenommene Hauptlatenz:
 
@@ -31,7 +31,7 @@ erste hörbare Antwort - Ende des Nutzerbeitrags
 
 Angezeigt werden außerdem Verbindungsdauer, letzte, mittlere, schnellste und langsamste Antwort, Rundenzahl und Sitzungsdauer. Diese Werte sind lokale Entwicklungsdiagnosen, keine garantierten Providerwerte.
 
-Der Ereignispuffer hält höchstens 40 Einträge. Standardmäßig werden nur Ereignisnamen und Zeitpunkte gehalten. Rohpayloads erscheinen nur mit `OPENAI_REALTIME_LOG_RAW_EVENTS=true`; dies ist wegen möglicher Gesprächsinhalte ausschließlich für kontrollierte lokale Entwicklung gedacht.
+Der Ereignispuffer hält höchstens 40 Einträge. Transportnamen werden für die Diagnose normalisiert, darunter `speech_started`, `speech_stopped`, `response_created`, `response_completed`, `first_audio_playing`, `session_connected` und `session_disconnected`. Standardmäßig werden nur Ereignisnamen und Zeitpunkte gehalten. Rohpayloads erscheinen nur mit `OPENAI_REALTIME_LOG_RAW_EVENTS=true`; sensible Felder und Gesprächsinhalte werden dabei zusätzlich redigiert. Die Option ist trotzdem ausschließlich für kontrollierte lokale Entwicklung gedacht.
 
 ## VAD und Transkript
 
@@ -55,7 +55,7 @@ Die Eingabetranskription verwendet bei aktivierter Option `gpt-4o-mini-transcrib
 - Realtime-Sitzung und WebRTC-Transport schließen
 - Peer-Verbindung und Datenkanal über den SDK schließen
 - alle Mikrofontracks stoppen
-- Track- und Audio-Listener entfernen
+- sämtliche SDK-, Transport-, Track- und Audio-Listener entfernen
 - Audioelement pausieren und `srcObject` leeren
 - Fetch und Zeitgeber abbrechen
 - keine weitere API-Nutzung durch die alte Sitzung zulassen
@@ -106,7 +106,9 @@ Ziel für lokale Entwicklung ist eine erste hörbare Antwort überwiegend unter 
 - Mikrofon verweigert/nicht gefunden/blockiert: Site-Berechtigung, Betriebssystemfreigabe, Eingabegerät und konkurrierende Anwendungen prüfen.
 - WebRTC/ICE fehlgeschlagen: Firewall, VPN, Unternehmensnetz oder Browser prüfen.
 - Keine Nutzertranskription: Projektzugriff auf das Transkriptionsmodell prüfen; die Audioverbindung kann dennoch funktionieren.
-- Keine Ausgabe: Lautsprecher, Site-Audiofreigabe und Browser-Autoplay prüfen; die Sitzung muss durch einen Nutzerklick gestartet werden.
+- Audio vom Browser blockiert: Site-Audiofreigabe und Autoplay-Einstellung prüfen und das Gespräch erneut per Nutzerklick starten.
+- Keine Ausgabe: Lautsprecher und Ausgabegerät prüfen; das Audioelement meldet Wiedergabefehler kontrolliert in der Oberfläche.
+- Verbindung nach 15 Sekunden abgebrochen: Netzwerk, Firewall, VPN und WebRTC-Unterstützung prüfen.
 
 ## Kosten und bewusste Nichtziele
 

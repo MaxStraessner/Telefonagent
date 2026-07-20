@@ -53,7 +53,7 @@ export interface RealtimeAgentConfig {
 }
 export interface RealtimeClientSecret {
   client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
-  tenant_id: string; tenant_name: string; assistant_name: string;
+  tenant_id: string;
 }
 export interface Health { status: string; database: string; }
 export interface PlatformData {

@@ -3,26 +3,47 @@ import { ApiError, api } from "../../api/client";
 import type { ConversationState } from "../conversation/state";
 import { RealtimeMetricsTracker, emptyLatencyMetrics } from "./metrics";
 import { BrowserRealtimeClient } from "./realtimeClient";
+import { RealtimeClientError, realtimeErrors } from "./errors";
 import { tickSessionTimer } from "./sessionTimer";
 import { mapRealtimeHistory } from "./transcript";
 import type { RealtimeViewState } from "./types";
 
 const MAX_EVENTS = 40;
 
-function readableRealtimeError(error: unknown): string {
-  if (error instanceof DOMException && error.name === "NotAllowedError") return "Der Mikrofonzugriff wurde verweigert. Bitte erlaube ihn in den Browser-Einstellungen und versuche es erneut.";
-  if (error instanceof DOMException && error.name === "NotFoundError") return "Es wurde kein verfügbares Mikrofon gefunden.";
-  if (error instanceof DOMException && error.name === "NotReadableError") return "Das Mikrofon ist derzeit blockiert oder wird von einer anderen Anwendung verwendet.";
+interface ReadableError {
+  code: string;
+  message: string;
+}
+
+function readableRealtimeError(error: unknown): ReadableError {
+  if (error instanceof DOMException && error.name === "NotAllowedError") return { code: "microphone_permission_denied", message: "Der Mikrofonzugriff wurde verweigert. Bitte erlaube ihn in den Browser-Einstellungen und versuche es erneut." };
+  if (error instanceof DOMException && error.name === "NotFoundError") return { code: "microphone_not_found", message: "Es wurde kein verfügbares Mikrofon gefunden." };
+  if (error instanceof DOMException && error.name === "NotReadableError") return { code: "microphone_not_readable", message: "Das Mikrofon ist derzeit blockiert oder wird von einer anderen Anwendung verwendet." };
   if (error instanceof ApiError) {
-    if (error.code === "realtime_not_configured") return "OpenAI Realtime ist serverseitig noch nicht konfiguriert.";
-    if (error.code === "realtime_provider_timeout") return "OpenAI Realtime antwortet nicht rechtzeitig. Bitte versuche es erneut.";
-    return error.message;
+    if (error.code === "realtime_not_configured") return { code: error.code, message: "OpenAI Realtime ist serverseitig noch nicht konfiguriert." };
+    if (error.code === "realtime_provider_timeout") return { code: error.code, message: "OpenAI Realtime antwortet nicht rechtzeitig. Bitte versuche es erneut." };
+    if (error.code === "realtime_model_unavailable") return { code: error.code, message: "Das konfigurierte Realtime-Modell ist für dieses OpenAI-Projekt nicht verfügbar." };
+    if (error.code === "realtime_voice_unavailable") return { code: error.code, message: "Die konfigurierte Realtime-Stimme ist für dieses OpenAI-Projekt nicht verfügbar." };
+    return { code: error.code ?? "backend_request_failed", message: error.message };
+  }
+  if (error instanceof RealtimeClientError) {
+    const messages: Record<string, string> = {
+      audio_element_unavailable: "Die Audioausgabe konnte nicht vorbereitet werden. Bitte lade die Seite neu.",
+      audio_playback_blocked: "Die Audioausgabe wurde vom Browser blockiert. Bitte erlaube Ton für diese Seite und starte das Gespräch erneut.",
+      browser_insecure_context: "Die Sprachfunktion benötigt HTTPS oder localhost als sicheren Browserkontext.",
+      browser_unsupported: "Dieser Browser unterstützt die benötigten WebRTC- und Medienfunktionen nicht.",
+      microphone_access_ended: "Der Mikrofonzugriff wurde während des Gesprächs beendet.",
+      realtime_client_secret_expired: "Das kurzlebige Verbindungs-Token ist abgelaufen. Bitte starte das Testgespräch erneut.",
+      realtime_configuration_mismatch: "Die Realtime-Konfiguration hat sich während des Starts geändert. Bitte versuche es erneut.",
+      realtime_connection_lost: "Die WebRTC-Sprachverbindung wurde unterbrochen. Bitte prüfe dein Netzwerk und starte erneut.",
+      realtime_connection_timeout: "Der Aufbau der Sprachverbindung hat zu lange gedauert. Bitte versuche es erneut.",
+    };
+    return { code: error.code, message: messages[error.code] ?? "Die Sprachverbindung wurde unerwartet beendet. Bitte starte das Testgespräch erneut." };
   }
   const message = error instanceof Error ? error.message : String(error ?? "");
-  if (/microphone track ended/i.test(message)) return "Der Mikrofonzugriff wurde während des Gesprächs beendet.";
-  if (/expired|client.?secret|ephemeral/i.test(message)) return "Das kurzlebige Verbindungs-Token ist abgelaufen. Bitte starte das Testgespräch erneut.";
-  if (/webrtc|peer.?connection|ice|data.?channel|connection/i.test(message)) return "Die WebRTC-Sprachverbindung konnte nicht aufgebaut werden. Bitte prüfe Netzwerk und Browserfreigaben.";
-  return "Die Sprachverbindung wurde unerwartet beendet. Bitte starte das Testgespräch erneut.";
+  if (/expired|client.?secret|ephemeral/i.test(message)) return { code: "realtime_client_secret_expired", message: "Das kurzlebige Verbindungs-Token ist abgelaufen. Bitte starte das Testgespräch erneut." };
+  if (/webrtc|peer.?connection|ice|data.?channel|connection/i.test(message)) return { code: "webrtc_connection_failed", message: "Die WebRTC-Sprachverbindung konnte nicht aufgebaut werden. Bitte prüfe Netzwerk und Browserfreigaben." };
+  return { code: "realtime_unexpected_error", message: "Die Sprachverbindung wurde unerwartet beendet. Bitte starte das Testgespräch erneut." };
 }
 
 const initialState: RealtimeViewState = {
@@ -32,6 +53,7 @@ const initialState: RealtimeViewState = {
   events: [],
   metrics: emptyLatencyMetrics,
   error: null,
+  errorCode: null,
   notice: null,
   callId: null,
   remainingSeconds: null,
@@ -49,6 +71,7 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
   const warnedRef = useRef(false);
   const remainingRef = useRef<number | null>(null);
   const clearedTranscriptIdsRef = useRef(new Set<string>());
+  const attemptRef = useRef(0);
 
   const clearTimer = useCallback(() => {
     if (intervalRef.current !== null) window.clearInterval(intervalRef.current);
@@ -56,21 +79,25 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
   }, []);
 
   const closeResources = useCallback(() => {
+    attemptRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
     clearTimer();
     clientRef.current?.close();
     clientRef.current = null;
     startingRef.current = false;
+    remainingRef.current = null;
   }, [clearTimer]);
 
   const fail = useCallback((error: unknown) => {
+    const readable = readableRealtimeError(error);
     closeResources();
     if (!mountedRef.current) return;
-    setView((current) => ({ ...current, state: "error", muted: false, error: readableRealtimeError(error), remainingSeconds: null }));
+    setView((current) => ({ ...current, state: "error", muted: false, error: readable.message, errorCode: readable.code, remainingSeconds: null }));
   }, [closeResources]);
 
   const addEvent = useCallback((type: string, detail?: string) => {
+    if (!mountedRef.current) return;
     setView((current) => ({
       ...current,
       events: [...current.events, { id: `${Date.now()}-${Math.random()}`, type, detail, timestamp: Date.now() }].slice(-MAX_EVENTS),
@@ -80,13 +107,20 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
   const start = useCallback(async () => {
     if (startingRef.current || clientRef.current || !configured) return;
     if (!audioElement) {
-      fail(new Error("Audio element unavailable"));
+      fail(realtimeErrors.audioElementUnavailable());
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      fail(new Error("WebRTC microphone unavailable"));
+    const localHostname = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+    if (!window.isSecureContext && !localHostname) {
+      fail(realtimeErrors.insecureContext());
       return;
     }
+    if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+      fail(realtimeErrors.browserUnsupported());
+      return;
+    }
+    const attempt = attemptRef.current + 1;
+    attemptRef.current = attempt;
     startingRef.current = true;
     warnedRef.current = false;
     clearedTranscriptIdsRef.current.clear();
@@ -99,19 +133,23 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
     abortRef.current = abortController;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-      if (abortController.signal.aborted) {
+      if (abortController.signal.aborted || attemptRef.current !== attempt) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
       addEvent("microphone.permission_granted");
-      setView((current) => ({ ...current, state: "connecting", notice: "Sichere WebRTC-Verbindung wird aufgebaut …" }));
+      setView((current) => ({ ...current, state: "connecting", notice: "Sprachverbindung wird aufgebaut …" }));
       const [agentConfig, secret] = await Promise.all([
         api.realtimeAgentConfig(abortController.signal),
         api.realtimeClientSecret(abortController.signal),
       ]);
+      if (abortController.signal.aborted || attemptRef.current !== attempt) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       addEvent("client_secret.received");
       if (secret.tenant_id !== agentConfig.tenant_id || secret.model !== agentConfig.model || secret.voice !== agentConfig.voice) {
-        throw new Error("Realtime configuration mismatch");
+        throw realtimeErrors.configurationMismatch();
       }
 
       const client = new BrowserRealtimeClient({
@@ -132,14 +170,26 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
           metricsRef.current.assistantAudioPlaying();
           setView((current) => ({ ...current, metrics: metricsRef.current.snapshot() }));
         },
+        onResponseCompleted: (completed) => {
+          metricsRef.current.responseCompleted(completed);
+          setView((current) => ({ ...current, metrics: metricsRef.current.snapshot() }));
+        },
         onCallId: (callId) => setView((current) => ({ ...current, callId })),
       });
       clientRef.current = client;
       await client.connect(agentConfig, secret, stream, audioElement);
+      if (attemptRef.current !== attempt || clientRef.current !== client) {
+        client.close();
+        return;
+      }
 
       const maximumSeconds = agentConfig.maximum_session_minutes * 60;
       remainingRef.current = maximumSeconds;
-      setView((current) => ({ ...current, remainingSeconds: maximumSeconds, vadSummary: `${agentConfig.vad.type} · ${agentConfig.vad.silence_duration_ms} ms Pause · Schwelle ${agentConfig.vad.threshold}` }));
+      setView((current) => ({
+        ...current,
+        remainingSeconds: maximumSeconds,
+        vadSummary: `${agentConfig.vad.type} · Schwelle ${agentConfig.vad.threshold} · Präfix ${agentConfig.vad.prefix_padding_ms} ms · Stille ${agentConfig.vad.silence_duration_ms} ms · Antwort ${agentConfig.vad.create_response ? "an" : "aus"} · Unterbrechung ${agentConfig.vad.interrupt_response ? "an" : "aus"}`,
+      }));
       intervalRef.current = window.setInterval(() => {
         const tick = tickSessionTimer(remainingRef.current ?? maximumSeconds, warnedRef.current);
         const remaining = tick.remainingSeconds;
@@ -160,7 +210,7 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
       }, 1000);
     } catch (error) {
       if (!clientRef.current) stream?.getTracks().forEach((track) => track.stop());
-      if (!(error instanceof DOMException && error.name === "AbortError")) fail(error);
+      if (attemptRef.current === attempt && !(error instanceof DOMException && error.name === "AbortError")) fail(error);
     }
   }, [addEvent, audioElement, closeResources, configured, fail]);
 

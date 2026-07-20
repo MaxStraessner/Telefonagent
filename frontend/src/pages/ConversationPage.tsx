@@ -7,16 +7,16 @@ import type { PlatformData } from "../types/api";
 import { DataPage, PageHeader } from "./shared";
 
 const stateLabels: Record<RealtimeViewState["state"], string> = {
-  idle: "Bereit",
-  requesting_microphone: "Mikrofonfreigabe",
-  connecting: "Verbindet",
+  idle: "Bereit für ein Testgespräch",
+  requesting_microphone: "Mikrofonzugriff wird angefordert",
+  connecting: "Verbindung wird aufgebaut",
   connected: "Verbunden",
-  muted: "Stummgeschaltet",
+  muted: "Mikrofon ist stumm",
   user_speaking: "Du sprichst",
   assistant_thinking: "Antwort wird vorbereitet",
   assistant_speaking: "Assistent spricht",
-  error: "Verbindungsfehler",
-  ended: "Beendet",
+  error: "Verbindung unterbrochen",
+  ended: "Gespräch beendet",
   not_configured: "Nicht eingerichtet",
 };
 
@@ -40,6 +40,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
   const realtime = useRealtimeVoice(data.platformStatus.realtime_voice_configured, audioElement);
   const { view } = realtime;
   const active = ["requesting_microphone", "connecting", "connected", "muted", "user_speaking", "assistant_thinking", "assistant_speaking"].includes(view.state);
+  const voiceActive = view.state === "user_speaking" || view.state === "assistant_speaking";
   const canStart = data.platformStatus.realtime_voice_configured && !active;
 
   useEffect(() => {
@@ -59,11 +60,11 @@ function ConversationContent({ data }: { data: PlatformData }) {
       <audio ref={setAudioElement} autoPlay hidden aria-label="Sprachausgabe des Assistenten" />
       {!data.platformStatus.realtime_voice_configured && <div className="notice warning" role="status"><span>!</span><p>OpenAI Realtime ist serverseitig noch nicht konfiguriert. Hinterlege den API-Key ausschließlich im Backend.</p></div>}
       {view.notice && <div className="notice" role="status"><span>i</span><p>{view.notice}</p><button aria-label="Hinweis schließen" onClick={realtime.dismissNotice}>×</button></div>}
-      {view.error && <div className="notice error" role="alert"><span>!</span><p>{view.error}</p></div>}
+      {view.error && <div className="notice error" role="alert"><span>!</span><p>{view.error}{mode === "test" && view.errorCode && <small className="technical-error-code">Fehlercode: <code>{view.errorCode}</code></small>}</p></div>}
       <div className="conversation-grid">
         <section className={`card call-stage state-${view.state}`}>
           <span className={`status-badge ${view.state === "error" || view.state === "not_configured" ? "pending" : "ready"}`}><span className="status-dot" />{stateLabels[view.state]}</span>
-          <div className={`voice-visual ${active ? "active" : ""}`} aria-label={active ? "Sprachverbindung aktiv" : "Mikrofon inaktiv"}><i /><i /><span><Icon name="mic" size={32} /></span><i /><i /></div>
+          <div className={`voice-visual ${voiceActive ? "active" : ""} ${view.muted ? "muted" : ""}`} aria-label={view.muted ? "Mikrofon stumm" : voiceActive ? "Sprachaktivität" : "Mikrofon bereit"}><i /><i /><span><Icon name="mic" size={32} /></span><i /><i /></div>
           <h2>{data.tenant.settings.assistant_name}</h2>
           <p>{view.state === "assistant_speaking" ? `${data.tenant.settings.assistant_name} spricht` : view.state === "user_speaking" ? `${data.tenant.settings.assistant_name} hört zu` : view.state === "assistant_thinking" ? `${data.tenant.settings.assistant_name} denkt nach` : stateLabels[view.state]}</p>
           {mode === "presentation" && view.transcript.length > 0 && <div className="presentation-transcript" aria-live="polite">{view.transcript.slice(-2).map((entry) => <p key={entry.id}><strong>{entry.speaker === "user" ? "Du" : data.tenant.settings.assistant_name}:</strong> {entry.text}</p>)}</div>}
@@ -91,9 +92,9 @@ function ConversationContent({ data }: { data: PlatformData }) {
             {view.transcript.length === 0 ? <div className="placeholder-panel"><p>Noch kein Transkript</p><small>Gesprochene Beiträge erscheinen hier nur während dieser Sitzung.</small></div> : view.transcript.map((entry) => <article className={`transcript-entry ${entry.speaker}`} key={entry.id}><div><strong>{entry.speaker === "user" ? "Du" : data.tenant.settings.assistant_name}</strong><time>{new Date(entry.startedAt).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></div><p>{entry.text}</p><small>{entry.status === "partial" ? "wird transkribiert" : entry.status === "interrupted" ? "unterbrochen" : "vollständig"}</small></article>)}
           </div>
         </section>
-        <section className="card event-card"><div className="section-heading"><h2>Sitzungsereignisse</h2><span>{view.events.length} Ereignisse</span></div>
+        <details className="card event-card" open><summary className="section-heading"><h2>Sitzungsereignisse</h2><span>{view.events.length} Ereignisse</span></summary>
           <div className="event-list">{view.events.length === 0 ? <div className="placeholder-panel"><p>Noch keine Ereignisse</p><small>Es werden höchstens die letzten 40 Ereignisse im Arbeitsspeicher angezeigt.</small></div> : [...view.events].reverse().map((event) => <div className="event-row" key={event.id}><time>{new Date(event.timestamp).toLocaleTimeString("de-DE")}</time><code>{event.type}</code>{event.detail && <small>{event.detail}</small>}</div>)}</div>
-        </section>
+        </details>
         <section className="card tool-status"><div className="section-heading"><h2>Werkzeugaufrufe</h2><span>0 Aufrufe</span></div><div className="placeholder-panel"><p>Terminwerkzeuge werden im nächsten Entwicklungsschritt angebunden.</p><small>Die Realtime-Sitzung erhält aktuell keine Function Tools.</small></div></section>
         <section className="card diagnosis"><div className="section-heading"><h2>Technische Diagnose</h2><span>nicht persistent</span></div><dl>
           <div><dt>Zustand</dt><dd>{stateLabels[view.state]}</dd></div>
@@ -104,7 +105,8 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <div><dt>Verbindungsaufbau</dt><dd>{metric(view.metrics.connectionMs)}</dd></div>
           <div><dt>Letzte Reaktion</dt><dd>{metric(view.metrics.lastResponseMs)}</dd></div>
           <div><dt>Ø / Min / Max</dt><dd>{metric(view.metrics.averageResponseMs)} / {metric(view.metrics.minimumResponseMs)} / {metric(view.metrics.maximumResponseMs)}</dd></div>
-          <div><dt>Messungen</dt><dd>{view.metrics.responseCount}</dd></div>
+          <div><dt>Latenzmessungen</dt><dd>{view.metrics.responseCount}</dd></div>
+          <div><dt>Gesprächsrunden</dt><dd>{view.metrics.completedRounds}</dd></div>
           <div><dt>Sitzungsdauer</dt><dd>{view.metrics.sessionDurationSeconds} s</dd></div>
           <div><dt>Restzeit</dt><dd>{formatRemaining(view.remainingSeconds)}</dd></div>
           <div><dt>Call-ID</dt><dd>{view.callId ? `${view.callId.slice(0, 12)}…` : "—"}</dd></div>

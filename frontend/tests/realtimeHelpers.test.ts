@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RealtimeMetricsTracker } from "../src/features/realtime/metrics";
+import { normalizedRealtimeEventType, sanitizedRealtimeEventDetail } from "../src/features/realtime/events";
 import { tickSessionTimer } from "../src/features/realtime/sessionTimer";
 import { mapRealtimeHistory } from "../src/features/realtime/transcript";
 
@@ -39,6 +40,7 @@ describe("Realtime latency metrics", () => {
     tracker.assistantAudioPlaying(900);
     tracker.userSpeechStopped(1000);
     tracker.assistantAudioPlaying(1600);
+    tracker.responseCompleted(true);
     expect(tracker.snapshot(2100)).toEqual({
       connectionMs: 250,
       lastResponseMs: 600,
@@ -46,7 +48,20 @@ describe("Realtime latency metrics", () => {
       minimumResponseMs: 400,
       maximumResponseMs: 600,
       responseCount: 2,
+      completedRounds: 1,
       sessionDurationSeconds: 2,
     });
+  });
+});
+
+describe("Realtime diagnostic events", () => {
+  it("normalisiert Pflicht-Ereignisse und entfernt Inhalte sowie Geheimnisfelder", () => {
+    expect(normalizedRealtimeEventType("input_audio_buffer.speech_started")).toBe("speech_started");
+    expect(normalizedRealtimeEventType("response.done")).toBe("response_completed");
+    const detail = sanitizedRealtimeEventDetail({ type: "response.done", transcript: "privat", client_secret: "ek_secret", response: { id: "r1", status: "completed" } });
+    expect(detail).toContain("[redacted]");
+    expect(detail).toContain("r1");
+    expect(detail).not.toContain("privat");
+    expect(detail).not.toContain("ek_secret");
   });
 });

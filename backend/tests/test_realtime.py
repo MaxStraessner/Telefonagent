@@ -1,4 +1,5 @@
 import httpx
+import pytest
 from sqlalchemy import func, select
 
 from app.core.config import Settings, get_settings
@@ -34,6 +35,19 @@ class FakeAsyncClient:
         return self.response
 
 
+@pytest.fixture(autouse=True)
+def reset_fake_async_client():
+    FakeAsyncClient.response = httpx.Response(
+        200,
+        json={"value": "ek_test_ephemeral", "expires_at": 1_900_000_000, "session": {"id": "sess_test"}},
+        request=httpx.Request("POST", "https://api.openai.com/v1/realtime/client_secrets"),
+    )
+    FakeAsyncClient.error = None
+    FakeAsyncClient.last_headers = {}
+    FakeAsyncClient.last_payload = {}
+    yield
+
+
 def configured_settings(**overrides) -> Settings:
     values = {
         "database_url": "sqlite:///./test.db",
@@ -56,6 +70,8 @@ def test_agent_config_is_tenant_scoped_and_exposes_no_key(client):
     assert payload["vad"]["interrupt_response"] is True
     assert "server-only-test-key" not in response.text
     assert "keine Werkzeuge" in payload["instructions"]
+    assert "keine politische, medizinische, juristische oder private Beratung" in payload["instructions"]
+    assert "Browser-Testgespräch" in payload["instructions"]
 
 
 def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
@@ -68,6 +84,8 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert response.status_code == 200
     assert response.json()["client_secret"] == "ek_test_ephemeral"
     assert response.json()["session_id"] == "sess_test"
+    assert set(response.json()) == {"client_secret", "expires_at", "session_id", "model", "voice", "tenant_id"}
+    assert "server-only-test-key" not in response.text
     assert FakeAsyncClient.last_payload["expires_after"] == {"anchor": "created_at", "seconds": 60}
     session = FakeAsyncClient.last_payload["session"]
     assert session["tools"] == []
@@ -86,6 +104,27 @@ def test_missing_api_key_returns_controlled_error(client):
     assert response.json()["error"]["code"] == "realtime_not_configured"
 
 
+def test_blank_api_key_is_treated_as_missing(client):
+    app.dependency_overrides[get_settings] = lambda: configured_settings(openai_api_key="   ")
+    response = client.post("/api/v1/realtime/client-secret")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "realtime_not_configured"
+
+
+def test_custom_model_and_voice_are_used_consistently(monkeypatch, client):
+    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
+    app.dependency_overrides[get_settings] = lambda: configured_settings(
+        openai_realtime_model="gpt-realtime-custom",
+        openai_realtime_voice="cedar",
+    )
+    config = client.get("/api/v1/realtime/agent-config").json()
+    secret = client.post("/api/v1/realtime/client-secret").json()
+    assert config["model"] == secret["model"] == "gpt-realtime-custom"
+    assert config["voice"] == secret["voice"] == "cedar"
+    assert FakeAsyncClient.last_payload["session"]["model"] == "gpt-realtime-custom"
+    assert FakeAsyncClient.last_payload["session"]["audio"]["output"]["voice"] == "cedar"
+
+
 def test_provider_authentication_error_is_sanitized(monkeypatch, client):
     FakeAsyncClient.response = httpx.Response(
         401,
@@ -98,6 +137,27 @@ def test_provider_authentication_error_is_sanitized(monkeypatch, client):
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "realtime_provider_authentication_failed"
     assert "secret provider detail" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("param", "expected_code"),
+    [
+        ("session.model", "realtime_model_unavailable"),
+        ("session.audio.output.voice", "realtime_voice_unavailable"),
+    ],
+)
+def test_model_and_voice_provider_errors_are_structured(monkeypatch, client, param, expected_code):
+    FakeAsyncClient.response = httpx.Response(
+        400,
+        json={"error": {"param": param, "message": "sensitive provider detail"}},
+        request=httpx.Request("POST", "https://api.openai.com/v1/realtime/client_secrets"),
+    )
+    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+    response = client.post("/api/v1/realtime/client-secret")
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == expected_code
+    assert "sensitive provider detail" not in response.text
 
 
 def test_provider_timeout_is_controlled(monkeypatch, client):

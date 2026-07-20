@@ -7,6 +7,7 @@ export const emptyLatencyMetrics: LatencyMetrics = {
   minimumResponseMs: null,
   maximumResponseMs: null,
   responseCount: 0,
+  completedRounds: 0,
   sessionDurationSeconds: 0,
 };
 
@@ -15,6 +16,8 @@ export class RealtimeMetricsTracker {
   private samples: number[] = [];
   private startedAt: number | null = null;
   private connectionMs: number | null = null;
+  private awaitingResponseCompletion = false;
+  private completedRounds = 0;
 
   start(now = performance.now()) {
     this.startedAt = now;
@@ -26,12 +29,18 @@ export class RealtimeMetricsTracker {
 
   userSpeechStopped(now = performance.now()) {
     this.speechStoppedAt = now;
+    this.awaitingResponseCompletion = true;
   }
 
   assistantAudioPlaying(now = performance.now()) {
     if (this.speechStoppedAt === null) return;
     this.samples.push(Math.max(0, Math.round(now - this.speechStoppedAt)));
     this.speechStoppedAt = null;
+  }
+
+  responseCompleted(completed = true) {
+    if (this.awaitingResponseCompletion && completed) this.completedRounds += 1;
+    this.awaitingResponseCompletion = false;
   }
 
   snapshot(now = performance.now()): LatencyMetrics {
@@ -43,6 +52,7 @@ export class RealtimeMetricsTracker {
       minimumResponseMs: this.samples.length ? Math.min(...this.samples) : null,
       maximumResponseMs: this.samples.length ? Math.max(...this.samples) : null,
       responseCount: this.samples.length,
+      completedRounds: this.completedRounds,
       sessionDurationSeconds: this.startedAt === null ? 0 : Math.max(0, Math.floor((now - this.startedAt) / 1000)),
     };
   }

@@ -25,6 +25,7 @@ export interface LatencyMetrics {
   minimumResponseMs: number | null;
   maximumResponseMs: number | null;
   responseCount: number;
+  completedRounds: number;
   sessionDurationSeconds: number;
 }
 
@@ -35,6 +36,7 @@ export interface RealtimeViewState {
   events: RealtimeEventSummary[];
   metrics: LatencyMetrics;
   error: string | null;
+  errorCode: string | null;
   notice: string | null;
   callId: string | null;
   remainingSeconds: number | null;

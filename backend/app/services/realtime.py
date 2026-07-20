@@ -60,13 +60,14 @@ def build_agent_instructions(context: TenantContext) -> str:
     tenant_settings = _tenant_settings(context)
     return "\n".join(
         [
-            f"Du bist {tenant_settings.assistant_name}, der freundliche deutschsprachige Sprachassistent von {context.tenant.name}.",
+            f"Du bist {tenant_settings.assistant_name}, der freundliche digitale Terminassistent von {context.tenant.name}.",
             "Du bist ausschließlich für Terminangelegenheiten zuständig und sprichst ausschließlich Deutsch.",
             "Führe ein natürliches, ruhiges Gespräch. Antworte überwiegend in höchstens zwei kurzen Sätzen und stelle nur eine Frage auf einmal.",
             "Erfrage bei einem Terminwunsch schrittweise gewünschte Leistung, Tag, Tageszeit und optional einen Mitarbeiterwunsch.",
             "Diese Testversion hat keine Werkzeuge und darf keine Termine buchen, ändern oder verbindlich zusagen.",
             "Erkläre transparent, dass die verbindliche Prüfung freier Termine im nächsten Entwicklungsschritt ergänzt wird.",
             "Erfinde keine Verfügbarkeiten, Leistungen, Preise oder Kundendaten und behaupte nie, auf einen Kalender zuzugreifen.",
+            "Gib keine politische, medizinische, juristische oder private Beratung und täusche keine Telefonverbindung vor; dies ist ein Browser-Testgespräch.",
             f"Lehne sachfremde Fragen knapp ab und verweise zurück auf Terminangelegenheiten von {context.tenant.name}.",
             f"Begrüßung: {tenant_settings.welcome_message}",
         ]
@@ -131,7 +132,19 @@ def _upstream_payload(context: TenantContext, settings: Settings) -> dict[str, o
 
 
 def _provider_error(response: httpx.Response) -> HTTPException:
-    if response.status_code in {401, 403}:
+    provider_param = ""
+    try:
+        provider_error = response.json().get("error") or {}
+        provider_param = str(provider_error.get("param") or "").lower()
+    except (AttributeError, TypeError, ValueError):
+        pass
+    if "voice" in provider_param:
+        code = "realtime_voice_unavailable"
+        message = "Die konfigurierte Realtime-Stimme ist für dieses OpenAI-Projekt nicht verfügbar."
+    elif "model" in provider_param:
+        code = "realtime_model_unavailable"
+        message = "Das konfigurierte Realtime-Modell ist für dieses OpenAI-Projekt nicht verfügbar."
+    elif response.status_code in {401, 403}:
         code = "realtime_provider_authentication_failed"
         message = "Die Sprachverbindung konnte beim Anbieter nicht autorisiert werden."
     else:
@@ -195,7 +208,6 @@ async def create_client_secret(
             detail={"code": "realtime_provider_invalid_response", "message": "Der Realtime-Anbieter hat eine ungültige Antwort geliefert."},
         ) from exc
 
-    tenant_settings = _tenant_settings(context)
     return RealtimeClientSecretResponse(
         client_secret=value,
         expires_at=expires_at,
@@ -203,6 +215,4 @@ async def create_client_secret(
         model=settings.openai_realtime_model,
         voice=settings.openai_realtime_voice,
         tenant_id=context.id,
-        tenant_name=context.tenant.name,
-        assistant_name=tenant_settings.assistant_name,
     )

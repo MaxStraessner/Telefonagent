@@ -64,8 +64,6 @@ class RealtimeClientSecretResponse(BaseModel):
     model: str
     voice: str
     tenant_id: UUID
-    tenant_name: str
-    assistant_name: str
 
 
 class TenantSettingsResponse(ORMModel):

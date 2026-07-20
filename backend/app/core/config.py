@@ -46,6 +46,14 @@ class Settings(BaseSettings):
         model = str(value or "").strip()
         return model or "gpt-realtime-2.1"
 
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def validate_openai_api_key(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        key = str(value).strip()
+        return key or None
+
     @field_validator("openai_realtime_voice", mode="before")
     @classmethod
     def validate_realtime_voice(cls, value: object) -> str:
