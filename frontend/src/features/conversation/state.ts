@@ -1,4 +1,4 @@
-export type ConversationState = "idle" | "connecting" | "connected" | "user_speaking" | "assistant_thinking" | "assistant_speaking" | "tool_running" | "error" | "ended" | "not_configured";
+export type ConversationState = "idle" | "requesting_microphone" | "connecting" | "connected" | "muted" | "user_speaking" | "assistant_thinking" | "assistant_speaking" | "error" | "ended" | "not_configured";
 
 export interface ConversationSession {
   state: ConversationState;

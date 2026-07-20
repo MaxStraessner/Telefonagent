@@ -29,6 +29,43 @@ class PlatformStatusResponse(BaseModel):
     telephony_configured: bool
     calendar_configured: bool
     database_connected: bool
+    realtime_model: str
+    realtime_voice: str
+
+
+class RealtimeVadResponse(BaseModel):
+    type: str
+    threshold: float
+    prefix_padding_ms: int
+    silence_duration_ms: int
+    create_response: bool
+    interrupt_response: bool
+
+
+class RealtimeAgentConfigResponse(BaseModel):
+    tenant_id: UUID
+    tenant_name: str
+    assistant_name: str
+    language: str
+    welcome_message: str
+    instructions: str
+    model: str
+    voice: str
+    maximum_session_minutes: int
+    transcription_enabled: bool
+    raw_event_logging: bool
+    vad: RealtimeVadResponse
+
+
+class RealtimeClientSecretResponse(BaseModel):
+    client_secret: str
+    expires_at: int
+    session_id: str | None = None
+    model: str
+    voice: str
+    tenant_id: UUID
+    tenant_name: str
+    assistant_name: str
 
 
 class TenantSettingsResponse(ORMModel):

@@ -9,8 +9,10 @@ from app.db.session import get_db
 from app.repositories import TenantRepository
 from app.schemas.api import (
     AppointmentResponse, HealthResponse, LocationResponse, PlatformStatusResponse,
-    ServiceResponse, StaffResponse, TenantResponse,
+    RealtimeAgentConfigResponse, RealtimeClientSecretResponse, ServiceResponse,
+    StaffResponse, TenantResponse,
 )
+from app.services.realtime import agent_config, create_client_secret
 
 router = APIRouter()
 
@@ -44,7 +46,25 @@ def platform_status(
         telephony_configured=settings.telephony_configured,
         calendar_configured=settings.calendar_configured,
         database_connected=database_is_connected(db),
+        realtime_model=settings.openai_realtime_model,
+        realtime_voice=settings.openai_realtime_voice,
     )
+
+
+@router.get("/realtime/agent-config", response_model=RealtimeAgentConfigResponse)
+def realtime_agent_config(
+    context: TenantContext = Depends(get_tenant_context),
+    settings: Settings = Depends(get_settings),
+) -> RealtimeAgentConfigResponse:
+    return agent_config(context, settings)
+
+
+@router.post("/realtime/client-secret", response_model=RealtimeClientSecretResponse)
+async def realtime_client_secret(
+    context: TenantContext = Depends(get_tenant_context),
+    settings: Settings = Depends(get_settings),
+) -> RealtimeClientSecretResponse:
+    return await create_client_secret(context, settings)
 
 
 @router.get("/tenant", response_model=TenantResponse)

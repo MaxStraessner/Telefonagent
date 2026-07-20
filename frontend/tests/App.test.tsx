@@ -11,7 +11,7 @@ const tenant = {
 };
 const services = [{ id: "1", name: "Herrenhaarschnitt", description: "Klassisch", duration_minutes: 30, is_active: true }];
 const staff = [{ id: "1", display_name: "Anna", role_name: "Stylist:in", is_active: true }];
-const status = { environment: "development", backend_version: "0.1.0", realtime_voice_configured: false, telephony_configured: false, calendar_configured: false, database_connected: true };
+const status = { environment: "development", backend_version: "0.1.0", realtime_voice_configured: false, telephony_configured: false, calendar_configured: false, database_connected: true, realtime_model: "gpt-realtime-2.1", realtime_voice: "marin" };
 
 function mockSuccess() {
   vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
@@ -39,13 +39,13 @@ describe("Telefonagent App", () => {
     expect(screen.getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();
   });
 
-  it("kennzeichnet die Sprachfunktion und erklärt den Startversuch", async () => {
+  it("kennzeichnet eine fehlende serverseitige Sprachkonfiguration", async () => {
     window.history.pushState({}, "", "/testgespraech");
     render(<App />);
     expect(await screen.findByText("Gespräch mit Lina")).toBeInTheDocument();
     expect(screen.getAllByText("Nicht eingerichtet").length).toBeGreaterThan(0);
-    await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
-    expect(screen.getByRole("status")).toHaveTextContent("Die Sprachverbindung wird im nächsten Entwicklungsschritt eingerichtet.");
+    expect(screen.getByRole("button", { name: /Testgespräch starten/ })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("OpenAI Realtime ist serverseitig noch nicht konfiguriert");
   });
 
   it("wechselt zwischen Test- und Präsentationsmodus und speichert die Auswahl", async () => {
