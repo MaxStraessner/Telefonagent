@@ -1,12 +1,12 @@
 # Telefonagent – Plattformbasis
 
-Telefonagent ist eine lokal ausführbare, mehrmandantenfähige Grundlage für zukünftige sprachbasierte Terminassistenten. Der aktuelle Stand verbindet eine eigenständige React-Oberfläche mit einer versionierten FastAPI-API und PostgreSQL. Ein Friseursalon dient ausschließlich als Seed-Mandant; Plattformkern und Datenmodell sind nicht auf diese Branche festgelegt.
+Telefonagent ist eine lokal ausführbare, mehrmandantenfähige Plattform für sprachbasierte Terminassistenten. Der aktuelle Stand verbindet eine React-Oberfläche, einen echten OpenAI-Realtime-Browseragenten über WebRTC, eine versionierte FastAPI-API und PostgreSQL. Ein Friseursalon dient ausschließlich als Seed-Mandant; Plattformkern und Datenmodell sind nicht auf diese Branche festgelegt.
 
-Die Sprach-, Telefonie-, Kalender- und Buchungsfunktionen sind bewusst **nicht** implementiert. Die Oberfläche zeigt dafür transparente, nicht interaktive Vorbereitungszustände und baut keine externen Verbindungen auf.
+Die Browser-Sprachfunktion ist implementiert. Telefonie, Kalenderzugriff, Terminprüfung und Buchung sind weiterhin bewusst **nicht** implementiert; der Agent macht darüber keine verbindlichen Aussagen.
 
 ## Architektur und Technologien
 
-- Frontend: React 19, TypeScript, Vite, React Router, zentrale CSS-Variablen, Vitest und Testing Library
+- Frontend: React 19, TypeScript, Vite, React Router, OpenAI Agents SDK für TypeScript, WebRTC, Vitest und Testing Library
 - Backend: Python 3.13+, FastAPI, Pydantic 2, SQLAlchemy 2, Alembic, Pytest
 - Datenbank: PostgreSQL 17 mit persistentem Docker-Volume
 - Betrieb: Docker Compose mit Health Checks, Migrations- und Seed-Startsequenz
@@ -45,6 +45,7 @@ docker compose down
 - Backend: http://localhost:8000
 - OpenAPI-Dokumentation: http://localhost:8000/docs
 - Health Endpoint: http://localhost:8000/api/v1/health
+- Realtime-Agentenkonfiguration: http://localhost:8000/api/v1/realtime/agent-config
 
 ## Konfiguration
 
@@ -54,7 +55,12 @@ Alle unterstützten Werte sind in `.env.example` dokumentiert. Wichtig:
 - `BACKEND_PORT` und `FRONTEND_PORT` ändern bei Bedarf die veröffentlichten Compose-Ports.
 - `ACTIVE_TENANT_SLUG` wird ausschließlich serverseitig ausgewertet.
 - `VITE_API_BASE_URL` ist die einzige Frontend-Konfiguration für den API-Pfad und darf keine Geheimnisse enthalten.
-- `OPENAI_API_KEY` bleibt leer. Das Backend startet ohne Schlüssel und meldet `realtime_voice_configured: false`.
+- `OPENAI_API_KEY` wird ausschließlich vom Backend gelesen. Ohne Schlüssel startet die Plattform normal und meldet `realtime_voice_configured: false`.
+- `OPENAI_REALTIME_MODEL` und `OPENAI_REALTIME_VOICE` steuern Modell und Stimme; Standard sind `gpt-realtime-2.1` und `marin`. Die tatsächliche Verfügbarkeit hängt vom OpenAI-Projekt ab.
+- `OPENAI_REALTIME_MAX_SESSION_MINUTES` begrenzt kostenträchtige Tests, standardmäßig auf 10 Minuten.
+- `OPENAI_REALTIME_TRANSCRIPTION_ENABLED` aktiviert das flüchtige Live-Transkript.
+- `OPENAI_REALTIME_LOG_RAW_EVENTS` bleibt standardmäßig `false`; Rohereignisse können Gesprächsinhalte enthalten.
+- `OPENAI_SAFETY_IDENTIFIER_SALT` dient zur pseudonymen, installationsbezogenen Safety-ID-Bildung und sollte installationsspezifisch gesetzt werden.
 - Eine echte `.env` ist per `.gitignore` ausgeschlossen.
 
 ## Entwicklung ohne vollständigen Compose-Stack
@@ -109,23 +115,31 @@ Die Beispieldaten enthalten keine personenbezogenen Kundendaten.
 ## Aktueller Funktionsumfang
 
 - Übersicht mit Plattform- und Integrationsstatus sowie tenant-spezifischen Kennzahlen
-- vorbereitete Testgesprächsseite mit typisiertem Zustandsmodell, Test-/Präsentationsmodus und klarer Nicht-konfiguriert-Meldung
+- echte Browser-Sprachsitzung über `RealtimeAgent`, `RealtimeSession` und `OpenAIRealtimeWebRTC`
+- kurzlebige, mandantengebundene Client-Secrets; der normale OpenAI-Key erreicht den Browser nie
+- Testgesprächsseite mit Mikrofonfreigabe, hörbarer Ausgabe, Stummschaltung, automatischer und manueller Unterbrechung sowie vollständigem Cleanup
+- flüchtiges Live-Transkript, begrenzte Sitzungsereignisse, VAD-Diagnose und wahrgenommene Antwortlatenzen
+- gemeinsame Sprachlogik für Test- und Präsentationsmodus; technische Details bleiben im Präsentationsmodus verborgen
 - responsive Terminansicht mit leerem Zustand, Desktop-Tabelle und mobilen Karten
 - Ansichten für Leistungen, Mitarbeiter und Unternehmensstammdaten aus der API
 - technischer Systembereich ohne Geheimnisse
 - persistenter heller/dunkler Modus sowie persistenter Test-/Präsentationsmodus
 - einheitliche Lade-, Skeleton-, Fehler- und Wiederholungszustände
 - zentraler, abbrechbarer Frontend-Datenzugriff
-- versionierte, typisierte Read-only-API und OpenAPI-Schema
+- versionierte, typisierte API und OpenAPI-Schema
 - UUID-basierte, zeitzonenfähige Datenbanktabellen und reproduzierbare Migration
 
 ## Bewusst nicht umgesetzt
 
-Nicht vorhanden sind OpenAI Realtime/Agents SDK, WebRTC, Mikrofon- oder Audiozugriff, Transkripte, Telefonie/SIP/Rufnummern, externe Kalender, Terminberechnung und -mutationen, n8n, Authentifizierung, Registrierung, Zahlungen und produktives Deployment. Insbesondere erzeugt die Testseite keine künstlichen Antworten und speichert weder Audio noch Transkripte.
+Nicht vorhanden sind Telefonie/SIP/Rufnummern, externe Kalender, Terminberechnung und -mutationen, Realtime Function Tools, n8n, Authentifizierung, Registrierung, Zahlungen und produktives Deployment. Die Testseite speichert weder Audio noch Transkripte und erzeugt keine Kundendaten oder Termine.
+
+## Realtime-Sprachtest
+
+Architektur, Sicherheitsmodell, manueller Abnahmetest, typische Fehler und Kostenhinweise stehen in [docs/realtime-voice.md](docs/realtime-voice.md). Der Browser fordert das Mikrofon erst nach einem Klick an. Anschließend mintet FastAPI mit dem serverseitigen Standard-Key ein 60 Sekunden gültiges Client-Secret und der Browser verbindet sich direkt per WebRTC mit OpenAI.
+
+Ein ChatGPT-Abonnement umfasst die OpenAI-API-Nutzung nicht automatisch. Für echte Realtime-Tests sind ein API-Projekt mit Abrechnung und Zugriff auf das konfigurierte Modell und die Stimme erforderlich; dabei entstehen nutzungsabhängige API-Kosten.
 
 ## Spätere Erweiterungen
-
-Die Realtime-Integration kann an das Zustandsmodell unter `frontend/src/features/conversation/state.ts` und an die vorhandene Testgesprächsseite angeschlossen werden. Eine kurzlebige Client-Berechtigung muss später serverseitig ausgestellt werden; ein dauerhafter API-Schlüssel darf nie in Vite-Variablen gelangen.
 
 Telefonie- und Kalenderanbieter gehören hinter eigene Backend-Service-/Provider-Schnittstellen. Externe Webhooks müssen dann Tenant-Zuordnung, Signaturprüfung, Idempotenz und kontrollierte Fehlerbehandlung erhalten. Der Plattformkern darf dabei keine branchenspezifischen Annahmen übernehmen.
 
@@ -134,5 +148,8 @@ Telefonie- und Kalenderanbieter gehören hinter eigene Backend-Service-/Provider
 - Port belegt: `BACKEND_PORT`, `FRONTEND_PORT` und `VITE_API_BASE_URL` in `.env` konsistent anpassen. Beispiel: Backend-Port `8001` und API-Basis `http://localhost:8001/api/v1`. Fremde Prozesse oder Container müssen dafür nicht beendet werden.
 - Backend bleibt unhealthy: `docker compose logs backend database` prüfen; meist ist die Datenbank noch nicht bereit oder die URL stimmt nicht.
 - Frontend erreicht API nicht: `VITE_API_BASE_URL` prüfen und das Frontend neu bauen, da Vite-Werte zur Build-Zeit eingebettet werden.
+- Realtime bleibt „Nicht eingerichtet“: `OPENAI_API_KEY` nur in `.env` setzen und den Backend-Container neu erstellen; niemals als `VITE_`-Variable anlegen.
+- Client-Secret wird abgelehnt: API-Projekt, Abrechnung, Modellzugriff und Stimme prüfen; Backend-Logs enthalten bewusst nicht den vollständigen Providerfehler.
+- Mikrofon wird abgelehnt: Browserfreigabe sowie HTTPS beziehungsweise `localhost` als sicheren Kontext prüfen.
 - Seed-Mandant fehlt: Migration ausführen, danach `python -m app.seed`; `ACTIVE_TENANT_SLUG` muss `salon-haarkunst-test` entsprechen.
 - Veraltetes lokales Image: `docker compose build --no-cache frontend backend` ausführen. Das persistente Datenbank-Volume bleibt dabei erhalten.
