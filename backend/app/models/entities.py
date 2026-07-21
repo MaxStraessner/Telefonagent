@@ -2,7 +2,21 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -33,6 +47,35 @@ class CallChannel(str, enum.Enum):
     telephone = "telephone"
 
 
+class TenantRole(str, enum.Enum):
+    owner = "owner"
+    admin = "admin"
+    member = "member"
+
+
+class AddressFormality(str, enum.Enum):
+    formal = "formal"
+    informal = "informal"
+
+
+class ResponseLength(str, enum.Enum):
+    very_short = "very_short"
+    short = "short"
+    balanced = "balanced"
+    detailed = "detailed"
+
+
+class TurnDetectionType(str, enum.Enum):
+    server_vad = "server_vad"
+    semantic_vad = "semantic_vad"
+
+
+class TurnEagerness(str, enum.Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -50,6 +93,24 @@ class Tenant(Base, TimestampMixin):
     locations: Mapped[list["Location"]] = relationship(back_populates="tenant")
 
 
+class AppUser(Base, TimestampMixin):
+    __tablename__ = "app_users"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(150))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TenantMembership(Base, TimestampMixin):
+    __tablename__ = "tenant_memberships"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", name="uq_tenant_membership"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    role: Mapped[TenantRole] = mapped_column(Enum(TenantRole, native_enum=False), default=TenantRole.member)
+    user: Mapped[AppUser] = relationship()
+
+
 class TenantSettings(Base, TimestampMixin):
     __tablename__ = "tenant_settings"
     __table_args__ = (UniqueConstraint("tenant_id", name="uq_tenant_settings_tenant_id"),)
@@ -61,6 +122,134 @@ class TenantSettings(Base, TimestampMixin):
     presentation_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     diagnostics_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     tenant: Mapped[Tenant] = relationship(back_populates="settings")
+
+
+class AgentConfiguration(Base, TimestampMixin):
+    __tablename__ = "agent_configurations"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_agent_configurations_tenant_id"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    company_name: Mapped[str] = mapped_column(String(200))
+    assistant_name: Mapped[str] = mapped_column(String(100))
+    assistant_role: Mapped[str] = mapped_column(String(200))
+    transparency_notice: Mapped[str] = mapped_column(Text)
+    address_formality: Mapped[AddressFormality] = mapped_column(Enum(AddressFormality, native_enum=False))
+    language: Mapped[str] = mapped_column(String(10), default="de")
+    standard_greeting: Mapped[str] = mapped_column(Text)
+    outside_hours_greeting: Mapped[str] = mapped_column(Text)
+    test_greeting: Mapped[str] = mapped_column(Text)
+    farewell: Mapped[str] = mapped_column(Text)
+    voice: Mapped[str] = mapped_column(String(50), default="marin")
+    speech_speed: Mapped[float] = mapped_column(Float, default=1.0)
+    pronunciation_instructions: Mapped[str] = mapped_column(Text, default="")
+    pronunciation_style: Mapped[str] = mapped_column(String(50), default="neutral")
+    regional_accent: Mapped[str] = mapped_column(String(50), default="")
+    tone: Mapped[str] = mapped_column(String(100), default="friendly_professional")
+    custom_style_instructions: Mapped[str] = mapped_column(Text, default="")
+    response_length: Mapped[ResponseLength] = mapped_column(Enum(ResponseLength, native_enum=False))
+    question_style: Mapped[str] = mapped_column(String(50), default="one_at_a_time")
+    turn_detection_type: Mapped[TurnDetectionType] = mapped_column(Enum(TurnDetectionType, native_enum=False))
+    turn_eagerness: Mapped[TurnEagerness] = mapped_column(Enum(TurnEagerness, native_enum=False))
+    vad_threshold: Mapped[float] = mapped_column(Float, default=0.5)
+    prefix_padding_ms: Mapped[int] = mapped_column(Integer, default=300)
+    silence_duration_ms: Mapped[int] = mapped_column(Integer, default=600)
+    interruptions_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    idle_prompt_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    idle_timeout_ms: Mapped[int] = mapped_column(Integer, default=10000)
+    primary_task: Mapped[str] = mapped_column(Text)
+    off_topic_behavior: Mapped[str] = mapped_column(Text)
+    off_topic_mode: Mapped[str] = mapped_column(String(50), default="brief_redirect")
+    uncertainty_behavior: Mapped[str] = mapped_column(Text)
+    uncertainty_modes: Mapped[list] = mapped_column(JSON, default=list)
+    fallback_message: Mapped[str] = mapped_column(Text)
+    simple_mode: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
+
+
+class AgentTopic(Base, TimestampMixin):
+    __tablename__ = "agent_topics"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    label: Mapped[str] = mapped_column(String(150))
+    topic_type: Mapped[str] = mapped_column(String(20), default="allowed")
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AgentBehaviorRule(Base, TimestampMixin):
+    __tablename__ = "agent_behavior_rules"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    rule_text: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AgentKnowledgeProfile(Base, TimestampMixin):
+    __tablename__ = "agent_knowledge_profiles"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_agent_knowledge_profiles_tenant_id"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    company_description: Mapped[str] = mapped_column(Text, default="")
+    products: Mapped[str] = mapped_column(Text, default="")
+    locations: Mapped[str] = mapped_column(Text, default="")
+    important_notes: Mapped[str] = mapped_column(Text, default="")
+    contact_phone: Mapped[str] = mapped_column(String(50), default="")
+    contact_email: Mapped[str] = mapped_column(String(320), default="")
+    website: Mapped[str] = mapped_column(String(500), default="")
+
+
+class AgentFaq(Base, TimestampMixin):
+    __tablename__ = "agent_faqs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    question: Mapped[str] = mapped_column(String(300))
+    answer: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AgentKnowledgeService(Base, TimestampMixin):
+    __tablename__ = "agent_knowledge_services"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(150))
+    description: Mapped[str] = mapped_column(Text, default="")
+    price_information: Mapped[str] = mapped_column(String(150), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AgentBusinessHours(Base, TimestampMixin):
+    __tablename__ = "agent_business_hours"
+    __table_args__ = (UniqueConstraint("tenant_id", "weekday", name="uq_agent_business_hours_day"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    weekday: Mapped[int] = mapped_column(Integer)
+    opens_at: Mapped[str] = mapped_column(String(5), default="09:00")
+    closes_at: Mapped[str] = mapped_column(String(5), default="18:00")
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AgentCapability(Base, TimestampMixin):
+    __tablename__ = "agent_capabilities"
+    __table_args__ = (UniqueConstraint("tenant_id", "capability_key", name="uq_agent_capability"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    capability_key: Mapped[str] = mapped_column(String(100))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AgentConfigurationAudit(Base):
+    __tablename__ = "agent_configuration_audits"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    changed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class Location(Base, TimestampMixin):
@@ -122,6 +311,7 @@ class CallSession(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     channel: Mapped[CallChannel] = mapped_column(Enum(CallChannel, native_enum=False))
     status: Mapped[str] = mapped_column(String(50))
+    configuration_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

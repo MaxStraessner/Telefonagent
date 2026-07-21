@@ -46,6 +46,7 @@ docker compose down
 - OpenAPI-Dokumentation: http://localhost:8000/docs
 - Health Endpoint: http://localhost:8000/api/v1/health
 - Realtime-Agentenkonfiguration: http://localhost:8000/api/v1/realtime/agent-config
+- KI-Konfiguration: http://localhost:5173/ki-konfigurieren
 
 ## Konfiguration
 
@@ -54,9 +55,10 @@ Alle unterstützten Werte sind in `.env.example` dokumentiert. Wichtig:
 - `DATABASE_URL` steuert die SQLAlchemy-Verbindung bei direktem Backend-Start.
 - `BACKEND_PORT` und `FRONTEND_PORT` ändern bei Bedarf die veröffentlichten Compose-Ports.
 - `ACTIVE_TENANT_SLUG` wird ausschließlich serverseitig ausgewertet.
+- `ACTIVE_USER_EMAIL` löst für die lokale Installation Benutzer und Mandantenrolle serverseitig auf; produktiv wird dieser Adapter durch eine authentifizierte Sitzung ersetzt.
 - `VITE_API_BASE_URL` ist die einzige Frontend-Konfiguration für den API-Pfad und darf keine Geheimnisse enthalten.
 - `OPENAI_API_KEY` wird ausschließlich vom Backend gelesen. Ohne Schlüssel startet die Plattform normal und meldet `realtime_voice_configured: false`.
-- `OPENAI_REALTIME_MODEL` und `OPENAI_REALTIME_VOICE` steuern Modell und Stimme; Standard sind `gpt-realtime-2.1` und `marin`. Die tatsächliche Verfügbarkeit hängt vom OpenAI-Projekt ab.
+- `OPENAI_REALTIME_MODEL` steuert das Plattformmodell. Stimme, Tempo, VAD und Gesprächsverhalten werden versioniert in „KI konfigurieren“ pro Mandant gespeichert.
 - `OPENAI_REALTIME_MAX_SESSION_MINUTES` begrenzt kostenträchtige Tests, standardmäßig auf 10 Minuten.
 - `OPENAI_REALTIME_TRANSCRIPTION_ENABLED` aktiviert das flüchtige Live-Transkript.
 - `OPENAI_REALTIME_LOG_RAW_EVENTS` bleibt standardmäßig `false`; Rohereignisse können Gesprächsinhalte enthalten.
@@ -114,6 +116,10 @@ Die Beispieldaten enthalten keine personenbezogenen Kundendaten.
 
 ## Aktueller Funktionsumfang
 
+- vollständig versionierte, mandantenfähige KI-Konfiguration mit serverseitigen Owner-/Admin-Rechten
+- strukturierter Prompt-Compiler und zentraler Runtime-Dienst für Test und echte Realtime-Sitzung
+- Identität, Begrüßungen, Stimme, Tempo, Aussprache, Stil, Gesprächsführung, Themen, Wissen und sichere Grenzen
+- echte serverseitige OpenAI-Stimmprobe sowie Admin-Promptvorschau
 - Übersicht mit Plattform- und Integrationsstatus sowie tenant-spezifischen Kennzahlen
 - echte Browser-Sprachsitzung über `RealtimeAgent`, `RealtimeSession` und `OpenAIRealtimeWebRTC`
 - kurzlebige, mandantengebundene Client-Secrets; der normale OpenAI-Key erreicht den Browser nie
@@ -131,7 +137,7 @@ Die Beispieldaten enthalten keine personenbezogenen Kundendaten.
 
 ## Bewusst nicht umgesetzt
 
-Nicht vorhanden sind Telefonie/SIP/Rufnummern, externe Kalender, Terminberechnung und -mutationen, Realtime Function Tools, n8n, Authentifizierung, Registrierung, Zahlungen und produktives Deployment. Die Testseite speichert weder Audio noch Transkripte und erzeugt keine Kundendaten oder Termine.
+Nicht vorhanden sind Telefonie/SIP/Rufnummern, externe Kalender, Terminberechnung und -mutationen, Realtime Function Tools, n8n, ein externer Login-/OIDC-Provider, Registrierung, Zahlungen und produktives Deployment. Für die lokale Einzelinstallation werden Benutzer und Rollen serverseitig über `ACTIVE_USER_EMAIL` und Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte und erzeugt keine Kundendaten oder Termine.
 
 ## Realtime-Sprachtest
 

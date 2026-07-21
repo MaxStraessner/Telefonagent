@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     backend_version: str = "0.1.0"
     database_url: str = "postgresql+psycopg://telefonagent:telefonagent@database:5432/telefonagent"
     active_tenant_slug: str = "salon-haarkunst-test"
+    active_user_email: str = "owner@telefonagent.local"
     frontend_url: str = "http://localhost:5173"
     cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"

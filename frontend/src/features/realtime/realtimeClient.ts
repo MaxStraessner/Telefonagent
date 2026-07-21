@@ -57,6 +57,9 @@ export class BrowserRealtimeClient {
       voice: config.voice,
       tools: [],
     });
+    const turnDetection = config.vad.type === "semantic_vad"
+      ? { type: "semantic_vad" as const, eagerness: config.vad.eagerness ?? "medium", createResponse: config.vad.create_response, interruptResponse: config.vad.interrupt_response }
+      : { type: "server_vad" as const, threshold: config.vad.threshold ?? 0.5, prefixPaddingMs: config.vad.prefix_padding_ms ?? 300, silenceDurationMs: config.vad.silence_duration_ms ?? 600, createResponse: config.vad.create_response, interruptResponse: config.vad.interrupt_response };
     const session = new RealtimeSession(agent, {
       transport,
       model: config.model,
@@ -70,16 +73,9 @@ export class BrowserRealtimeClient {
           input: {
             noiseReduction: { type: "near_field" },
             transcription: config.transcription_enabled ? { model: "gpt-4o-mini-transcribe", language: config.language } : null,
-            turnDetection: {
-              type: config.vad.type,
-              threshold: config.vad.threshold,
-              prefixPaddingMs: config.vad.prefix_padding_ms,
-              silenceDurationMs: config.vad.silence_duration_ms,
-              createResponse: config.vad.create_response,
-              interruptResponse: config.vad.interrupt_response,
-            },
+            turnDetection,
           },
-          output: { voice: config.voice },
+          output: { voice: config.voice, speed: config.speed },
         },
       },
     });
@@ -100,7 +96,7 @@ export class BrowserRealtimeClient {
     }
     if (this.closed) return;
     this.connected = true;
-    this.callbacks.onCallId(transport.callId ?? secret.session_id);
+    this.callbacks.onCallId(secret.call_session_id ?? transport.callId ?? secret.session_id);
     this.callbacks.onState("connected");
     this.callbacks.onConnected();
     this.callbacks.onEvent("session_connected");
