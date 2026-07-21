@@ -3,18 +3,27 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import TenantContext, get_tenant_context, get_tenant_repository
+from app.api.dependencies import TenantContext, UserContext, get_tenant_context, get_tenant_repository, get_user_context
+from app.api.v1.agent import router as agent_router
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.models import AgentConfiguration
 from app.repositories import TenantRepository
 from app.schemas.api import (
-    AppointmentResponse, HealthResponse, LocationResponse, PlatformStatusResponse,
-    RealtimeAgentConfigResponse, RealtimeClientSecretResponse, ServiceResponse,
-    StaffResponse, TenantResponse,
+    AppointmentResponse,
+    HealthResponse,
+    LocationResponse,
+    PlatformStatusResponse,
+    RealtimeAgentConfigResponse,
+    RealtimeClientSecretResponse,
+    ServiceResponse,
+    StaffResponse,
+    TenantResponse,
 )
 from app.services.realtime import agent_config, create_client_secret
 
 router = APIRouter()
+router.include_router(agent_router)
 
 
 def database_is_connected(db: Session) -> bool:
@@ -37,8 +46,10 @@ def health(db: Session = Depends(get_db)) -> HealthResponse:
 
 @router.get("/platform/status", response_model=PlatformStatusResponse)
 def platform_status(
+    context: TenantContext = Depends(get_tenant_context),
     db: Session = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> PlatformStatusResponse:
+    agent_configuration = db.query(AgentConfiguration).filter(AgentConfiguration.tenant_id == context.id).one_or_none()
     return PlatformStatusResponse(
         environment=settings.app_env,
         backend_version=settings.backend_version,
@@ -47,24 +58,28 @@ def platform_status(
         calendar_configured=settings.calendar_configured,
         database_connected=database_is_connected(db),
         realtime_model=settings.openai_realtime_model,
-        realtime_voice=settings.openai_realtime_voice,
+        realtime_voice=agent_configuration.voice if agent_configuration else settings.openai_realtime_voice,
     )
 
 
 @router.get("/realtime/agent-config", response_model=RealtimeAgentConfigResponse)
 def realtime_agent_config(
     context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> RealtimeAgentConfigResponse:
-    return agent_config(context, settings)
+    return agent_config(context, settings, db)
 
 
 @router.post("/realtime/client-secret", response_model=RealtimeClientSecretResponse)
 async def realtime_client_secret(
     context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> RealtimeClientSecretResponse:
-    return await create_client_secret(context, settings)
+    return await create_client_secret(context, settings, db)
 
 
 @router.get("/tenant", response_model=TenantResponse)

@@ -65,7 +65,7 @@ def test_platform_status_without_openai_key(client):
     assert payload["realtime_voice"] == "marin"
 
 
-def test_platform_status_with_openai_key_uses_central_model_and_voice(client):
+def test_platform_status_uses_platform_model_and_tenant_database_voice(client):
     app.dependency_overrides[get_settings] = lambda: Settings(
         database_url="sqlite:///./test.db",
         openai_api_key="server-only",
@@ -75,7 +75,7 @@ def test_platform_status_with_openai_key_uses_central_model_and_voice(client):
     payload = client.get("/api/v1/platform/status").json()
     assert payload["realtime_voice_configured"] is True
     assert payload["realtime_model"] == "gpt-realtime-custom"
-    assert payload["realtime_voice"] == "cedar"
+    assert payload["realtime_voice"] == "marin"
     assert "server-only" not in str(payload)
 
 

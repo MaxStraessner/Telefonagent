@@ -148,7 +148,7 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
         return;
       }
       addEvent("client_secret.received");
-      if (secret.tenant_id !== agentConfig.tenant_id || secret.model !== agentConfig.model || secret.voice !== agentConfig.voice) {
+      if (secret.tenant_id !== agentConfig.tenant_id || secret.model !== agentConfig.model || secret.voice !== agentConfig.voice || secret.speed !== agentConfig.speed || secret.configuration_version !== agentConfig.configuration_version) {
         throw realtimeErrors.configurationMismatch();
       }
 
@@ -188,7 +188,9 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
       setView((current) => ({
         ...current,
         remainingSeconds: maximumSeconds,
-        vadSummary: `${agentConfig.vad.type} · Schwelle ${agentConfig.vad.threshold} · Präfix ${agentConfig.vad.prefix_padding_ms} ms · Stille ${agentConfig.vad.silence_duration_ms} ms · Antwort ${agentConfig.vad.create_response ? "an" : "aus"} · Unterbrechung ${agentConfig.vad.interrupt_response ? "an" : "aus"}`,
+        vadSummary: agentConfig.vad.type === "semantic_vad"
+          ? `semantic_vad · Reaktionsbereitschaft ${agentConfig.vad.eagerness ?? "medium"} · Unterbrechung ${agentConfig.vad.interrupt_response ? "an" : "aus"}`
+          : `server_vad · Schwelle ${agentConfig.vad.threshold} · Präfix ${agentConfig.vad.prefix_padding_ms} ms · Stille ${agentConfig.vad.silence_duration_ms} ms · Unterbrechung ${agentConfig.vad.interrupt_response ? "an" : "aus"}`,
       }));
       intervalRef.current = window.setInterval(() => {
         const tick = tickSessionTimer(remainingRef.current ?? maximumSeconds, warnedRef.current);

@@ -42,22 +42,57 @@ export interface PlatformStatus {
   realtime_model: string; realtime_voice: string;
 }
 export interface RealtimeVadConfig {
-  type: string; threshold: number; prefix_padding_ms: number; silence_duration_ms: number;
+  type: "server_vad" | "semantic_vad"; threshold: number | null; prefix_padding_ms: number | null; silence_duration_ms: number | null;
+  eagerness: "low" | "medium" | "high" | null;
   create_response: boolean; interrupt_response: boolean;
 }
 export interface RealtimeAgentConfig {
   tenant_id: string; tenant_name: string; assistant_name: string; language: string;
   welcome_message: string; instructions: string; model: string; voice: string;
+  speed: number; configuration_version: number; capability_keys: string[]; tool_names: string[];
   maximum_session_minutes: number; transcription_enabled: boolean; raw_event_logging: boolean;
   vad: RealtimeVadConfig;
 }
 export interface RealtimeClientSecret {
   client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
-  tenant_id: string;
+  speed: number; configuration_version: number; call_session_id: string; tenant_id: string;
 }
 export interface Health { status: string; database: string; }
 export interface PlatformData {
   tenant: Tenant; services: Service[]; staff: StaffMember[]; appointments: Appointment[];
   platformStatus: PlatformStatus; health: Health;
 }
+
+export interface AgentListItem { id?: string | null; is_active: boolean; sort_order: number; }
+export interface AgentTopic extends AgentListItem { label: string; instructions: string; topic_type: "allowed" | "forbidden"; }
+export interface AgentRule extends AgentListItem { rule_text: string; }
+export interface AgentConfiguration {
+  tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "owner" | "admin" | "member";
+  company_name: string; assistant_name: string; assistant_role: string; transparency_notice: string;
+  address_formality: "formal" | "informal"; language: "de";
+  standard_greeting: string; outside_hours_greeting: string; test_greeting: string; farewell: string;
+  voice: string; speech_speed: number; pronunciation_instructions: string; pronunciation_style: "neutral" | "regional" | "custom"; regional_accent: "" | "north_german" | "westphalian" | "rhineland" | "south_german";
+  tone: "professional_binding" | "friendly_service" | "calm_empathic" | "relaxed_personal" | "concise_factual" | "custom"; custom_style_instructions: string;
+  response_length: "very_short" | "short" | "balanced" | "detailed"; question_style: "one_at_a_time" | "natural";
+  turn_detection_type: "server_vad" | "semantic_vad"; turn_eagerness: "low" | "medium" | "high";
+  vad_threshold: number; prefix_padding_ms: number; silence_duration_ms: number; interruptions_enabled: boolean; idle_prompt_enabled: boolean; idle_timeout_ms: number;
+  primary_task: string; off_topic_behavior: string; off_topic_mode: "strict" | "brief_redirect" | "limited_smalltalk"; uncertainty_behavior: string; uncertainty_modes: Array<"acknowledge" | "ask_clarifying" | "offer_contact">; fallback_message: string;
+  simple_mode: boolean; topics: AgentTopic[]; custom_rules: AgentRule[];
+}
+export interface KnowledgeProfile { company_description: string; products: string; locations: string; important_notes: string; contact_phone: string; contact_email: string; website: string; }
+export interface AgentFaq extends AgentListItem { question: string; answer: string; }
+export interface AgentKnowledgeService extends AgentListItem { name: string; description: string; price_information: string; }
+export interface BusinessHours { weekday: number; opens_at: string; closes_at: string; is_closed: boolean; }
+export interface AgentKnowledge {
+  tenant_id: string; version: number; can_edit: boolean; profile: KnowledgeProfile;
+  faqs: AgentFaq[]; services: AgentKnowledgeService[]; business_hours: BusinessHours[];
+}
+export interface VoiceOption { value: string; label: string; recommended: boolean; }
+export interface Capability { key: string; label: string; description: string; available: boolean; active: boolean; unavailable_reason: string | null; }
+export interface AgentCatalog { voices: VoiceOption[]; capabilities: Capability[]; }
+export interface RuntimeSummary {
+  tenant_id: string; configuration_version: number; company_name: string; assistant_name: string; language: string; style: AgentConfiguration["tone"]; business_hours_status: "open" | "closed"; model: string; voice: string; speed: number;
+  turn_detection: Record<string, unknown>; capability_keys: string[]; tool_names: string[]; greeting: string; prompt_sections: string[];
+}
+export interface PromptPreview { configuration_version: number; prompt: string; sections: string[]; }
 

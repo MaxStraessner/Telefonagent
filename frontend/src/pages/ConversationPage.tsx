@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../api/client";
 import { Icon } from "../components/Icon";
 import { useRealtimeVoice } from "../features/realtime/useRealtimeVoice";
 import type { RealtimeViewState } from "../features/realtime/types";
 import { usePersistentSetting } from "../hooks/usePersistentSetting";
-import type { PlatformData } from "../types/api";
+import type { PlatformData, RuntimeSummary } from "../types/api";
 import { DataPage, PageHeader } from "./shared";
 
 const stateLabels: Record<RealtimeViewState["state"], string> = {
@@ -37,11 +38,19 @@ function ConversationContent({ data }: { data: PlatformData }) {
   const [mode, setMode] = usePersistentSetting<"test" | "presentation">("telefonagent-display-mode", "test");
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const [runtime, setRuntime] = useState<RuntimeSummary | null>(null);
   const realtime = useRealtimeVoice(data.platformStatus.realtime_voice_configured, audioElement);
   const { view } = realtime;
   const active = ["requesting_microphone", "connecting", "connected", "muted", "user_speaking", "assistant_thinking", "assistant_speaking"].includes(view.state);
   const voiceActive = view.state === "user_speaking" || view.state === "assistant_speaking";
   const canStart = data.platformStatus.realtime_voice_configured && !active;
+  const agentName = runtime?.assistant_name ?? data.tenant.settings.assistant_name;
+
+  useEffect(() => {
+    api.agentTestSession().then((value) => setRuntime(
+      typeof value.speed === "number" && typeof value.configuration_version === "number" ? value : null,
+    )).catch(() => setRuntime(null));
+  }, []);
 
   useEffect(() => {
     const container = transcriptRef.current;
@@ -53,7 +62,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
   return <div className={`page conversation-page ${mode}`}>
       <PageHeader
         eyebrow="Browser-Testumgebung"
-        title={`Gespräch mit ${data.tenant.settings.assistant_name}`}
+        title={`Gespräch mit ${agentName}`}
         description={`${data.tenant.name} · OpenAI Realtime über eine direkte WebRTC-Sprachverbindung`}
         action={<div className="segmented" aria-label="Darstellungsmodus"><button className={mode === "test" ? "active" : ""} onClick={() => setMode("test")}>Testmodus</button><button className={mode === "presentation" ? "active" : ""} onClick={() => setMode("presentation")}>Präsentation</button></div>}
       />
@@ -65,9 +74,9 @@ function ConversationContent({ data }: { data: PlatformData }) {
         <section className={`card call-stage state-${view.state}`}>
           <span className={`status-badge ${view.state === "error" || view.state === "not_configured" ? "pending" : "ready"}`}><span className="status-dot" />{stateLabels[view.state]}</span>
           <div className={`voice-visual ${voiceActive ? "active" : ""} ${view.muted ? "muted" : ""}`} aria-label={view.muted ? "Mikrofon stumm" : voiceActive ? "Sprachaktivität" : "Mikrofon bereit"}><i /><i /><span><Icon name="mic" size={32} /></span><i /><i /></div>
-          <h2>{data.tenant.settings.assistant_name}</h2>
-          <p>{view.state === "assistant_speaking" ? `${data.tenant.settings.assistant_name} spricht` : view.state === "user_speaking" ? `${data.tenant.settings.assistant_name} hört zu` : view.state === "assistant_thinking" ? `${data.tenant.settings.assistant_name} denkt nach` : stateLabels[view.state]}</p>
-          {mode === "presentation" && view.transcript.length > 0 && <div className="presentation-transcript" aria-live="polite">{view.transcript.slice(-2).map((entry) => <p key={entry.id}><strong>{entry.speaker === "user" ? "Du" : data.tenant.settings.assistant_name}:</strong> {entry.text}</p>)}</div>}
+          <h2>{agentName}</h2>
+          <p>{view.state === "assistant_speaking" ? `${agentName} spricht` : view.state === "user_speaking" ? `${agentName} hört zu` : view.state === "assistant_thinking" ? `${agentName} denkt nach` : stateLabels[view.state]}</p>
+          {mode === "presentation" && view.transcript.length > 0 && <div className="presentation-transcript" aria-live="polite">{view.transcript.slice(-2).map((entry) => <p key={entry.id}><strong>{entry.speaker === "user" ? "Du" : agentName}:</strong> {entry.text}</p>)}</div>}
           <div className="call-actions">
             <button className="button primary large" disabled={!canStart} onClick={realtime.start}><Icon name="call" /> {view.state === "ended" ? "Neues Testgespräch" : "Testgespräch starten"}</button>
             <button className="button secondary" disabled={!active} onClick={realtime.end}>Gespräch beenden</button>
@@ -84,12 +93,13 @@ function ConversationContent({ data }: { data: PlatformData }) {
             <li>Beim Dazwischensprechen wird die Antwort unterbrochen.</li>
           </ol>
           <div className="privacy-note"><strong>Bewusst ohne Werkzeuge</strong><p>Terminwerkzeuge werden im nächsten Entwicklungsschritt angebunden. Dieser Sprachagent bucht keine Termine und speichert weder Audio noch Gesprächsinhalte.</p></div>
+          {runtime && <div className="privacy-note"><strong>Wirksame Konfiguration · v{runtime.configuration_version}</strong><p>{runtime.company_name} · {runtime.assistant_name} · Deutsch · {runtime.style} · {runtime.voice} · {runtime.speed.toFixed(2)}× · {runtime.business_hours_status === "open" ? "simuliert geöffnet" : "simuliert geschlossen"} · {runtime.capability_keys.length} Fähigkeiten</p></div>}
         </aside>
       </div>
       {mode === "test" && <div className="grid diagnostic-grid realtime-diagnostics">
         <section className="card transcript-card"><div className="section-heading"><h2>Live-Transkript</h2><div className="section-actions"><span>{view.transcript.length} Nachrichten</span><button className="text-button" disabled={view.transcript.length === 0} onClick={realtime.clearTranscript}>Transkript leeren</button></div></div>
           <div className="transcript-list" ref={transcriptRef} aria-live="polite">
-            {view.transcript.length === 0 ? <div className="placeholder-panel"><p>Noch kein Transkript</p><small>Gesprochene Beiträge erscheinen hier nur während dieser Sitzung.</small></div> : view.transcript.map((entry) => <article className={`transcript-entry ${entry.speaker}`} key={entry.id}><div><strong>{entry.speaker === "user" ? "Du" : data.tenant.settings.assistant_name}</strong><time>{new Date(entry.startedAt).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></div><p>{entry.text}</p><small>{entry.status === "partial" ? "wird transkribiert" : entry.status === "interrupted" ? "unterbrochen" : "vollständig"}</small></article>)}
+            {view.transcript.length === 0 ? <div className="placeholder-panel"><p>Noch kein Transkript</p><small>Gesprochene Beiträge erscheinen hier nur während dieser Sitzung.</small></div> : view.transcript.map((entry) => <article className={`transcript-entry ${entry.speaker}`} key={entry.id}><div><strong>{entry.speaker === "user" ? "Du" : agentName}</strong><time>{new Date(entry.startedAt).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></div><p>{entry.text}</p><small>{entry.status === "partial" ? "wird transkribiert" : entry.status === "interrupted" ? "unterbrochen" : "vollständig"}</small></article>)}
           </div>
         </section>
         <details className="card event-card" open><summary className="section-heading"><h2>Sitzungsereignisse</h2><span>{view.events.length} Ereignisse</span></summary>
@@ -101,6 +111,9 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <div><dt>Transport</dt><dd>{active ? "WebRTC" : "—"}</dd></div>
           <div><dt>Modell</dt><dd>{data.platformStatus.realtime_model}</dd></div>
           <div><dt>Stimme</dt><dd>{data.platformStatus.realtime_voice}</dd></div>
+          <div><dt>Konfiguration</dt><dd>{runtime ? `Version ${runtime.configuration_version}` : "—"}</dd></div>
+          <div><dt>Sprechtempo</dt><dd>{runtime ? `${runtime.speed.toFixed(2)}×` : "—"}</dd></div>
+          <div><dt>Fähigkeiten</dt><dd>{runtime?.capability_keys.length ?? 0}</dd></div>
           <div><dt>VAD</dt><dd>{view.vadSummary ?? "server_vad · beim Start geladen"}</dd></div>
           <div><dt>Verbindungsaufbau</dt><dd>{metric(view.metrics.connectionMs)}</dd></div>
           <div><dt>Letzte Reaktion</dt><dd>{metric(view.metrics.lastResponseMs)}</dd></div>

@@ -35,9 +35,10 @@ class PlatformStatusResponse(BaseModel):
 
 class RealtimeVadResponse(BaseModel):
     type: str
-    threshold: float
-    prefix_padding_ms: int
-    silence_duration_ms: int
+    threshold: float | None = None
+    prefix_padding_ms: int | None = None
+    silence_duration_ms: int | None = None
+    eagerness: str | None = None
     create_response: bool
     interrupt_response: bool
 
@@ -51,6 +52,10 @@ class RealtimeAgentConfigResponse(BaseModel):
     instructions: str
     model: str
     voice: str
+    speed: float
+    configuration_version: int
+    capability_keys: list[str]
+    tool_names: list[str]
     maximum_session_minutes: int
     transcription_enabled: bool
     raw_event_logging: bool
@@ -63,6 +68,9 @@ class RealtimeClientSecretResponse(BaseModel):
     session_id: str | None = None
     model: str
     voice: str
+    speed: float
+    configuration_version: int
+    call_session_id: UUID
     tenant_id: UUID
 
 

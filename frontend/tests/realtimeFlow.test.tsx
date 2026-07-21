@@ -69,10 +69,11 @@ const platformStatus = { environment: "development", backend_version: "0.1.0", r
 const agentConfig = {
   tenant_id: tenant.id, tenant_name: tenant.name, assistant_name: "Lina", language: "de",
   welcome_message: "Guten Tag, hier ist Lina.", instructions: "Sei freundlich. Keine Werkzeuge.", model: "gpt-realtime-2.1", voice: "marin",
+  speed: 1, configuration_version: 1, capability_keys: [], tool_names: [],
   maximum_session_minutes: 10, transcription_enabled: true, raw_event_logging: false,
-  vad: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600, create_response: true, interrupt_response: true },
+  vad: { type: "server_vad" as const, threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600, eagerness: null, create_response: true, interrupt_response: true },
 };
-const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", tenant_id: tenant.id };
+const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", speed: 1, configuration_version: 1, call_session_id: "call-local", tenant_id: tenant.id };
 
 let trackStop: ReturnType<typeof vi.fn>;
 let getUserMedia: ReturnType<typeof vi.fn>;

@@ -69,9 +69,10 @@ def test_agent_config_is_tenant_scoped_and_exposes_no_key(client):
     assert payload["voice"] == "marin"
     assert payload["vad"]["interrupt_response"] is True
     assert "server-only-test-key" not in response.text
-    assert "keine Werkzeuge" in payload["instructions"]
-    assert "keine politische, medizinische, juristische oder private Beratung" in payload["instructions"]
-    assert "Browser-Testgespräch" in payload["instructions"]
+    assert "keine Aktionswerkzeuge" in payload["instructions"]
+    assert "keine politische, medizinische, juristische, finanzielle oder private Beratung" in payload["instructions"]
+    assert payload["configuration_version"] >= 1
+    assert payload["speed"] == 1.0
 
 
 def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
@@ -84,7 +85,7 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert response.status_code == 200
     assert response.json()["client_secret"] == "ek_test_ephemeral"
     assert response.json()["session_id"] == "sess_test"
-    assert set(response.json()) == {"client_secret", "expires_at", "session_id", "model", "voice", "tenant_id"}
+    assert set(response.json()) == {"client_secret", "expires_at", "session_id", "model", "voice", "speed", "configuration_version", "call_session_id", "tenant_id"}
     assert "server-only-test-key" not in response.text
     assert FakeAsyncClient.last_payload["expires_after"] == {"anchor": "created_at", "seconds": 60}
     session = FakeAsyncClient.last_payload["session"]
@@ -94,7 +95,7 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"].startswith("tenant_")
     assert "Salon Haarkunst" not in FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"]
     db.expire_all()
-    assert db.scalar(select(func.count(CallSession.id))) == before
+    assert db.scalar(select(func.count(CallSession.id))) == before + 1
 
 
 def test_missing_api_key_returns_controlled_error(client):
@@ -111,7 +112,7 @@ def test_blank_api_key_is_treated_as_missing(client):
     assert response.json()["error"]["code"] == "realtime_not_configured"
 
 
-def test_custom_model_and_voice_are_used_consistently(monkeypatch, client):
+def test_model_is_platform_controlled_and_voice_is_database_controlled(monkeypatch, client):
     monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[get_settings] = lambda: configured_settings(
         openai_realtime_model="gpt-realtime-custom",
@@ -120,9 +121,9 @@ def test_custom_model_and_voice_are_used_consistently(monkeypatch, client):
     config = client.get("/api/v1/realtime/agent-config").json()
     secret = client.post("/api/v1/realtime/client-secret").json()
     assert config["model"] == secret["model"] == "gpt-realtime-custom"
-    assert config["voice"] == secret["voice"] == "cedar"
+    assert config["voice"] == secret["voice"] == "marin"
     assert FakeAsyncClient.last_payload["session"]["model"] == "gpt-realtime-custom"
-    assert FakeAsyncClient.last_payload["session"]["audio"]["output"]["voice"] == "cedar"
+    assert FakeAsyncClient.last_payload["session"]["audio"]["output"] == {"voice": "marin", "speed": 1.0}
 
 
 def test_provider_authentication_error_is_sanitized(monkeypatch, client):
@@ -208,8 +209,8 @@ def test_realtime_settings_fall_back_to_safe_defaults():
 def test_safety_identifier_is_stable_and_pseudonymous(client):
     context_response = client.get("/api/v1/tenant").json()
     from app.api.dependencies import TenantContext
-    from app.repositories.tenant import get_tenant_by_slug
     from app.db.session import SessionLocal
+    from app.repositories.tenant import get_tenant_by_slug
 
     with SessionLocal() as session:
         tenant = get_tenant_by_slug(session, "salon-haarkunst-test")

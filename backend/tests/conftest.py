@@ -2,9 +2,10 @@ import os
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+
 from alembic import command
 from alembic.config import Config
-from fastapi.testclient import TestClient
 
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 os.environ["ACTIVE_TENANT_SLUG"] = "salon-haarkunst-test"
