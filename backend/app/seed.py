@@ -7,6 +7,7 @@ from app.db.session import SessionLocal
 from app.models import (
     AddressFormality,
     AgentBusinessHours,
+    AgentCapability,
     AgentConfiguration,
     AgentKnowledgeProfile,
     AgentKnowledgeService,
@@ -138,6 +139,15 @@ def seed_database(db: Session) -> Tenant:
     for name in ("Anna", "Ben"):
         if name not in existing_staff:
             db.add(StaffMember(tenant_id=tenant.id, display_name=name, role_name="Stylist:in", is_active=True))
+
+    calendar_capability = db.scalar(
+        select(AgentCapability).where(
+            AgentCapability.tenant_id == tenant.id,
+            AgentCapability.capability_key == "calendar_booking",
+        )
+    )
+    if calendar_capability is None:
+        db.add(AgentCapability(tenant_id=tenant.id, capability_key="calendar_booking", is_active=True))
 
     db.commit()
     db.refresh(tenant)

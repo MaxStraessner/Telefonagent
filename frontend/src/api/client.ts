@@ -1,4 +1,4 @@
-import type { AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -6,7 +6,7 @@ export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string, public readonly fieldErrors: Record<string, string> = {}) { super(message); }
 }
 
-async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT"; body?: unknown } = {}): Promise<T> {
+async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown } = {}): Promise<T> {
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       signal: options.signal, method: options.method ?? "GET",
@@ -18,6 +18,7 @@ async function request<T>(path: string, options: { signal?: AbortSignal; method?
       const fieldErrors = Object.fromEntries((body?.detail ?? []).map((item) => [String(item.loc?.slice(1).join(".") ?? "request"), item.msg ?? "Ungültiger Wert"]));
       throw new ApiError(body?.error?.message ?? (body?.detail ? "Bitte prüfen Sie die markierten Eingaben." : "Die Plattformdaten konnten nicht geladen werden."), response.status, body?.error?.code, fieldErrors);
     }
+    if (response.status === 204) return undefined as T;
     return await response.json() as T;
   } catch (error) {
     if (error instanceof ApiError || (error instanceof DOMException && error.name === "AbortError")) throw error;
@@ -49,5 +50,20 @@ export const api = {
     }
     return response.blob();
   },
+  calendarConnections: (signal?: AbortSignal) => request<CalendarConnectionsOverview>("/calendar/connections", { signal }),
+  startCalendarOAuth: (provider: CalendarProviderName) => request<{ authorization_url: string; expires_at: string }>(`/calendar/oauth/${provider}/start`, { method: "POST" }),
+  testCalendarConnection: (connectionId: string) => request<{ success: boolean; calendars_found: number; availability_calendars_read: number }>(`/calendar/connections/${connectionId}/test`, { method: "POST" }),
+  disconnectCalendar: (connectionId: string) => request<void>(`/calendar/connections/${connectionId}`, { method: "DELETE" }),
+  refreshCalendars: (connectionId: string) => request<ExternalCalendar[]>(`/calendar/connections/${connectionId}/calendars`),
+  saveCalendarSelection: (calendars: Array<Pick<ExternalCalendar, "id" | "is_selected_for_availability" | "is_selected_for_booking">>) => request<ExternalCalendar[]>("/calendar/configuration/calendars", { method: "PUT", body: { calendars: calendars.map((item) => ({ calendar_id: item.id, is_selected_for_availability: item.is_selected_for_availability, is_selected_for_booking: item.is_selected_for_booking })) } }),
+  bookingConfiguration: (signal?: AbortSignal) => request<BookingConfiguration>("/calendar/configuration", { signal }),
+  saveBookingConfiguration: (value: BookingConfiguration) => request<BookingConfiguration>("/calendar/configuration", { method: "PUT", body: { timezone: value.timezone, slot_interval_minutes: value.slot_interval_minutes, minimum_notice_minutes: value.minimum_notice_minutes, maximum_booking_horizon_days: value.maximum_booking_horizon_days, buffer_before_minutes: value.buffer_before_minutes, buffer_after_minutes: value.buffer_after_minutes, maximum_suggestions_per_request: value.maximum_suggestions_per_request, business_hours: value.business_hours } }),
+  appointmentTypes: (signal?: AbortSignal) => request<CalendarAppointmentType[]>("/calendar/appointment-types", { signal }),
+  createAppointmentType: (value: AppointmentTypeWrite) => request<CalendarAppointmentType>("/calendar/appointment-types", { method: "POST", body: value }),
+  updateAppointmentType: (id: string, value: AppointmentTypeWrite) => request<CalendarAppointmentType>(`/calendar/appointment-types/${id}`, { method: "PUT", body: value }),
+  deleteAppointmentType: (id: string) => request<void>(`/calendar/appointment-types/${id}`, { method: "DELETE" }),
+  listAgentAppointmentTypes: () => request<{ success: boolean; appointment_types: Array<{ id: string; name: string; duration_minutes: number; description: string }> }>("/calendar/tools/list-appointment-types"),
+  findAvailableAppointments: (value: AgentAvailabilityRequest) => request<CalendarAvailabilityResult>("/calendar/tools/find-available-appointments", { method: "POST", body: value }),
+  createCalendarBooking: (value: { slot_id: string; appointment_type_id: string; customer_name: string; customer_phone: string; customer_email: string; customer_notes: string; idempotency_key: string }) => request<CalendarBookingResult>("/calendar/tools/create-calendar-booking", { method: "POST", body: value }),
 };
 

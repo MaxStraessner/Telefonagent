@@ -42,7 +42,7 @@ Der Compiler erzeugt vierzehn klar benannte Abschnitte. Feste Plattformregeln st
 
 Aktive strukturierte Wissenseinträge werden auf 12.000 Zeichen begrenzt. Inaktive FAQ-, Leistungs-, Themen- und Regeleinträge werden nicht kompiliert. Die Runtime lädt für jede neue Sitzung frisch Mandant, Konfiguration, Wissen und Capability-Schnittmenge. Der Testmodus verwendet denselben Dienst und weicht nur durch seine ausdrücklich konfigurierte Testbegrüßung ab.
 
-Die Capability-Registry ist absichtlich leer, solange kein vollständig implementierter und serverseitig autorisierter Tool-Executor existiert. Daher erhält OpenAI `tools: []` und `tool_choice: none`. Kalender-, Buchungs-, Rückruf- oder Weiterleitungsaktionen werden weder angezeigt noch behauptet. Allgemeine Kontaktdaten dürfen nur als Information genannt werden.
+Die Capability-Registry schaltet nur vollständig implementierte Funktionen frei. Für `calendar_booking` erhält die Realtime-Sitzung drei kontrollierte Function Tools: aktive Terminarten laden, freie Slots suchen und einen bestätigten Slot buchen. Die Werkzeuge sprechen ausschließlich mit tenantgebundenen Backend-Endpunkten; Provider-Tokens und interne Kalenderdetails erreichen weder Browser noch Modell. Rückruf- oder Weiterleitungsaktionen bleiben deaktiviert.
 
 ## Technische Wirkungsmatrix
 
@@ -66,7 +66,7 @@ Die Capability-Registry ist absichtlich leer, solange kein vollständig implemen
 | 16 | Themenfremde Fragen | drei Modi plus optionale Vorgabe | strikte, kurze oder Smalltalk-Rückführung | Prompt-Mapping-Test |
 | 17 | Unsicherheit/Fallback | Mehrfachauswahl und Pflicht-Fallback | Offenlegen, Rückfrage, nur realen allgemeinen Kontakt nennen | Prompt-/Validierungstest |
 | 18 | Profil, Produkte, Standorte, Hinweise, FAQ, Leistungen, Öffnungszeiten | validiertes Profil und normalisierte Wissenstabellen | nur aktive Einträge, Gesamtgrößenlimit, Geschäftszeitenbegrüßung | Knowledge-/Prompt-Test |
-| 19 | Fähigkeiten und Eskalation | Capability-Schnittmenge | nur implementierte aktive Tools; aktuell keine | Capability-/Realtime-Test |
+| 19 | Fähigkeiten und Eskalation | Capability-Schnittmenge | nur implementierte aktive Tools; aktuell kontrollierte Kalenderbuchung | Capability-/Realtime-Test |
 
 ## Manueller Zwei-Mandanten-Abnahmetest
 
@@ -80,4 +80,4 @@ Automatisiert deckt `test_server_context_keeps_second_tenant_strictly_separate` 
 
 ## Bewusste Grenzen
 
-Nicht implementiert sind Login/OIDC, Telefonie/SIP, Kalender/OAuth, Terminprüfung, Buchung, Rückruf, Weiterleitung, eigene Stimmen und Function Tools. Diese Funktionen werden nicht als verfügbare Einstellungen dargestellt. Kalenderintegration kann später durch einen echten Tool-Executor, Registry-Eintrag, Bestätigungspflicht und erneute serverseitige Autorisierung ergänzt werden.
+Nicht implementiert sind Login/OIDC, Telefonie/SIP, Rückruf, Weiterleitung, eigene Stimmen sowie Terminverschiebung und -stornierung durch Anrufende. Kalender-OAuth, Terminprüfung und Buchung sind über den kontrollierten Kalender-Executor verfügbar, wenn ein Provider verbunden, die Kalenderauswahl gültig und mindestens eine Terminart aktiv ist. Details stehen in [calendar-integrations.md](calendar-integrations.md).

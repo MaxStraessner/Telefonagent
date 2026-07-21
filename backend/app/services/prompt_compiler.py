@@ -58,6 +58,9 @@ def compile_agent_prompt(bundle: AgentBundle, greeting: str) -> str:
     active_topics = [item for item in bundle.topics if item.is_active and item.topic_type == "allowed"]
     forbidden_topics = [item for item in bundle.topics if item.is_active and item.topic_type == "forbidden"]
     active_rules = [item for item in bundle.rules if item.is_active]
+    calendar_enabled = any(
+        item.capability_key == "calendar_booking" and item.is_active for item in bundle.capabilities
+    )
     active_faqs = [item for item in bundle.faqs if item.is_active]
     active_services = [item for item in bundle.services if item.is_active]
     hours = [item for item in bundle.business_hours]
@@ -124,9 +127,19 @@ def compile_agent_prompt(bundle: AgentBundle, greeting: str) -> str:
         ]),
         _section(SECTION_NAMES[11], [joined_knowledge]),
         _section(SECTION_NAMES[12], [item.rule_text for item in active_rules] or ["Keine zusätzlichen Regeln."]),
-        _section(SECTION_NAMES[13], [
+        _section(SECTION_NAMES[13], ([
+            "Ermittle zuerst Terminart oder Anliegen und frage danach den gewünschten Tag oder Zeitraum ab.",
+            "Rufe list_appointment_types auf, statt Terminarten zu erfinden.",
+            "Rufe find_available_appointments auf und biete höchstens drei der zurückgegebenen freien Zeiten mit eindeutigem Datum und eindeutiger Uhrzeit an.",
+            "Berechne freie Zeiten niemals selbst und gib niemals Titel, Teilnehmer, Beschreibungen oder andere Inhalte bestehender Kalendereinträge preis.",
+            "Erfasse nach der Auswahl den Namen und mindestens eine Telefonnummer; eine E-Mail-Adresse ist nur bei Bedarf oder auf Wunsch zu erfassen.",
+            "Fasse Terminart, Datum, Uhrzeit, Name und Telefonnummer vollständig zusammen und hole eine ausdrückliche Bestätigung ein.",
+            "Rufe create_calendar_booking erst nach dieser ausdrücklichen Bestätigung auf.",
+            "Behaupte ausschließlich bei success=true und status=confirmed, dass der Termin eingetragen wurde.",
+            "Behaupte bei Fehlern niemals eine Buchung; bei slot_no_longer_available biete ausschließlich die zurückgegebenen Alternativen an.",
+        ] if calendar_enabled else [
             "Es sind keine Aktionswerkzeuge verfügbar. Behaupte niemals, Termine zu buchen, zu ändern oder Systeme aufzurufen.",
             f"Bei Bedarf darfst du auf diese allgemeinen Kontaktdaten verweisen: {contacts}." if contacts else "Es gibt keine technische Weiterleitung und keine hinterlegten Kontaktdaten; kommuniziere das offen.",
-        ]),
+        ])),
     ]
     return "\n\n".join(sections)

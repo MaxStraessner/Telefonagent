@@ -45,6 +45,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
   const voiceActive = view.state === "user_speaking" || view.state === "assistant_speaking";
   const canStart = data.platformStatus.realtime_voice_configured && !active;
   const agentName = runtime?.assistant_name ?? data.tenant.settings.assistant_name;
+  const toolEvents = view.events.filter((event) => event.type.startsWith("tool_"));
 
   useEffect(() => {
     api.agentTestSession().then((value) => setRuntime(
@@ -92,7 +93,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
             <li>Natürlich sprechen; Pausen steuern die automatische Antwort.</li>
             <li>Beim Dazwischensprechen wird die Antwort unterbrochen.</li>
           </ol>
-          <div className="privacy-note"><strong>Bewusst ohne Werkzeuge</strong><p>Terminwerkzeuge werden im nächsten Entwicklungsschritt angebunden. Dieser Sprachagent bucht keine Termine und speichert weder Audio noch Gesprächsinhalte.</p></div>
+          <div className="privacy-note"><strong>Kontrollierte Terminwerkzeuge</strong><p>Der Agent erhält nur Terminarten, freie Zeitfenster und das Ergebnis bestätigter Buchungen. Inhalte bestehender Kalendereinträge werden nicht an das Sprachmodell übertragen.</p></div>
           {runtime && <div className="privacy-note"><strong>Wirksame Konfiguration · v{runtime.configuration_version}</strong><p>{runtime.company_name} · {runtime.assistant_name} · Deutsch · {runtime.style} · {runtime.voice} · {runtime.speed.toFixed(2)}× · {runtime.business_hours_status === "open" ? "simuliert geöffnet" : "simuliert geschlossen"} · {runtime.capability_keys.length} Fähigkeiten</p></div>}
         </aside>
       </div>
@@ -105,7 +106,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
         <details className="card event-card" open><summary className="section-heading"><h2>Sitzungsereignisse</h2><span>{view.events.length} Ereignisse</span></summary>
           <div className="event-list">{view.events.length === 0 ? <div className="placeholder-panel"><p>Noch keine Ereignisse</p><small>Es werden höchstens die letzten 40 Ereignisse im Arbeitsspeicher angezeigt.</small></div> : [...view.events].reverse().map((event) => <div className="event-row" key={event.id}><time>{new Date(event.timestamp).toLocaleTimeString("de-DE")}</time><code>{event.type}</code>{event.detail && <small>{event.detail}</small>}</div>)}</div>
         </details>
-        <section className="card tool-status"><div className="section-heading"><h2>Werkzeugaufrufe</h2><span>0 Aufrufe</span></div><div className="placeholder-panel"><p>Terminwerkzeuge werden im nächsten Entwicklungsschritt angebunden.</p><small>Die Realtime-Sitzung erhält aktuell keine Function Tools.</small></div></section>
+        <section className="card tool-status"><div className="section-heading"><h2>Werkzeugaufrufe</h2><span>{toolEvents.filter((event) => event.type === "tool_started").length} Aufrufe</span></div>{toolEvents.length === 0 ? <div className="placeholder-panel"><p>Noch keine Werkzeugaufrufe</p><small>Terminwerkzeuge werden ausschließlich bei passenden Gesprächsschritten ausgeführt.</small></div> : <div className="event-list">{[...toolEvents].reverse().map((event) => <div className="event-row" key={event.id}><time>{new Date(event.timestamp).toLocaleTimeString("de-DE")}</time><code>{event.type}</code>{event.detail && <small>{event.detail}</small>}</div>)}</div>}</section>
         <section className="card diagnosis"><div className="section-heading"><h2>Technische Diagnose</h2><span>nicht persistent</span></div><dl>
           <div><dt>Zustand</dt><dd>{stateLabels[view.state]}</dd></div>
           <div><dt>Transport</dt><dd>{active ? "WebRTC" : "—"}</dd></div>

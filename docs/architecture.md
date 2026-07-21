@@ -35,6 +35,7 @@ Alembic ist alleinige Quelle für die produktive Schemastruktur. Der Container f
 5. Repositories und Agent-Services filtern fachliche Abfragen immer mit der ermittelten UUID.
 6. Owner/Admin dürfen Konfiguration schreiben; Mitglieder erhalten einen schreibgeschützten Zugriff.
 7. Pydantic validiert und serialisiert die Antwort; React zeigt Lade-, Erfolgs- oder Fehlerzustand.
+8. Kalenderzugriffe laufen ausschließlich über tenantgebundene Services und normalisierte Provider-Adapter; Tokens verlassen das Backend nie.
 
 ## Tenant Scoping
 
@@ -69,13 +70,13 @@ Ablauf:
 6. SDK- und Transportereignisse aktualisieren Zustand, flüchtiges Transkript und Diagnosemetriken.
 7. Beenden, Fehler, Seitenwechsel oder Zeitlimit schließen Sitzung, Transport, Mikrofontracks, Audioelement, Listener und Timer.
 
-Dauerhafte API-Schlüssel bleiben serverseitig. Audio, Transkripte und Realtime-Ereignisse werden nicht in PostgreSQL persistiert. `call_sessions` speichert ausschließlich tenantgebundene technische Metadaten und die verwendete Konfigurationsversion. Werkzeuge bleiben leer, bis ein echter serverautorisierter Executor in der Capability-Registry existiert.
+Dauerhafte API-Schlüssel bleiben serverseitig. Audio, Transkripte und Realtime-Ereignisse werden nicht in PostgreSQL persistiert. `call_sessions` speichert ausschließlich tenantgebundene technische Metadaten und die verwendete Konfigurationsversion. Kalenderwerkzeuge werden nur dann in die Realtime-Sitzung eingebunden, wenn die serverseitige Capability aktiv ist; sie rufen ausschließlich schmale, tenantgebundene Backend-Endpunkte auf.
 
 VAD-Modus, Schwelle, Präfix, Reaktionsbereitschaft, Unterbrechung und optionaler Idle-Timeout stammen aus derselben tenantgebundenen Runtime-Konfiguration. Server-VAD mappt Geduldig/Ausgewogen/Schnell zentral auf 900/600/350 ms; Semantic-VAD verwendet `low`/`medium`/`high`. Details stehen in [agent-configuration.md](agent-configuration.md) und [realtime-voice.md](realtime-voice.md).
 
-## Spätere Kalender- und Telefonie-Provider
+## Kalender- und spätere Telefonie-Provider
 
-Kalenderanbieter werden hinter einer normalisierten Provider-Schnittstelle für Verfügbarkeitsabfrage, Reservierung und Synchronisation ergänzt. Provider-IDs gehören in eigene tenant-spezifische Konfigurationstabellen. Zeitzonen werden an Systemgrenzen explizit behandelt; intern bleiben Zeitpunkte zeitzonenfähig.
+Google Calendar und Microsoft 365 sind hinter einer normalisierten Provider-Schnittstelle für OAuth, Token-Refresh, Kalenderlisten, Belegungsabfrage und Event-Erstellung implementiert. Provider-IDs und verschlüsselte Tokens liegen in eigenen tenant-spezifischen Tabellen. Die zentrale Verfügbarkeitslogik behandelt Zeitzonen und DST explizit, prüft alle ausgewählten Kalender und wiederholt die Prüfung unmittelbar vor einer idempotenten Buchung. Details stehen in [calendar-integrations.md](calendar-integrations.md).
 
 Telefonieanbieter werden analog über Adapter für eingehende Sessions, Signaturprüfung, Statusereignisse und Medienübergabe angebunden. Browser- und Telefonkanal teilen sich `call_sessions`, aber nicht zwingend denselben Transport. Webhooks benötigen Replay-Schutz und idempotente Verarbeitung.
 

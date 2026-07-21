@@ -96,3 +96,48 @@ export interface RuntimeSummary {
 }
 export interface PromptPreview { configuration_version: number; prompt: string; sections: string[]; }
 
+export type CalendarProviderName = "google" | "microsoft";
+export interface CalendarProviderConfiguration {
+  provider: CalendarProviderName; label: string; configured: boolean; missing_configuration: string[];
+}
+export interface ExternalCalendar {
+  id: string; connection_id: string; external_calendar_id: string; calendar_name: string;
+  calendar_timezone: string; owner_name: string; access_role: string; is_primary: boolean;
+  can_write: boolean; is_selected_for_availability: boolean; is_selected_for_booking: boolean;
+  last_seen_at: string;
+}
+export interface CalendarConnection {
+  id: string; provider: CalendarProviderName; account_email: string; display_name: string;
+  connection_status: "connected" | "reauthorization_required" | "error" | "disconnected";
+  last_successful_request_at: string | null; last_error_code: string | null; created_at: string;
+  calendars: ExternalCalendar[];
+}
+export interface CalendarConnectionsOverview { providers: CalendarProviderConfiguration[]; connections: CalendarConnection[]; }
+export interface CalendarBusinessHour { weekday: number; start_time: string; end_time: string; is_active: boolean; }
+export interface BookingConfiguration {
+  id: string; tenant_id: string; timezone: string; slot_interval_minutes: number;
+  minimum_notice_minutes: number; maximum_booking_horizon_days: number;
+  buffer_before_minutes: number; buffer_after_minutes: number;
+  maximum_suggestions_per_request: number; business_hours: CalendarBusinessHour[]; updated_at: string;
+}
+export interface CalendarAppointmentType {
+  id: string; tenant_id: string; name: string; description: string; duration_minutes: number;
+  buffer_before_minutes: number | null; buffer_after_minutes: number | null;
+  location_type: "phone" | "onsite" | "video" | "custom"; location_text: string;
+  is_active: boolean; created_at: string; updated_at: string;
+}
+export type AppointmentTypeWrite = Omit<CalendarAppointmentType, "id" | "tenant_id" | "created_at" | "updated_at">;
+export interface AvailableCalendarSlot {
+  slot_id: string; start: string; end: string; spoken_date: string; spoken_time: string;
+}
+export interface AgentAvailabilityRequest {
+  appointment_type_id: string; preferred_date: string | null;
+  preferred_time_of_day: "morning" | "afternoon" | "evening" | null; search_days: number;
+}
+export interface CalendarAvailabilityResult { success: boolean; timezone: string; slots: AvailableCalendarSlot[]; }
+export interface CalendarBookingResult {
+  success: boolean; booking_id?: string; status?: "pending" | "confirmed" | "failed" | "cancelled";
+  start?: string; end?: string; timezone?: string; error_code?: string; message?: string;
+  alternative_slots: AvailableCalendarSlot[];
+}
+

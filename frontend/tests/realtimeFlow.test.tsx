@@ -22,6 +22,7 @@ const sdk = vi.hoisted(() => ({
 }));
 
 vi.mock("@openai/agents/realtime", () => {
+  const tool = (options: unknown) => options;
   class RealtimeAgent {
     constructor(_options: unknown) {}
   }
@@ -53,7 +54,7 @@ vi.mock("@openai/agents/realtime", () => {
     mute = sdk.mute;
     interrupt = sdk.interrupt;
   }
-  return { OpenAIRealtimeWebRTC, RealtimeAgent, RealtimeSession };
+  return { OpenAIRealtimeWebRTC, RealtimeAgent, RealtimeSession, tool };
 });
 
 import { App } from "../src/App";

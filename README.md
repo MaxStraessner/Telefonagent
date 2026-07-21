@@ -2,7 +2,7 @@
 
 Telefonagent ist eine lokal ausführbare, mehrmandantenfähige Plattform für sprachbasierte Terminassistenten. Der aktuelle Stand verbindet eine React-Oberfläche, einen echten OpenAI-Realtime-Browseragenten über WebRTC, eine versionierte FastAPI-API und PostgreSQL. Ein Friseursalon dient ausschließlich als Seed-Mandant; Plattformkern und Datenmodell sind nicht auf diese Branche festgelegt.
 
-Die Browser-Sprachfunktion ist implementiert. Telefonie, Kalenderzugriff, Terminprüfung und Buchung sind weiterhin bewusst **nicht** implementiert; der Agent macht darüber keine verbindlichen Aussagen.
+Die Browser-Sprachfunktion sowie tenantgebundene Google- und Microsoft-Kalenderintegrationen mit echter Verfügbarkeitsprüfung und Buchung sind implementiert. Telefonie ist weiterhin bewusst **nicht** implementiert.
 
 ## Architektur und Technologien
 
@@ -47,6 +47,7 @@ docker compose down
 - Health Endpoint: http://localhost:8000/api/v1/health
 - Realtime-Agentenkonfiguration: http://localhost:8000/api/v1/realtime/agent-config
 - KI-Konfiguration: http://localhost:5173/ki-konfigurieren
+- Kalenderintegration: http://localhost:5173/kalender
 
 ## Konfiguration
 
@@ -63,6 +64,8 @@ Alle unterstützten Werte sind in `.env.example` dokumentiert. Wichtig:
 - `OPENAI_REALTIME_TRANSCRIPTION_ENABLED` aktiviert das flüchtige Live-Transkript.
 - `OPENAI_REALTIME_LOG_RAW_EVENTS` bleibt standardmäßig `false`; Rohereignisse können Gesprächsinhalte enthalten.
 - `OPENAI_SAFETY_IDENTIFIER_SALT` dient zur pseudonymen, installationsbezogenen Safety-ID-Bildung und sollte installationsspezifisch gesetzt werden.
+- `CALENDAR_TOKEN_ENCRYPTION_KEY` verschlüsselt OAuth-Tokens authentifiziert und muss installationsspezifisch, stabil und ausschließlich serverseitig gesetzt werden.
+- Google- und Microsoft-Client-Zugangsdaten sowie Redirect-URIs aktivieren den jeweiligen Provider. Ohne vollständige Zugangsdaten bleibt er sichtbar, aber deaktiviert.
 - Eine echte `.env` ist per `.gitignore` ausgeschlossen.
 
 ## Entwicklung ohne vollständigen Compose-Stack
@@ -134,10 +137,14 @@ Die Beispieldaten enthalten keine personenbezogenen Kundendaten.
 - zentraler, abbrechbarer Frontend-Datenzugriff
 - versionierte, typisierte API und OpenAPI-Schema
 - UUID-basierte, zeitzonenfähige Datenbanktabellen und reproduzierbare Migration
+- tenantgebundene Google- und Microsoft-OAuth-Verbindungen mit verschlüsselten Tokens und kontrolliertem Disconnect
+- Auswahl mehrerer Belegungskalender und genau eines beschreibbaren Zielkalenders
+- zentrale DST-sichere Verfügbarkeitsberechnung mit Geschäftszeiten, Vorlauf, Horizont, Raster und Puffern
+- idempotente, unmittelbar erneut geprüfte Provider-Buchungen und kontrollierte Realtime Function Tools
 
 ## Bewusst nicht umgesetzt
 
-Nicht vorhanden sind Telefonie/SIP/Rufnummern, externe Kalender, Terminberechnung und -mutationen, Realtime Function Tools, n8n, ein externer Login-/OIDC-Provider, Registrierung, Zahlungen und produktives Deployment. Für die lokale Einzelinstallation werden Benutzer und Rollen serverseitig über `ACTIVE_USER_EMAIL` und Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte und erzeugt keine Kundendaten oder Termine.
+Nicht vorhanden sind Telefonie/SIP/Rufnummern, n8n, ein externer Login-/OIDC-Provider, Registrierung, Zahlungen und ein automatisiertes produktives Deployment. Für die lokale Einzelinstallation werden Benutzer und Rollen serverseitig über `ACTIVE_USER_EMAIL` und Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte; bestätigte Kalenderbuchungen werden dagegen tenantgebunden protokolliert.
 
 ## Realtime-Sprachtest
 
@@ -145,9 +152,13 @@ Architektur, Sicherheitsmodell, manueller Abnahmetest, typische Fehler und Koste
 
 Ein ChatGPT-Abonnement umfasst die OpenAI-API-Nutzung nicht automatisch. Für echte Realtime-Tests sind ein API-Projekt mit Abrechnung und Zugriff auf das konfigurierte Modell und die Stimme erforderlich; dabei entstehen nutzungsabhängige API-Kosten.
 
+## Kalenderintegration
+
+Provider-Einrichtung, OAuth-Callbacks, Berechtigungen, Verschlüsselung, Buchungsregeln und Abnahmetests stehen in [docs/calendar-integrations.md](docs/calendar-integrations.md). Provider-Secrets und OAuth-Tokens bleiben vollständig serverseitig. Ohne eingerichtete OAuth-Verbindung kann der Agent keine Verfügbarkeit zusagen und keinen Termin als gebucht melden.
+
 ## Spätere Erweiterungen
 
-Telefonie- und Kalenderanbieter gehören hinter eigene Backend-Service-/Provider-Schnittstellen. Externe Webhooks müssen dann Tenant-Zuordnung, Signaturprüfung, Idempotenz und kontrollierte Fehlerbehandlung erhalten. Der Plattformkern darf dabei keine branchenspezifischen Annahmen übernehmen.
+Weitere Kalender- und Telefonieanbieter gehören hinter die vorhandenen Backend-Provider-Schnittstellen. Externe Webhooks müssen Tenant-Zuordnung, Signaturprüfung, Idempotenz und kontrollierte Fehlerbehandlung erhalten. Der Plattformkern darf dabei keine branchenspezifischen Annahmen übernehmen.
 
 ## Fehlerbehebung
 
@@ -158,4 +169,7 @@ Telefonie- und Kalenderanbieter gehören hinter eigene Backend-Service-/Provider
 - Client-Secret wird abgelehnt: API-Projekt, Abrechnung, Modellzugriff und Stimme prüfen; Backend-Logs enthalten bewusst nicht den vollständigen Providerfehler.
 - Mikrofon wird abgelehnt: Browserfreigabe sowie HTTPS beziehungsweise `localhost` als sicheren Kontext prüfen.
 - Seed-Mandant fehlt: Migration ausführen, danach `python -m app.seed`; `ACTIVE_TENANT_SLUG` muss `salon-haarkunst-test` entsprechen.
+- Kalenderprovider bleibt „Nicht konfiguriert“: vollständige Client-ID, Client-Secret und exakt passende Redirect-URI setzen und Backend neu erstellen.
+- OAuth-Callback wird abgelehnt: Redirect-URI beim Provider und in `.env` bytegenau vergleichen; OAuth-State läuft nach kurzer Zeit ab und kann nur einmal verwendet werden.
+- Kalendertokens können nicht gelesen werden: `CALENDAR_TOKEN_ENCRYPTION_KEY` prüfen; einen zuvor verwendeten Schlüssel nicht ohne Migration austauschen.
 - Veraltetes lokales Image: `docker compose build --no-cache frontend backend` ausführen. Das persistente Datenbank-Volume bleibt dabei erhalten.

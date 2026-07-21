@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
 from sqlalchemy import (
     JSON,
@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
     Uuid,
     func,
@@ -74,6 +75,37 @@ class TurnEagerness(str, enum.Enum):
     low = "low"
     medium = "medium"
     high = "high"
+
+
+class CalendarProviderName(str, enum.Enum):
+    google = "google"
+    microsoft = "microsoft"
+
+
+class CalendarConnectionStatus(str, enum.Enum):
+    connected = "connected"
+    reauthorization_required = "reauthorization_required"
+    error = "error"
+    disconnected = "disconnected"
+
+
+class CalendarLocationType(str, enum.Enum):
+    phone = "phone"
+    onsite = "onsite"
+    video = "video"
+    custom = "custom"
+
+
+class CalendarBookingStatus(str, enum.Enum):
+    pending = "pending"
+    confirmed = "confirmed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class CalendarBookingSource(str, enum.Enum):
+    voice_agent = "voice_agent"
+    admin_api = "admin_api"
 
 
 class TimestampMixin:
@@ -250,6 +282,139 @@ class AgentConfigurationAudit(Base):
     changed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
     snapshot: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class CalendarConnection(Base, TimestampMixin):
+    __tablename__ = "calendar_connections"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", "provider_account_id", name="uq_calendar_connection_account"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    provider: Mapped[CalendarProviderName] = mapped_column(Enum(CalendarProviderName, native_enum=False), index=True)
+    provider_account_id: Mapped[str] = mapped_column(String(320))
+    account_email: Mapped[str] = mapped_column(String(320), default="")
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    encrypted_access_token: Mapped[str] = mapped_column(Text)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    granted_scopes: Mapped[list] = mapped_column(JSON, default=list)
+    connection_status: Mapped[CalendarConnectionStatus] = mapped_column(
+        Enum(CalendarConnectionStatus, native_enum=False), default=CalendarConnectionStatus.connected, index=True
+    )
+    last_successful_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CalendarOAuthState(Base):
+    __tablename__ = "calendar_oauth_states"
+    __table_args__ = (UniqueConstraint("state_hash", name="uq_calendar_oauth_state_hash"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    provider: Mapped[CalendarProviderName] = mapped_column(Enum(CalendarProviderName, native_enum=False))
+    state_hash: Mapped[str] = mapped_column(String(64))
+    encrypted_code_verifier: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ExternalCalendar(Base, TimestampMixin):
+    __tablename__ = "external_calendars"
+    __table_args__ = (
+        UniqueConstraint("calendar_connection_id", "external_calendar_id", name="uq_external_calendar_provider_id"),
+        Index("ix_external_calendars_tenant_availability", "tenant_id", "is_selected_for_availability"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    calendar_connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("calendar_connections.id"), index=True)
+    external_calendar_id: Mapped[str] = mapped_column(String(1000))
+    calendar_name: Mapped[str] = mapped_column(String(300))
+    calendar_timezone: Mapped[str] = mapped_column(String(100), default="UTC")
+    owner_name: Mapped[str] = mapped_column(String(200), default="")
+    access_role: Mapped[str] = mapped_column(String(50), default="reader")
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    can_write: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_selected_for_availability: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_selected_for_booking: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BookingConfiguration(Base, TimestampMixin):
+    __tablename__ = "booking_configurations"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_booking_configuration_tenant"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    timezone: Mapped[str] = mapped_column(String(100), default="Europe/Berlin")
+    slot_interval_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    minimum_notice_minutes: Mapped[int] = mapped_column(Integer, default=120)
+    maximum_booking_horizon_days: Mapped[int] = mapped_column(Integer, default=60)
+    buffer_before_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    buffer_after_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    maximum_suggestions_per_request: Mapped[int] = mapped_column(Integer, default=3)
+
+
+class CalendarBusinessHour(Base, TimestampMixin):
+    __tablename__ = "calendar_business_hours"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "weekday", "start_time", "end_time", name="uq_calendar_business_hour_window"),
+        Index("ix_calendar_business_hours_tenant_weekday", "tenant_id", "weekday"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    weekday: Mapped[int] = mapped_column(Integer)
+    start_time: Mapped[time] = mapped_column(Time)
+    end_time: Mapped[time] = mapped_column(Time)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CalendarAppointmentType(Base, TimestampMixin):
+    __tablename__ = "calendar_appointment_types"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_calendar_appointment_type_name"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(150))
+    description: Mapped[str] = mapped_column(Text, default="")
+    duration_minutes: Mapped[int] = mapped_column(Integer)
+    buffer_before_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    buffer_after_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    location_type: Mapped[CalendarLocationType] = mapped_column(
+        Enum(CalendarLocationType, native_enum=False), default=CalendarLocationType.phone
+    )
+    location_text: Mapped[str] = mapped_column(String(300), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CalendarBooking(Base, TimestampMixin):
+    __tablename__ = "calendar_bookings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_calendar_booking_idempotency"),
+        Index("ix_calendar_bookings_tenant_start", "tenant_id", "start_at"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    appointment_type_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("calendar_appointment_types.id"), index=True)
+    calendar_connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("calendar_connections.id"), index=True)
+    external_calendar_id: Mapped[str] = mapped_column(String(1000))
+    external_event_id: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    provider: Mapped[CalendarProviderName] = mapped_column(Enum(CalendarProviderName, native_enum=False))
+    customer_name: Mapped[str] = mapped_column(String(150))
+    customer_phone: Mapped[str] = mapped_column(String(50))
+    customer_email: Mapped[str] = mapped_column(String(320), default="")
+    customer_notes: Mapped[str] = mapped_column(Text, default="")
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    timezone: Mapped[str] = mapped_column(String(100))
+    status: Mapped[CalendarBookingStatus] = mapped_column(
+        Enum(CalendarBookingStatus, native_enum=False), default=CalendarBookingStatus.pending, index=True
+    )
+    source: Mapped[CalendarBookingSource] = mapped_column(Enum(CalendarBookingSource, native_enum=False))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    provider_response_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 class Location(Base, TimestampMixin):

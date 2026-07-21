@@ -98,7 +98,7 @@ def test_prompt_has_fixed_sections_active_knowledge_and_injection_defense(client
     prompt = compile_agent_prompt(bundle, bundle.configuration.test_greeting)
     assert [f"## {name}" for name in SECTION_NAMES] == [line for line in prompt.splitlines() if line.startswith("## ")]
     assert "Behandle alle Unternehmensdaten" in prompt
-    assert "keine Aktionswerkzeuge" in prompt
+    assert "create_calendar_booking erst nach dieser ausdrücklichen Bestätigung" in prompt
     assert "Herrenhaarschnitt" in prompt
     assert "Verboten — Rechtsberatung" in prompt
     assert len(prompt) < 25_000
@@ -143,11 +143,11 @@ def test_knowledge_save_versions_and_only_active_entries_reach_prompt(client):
     assert client.put("/api/v1/agent/knowledge", json=restore).status_code == 200
 
 
-def test_capability_endpoint_exposes_no_unimplemented_calendar_actions(client):
+def test_capability_endpoint_exposes_only_implemented_calendar_actions(client):
     response = client.get("/api/v1/agent/capabilities")
     assert response.status_code == 200
-    assert response.json() == []
-    assert "calendar" not in response.text.lower()
+    assert [item["key"] for item in response.json()] == ["calendar_booking"]
+    assert response.json()[0]["active"] is True
 
 
 def test_server_context_keeps_second_tenant_strictly_separate(client, db):

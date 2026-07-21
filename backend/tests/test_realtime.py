@@ -69,7 +69,7 @@ def test_agent_config_is_tenant_scoped_and_exposes_no_key(client):
     assert payload["voice"] == "marin"
     assert payload["vad"]["interrupt_response"] is True
     assert "server-only-test-key" not in response.text
-    assert "keine Aktionswerkzeuge" in payload["instructions"]
+    assert "create_calendar_booking erst nach dieser ausdrücklichen Bestätigung" in payload["instructions"]
     assert "keine politische, medizinische, juristische, finanzielle oder private Beratung" in payload["instructions"]
     assert payload["configuration_version"] >= 1
     assert payload["speed"] == 1.0
@@ -89,8 +89,10 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert "server-only-test-key" not in response.text
     assert FakeAsyncClient.last_payload["expires_after"] == {"anchor": "created_at", "seconds": 60}
     session = FakeAsyncClient.last_payload["session"]
-    assert session["tools"] == []
-    assert session["tool_choice"] == "none"
+    assert [item["name"] for item in session["tools"]] == [
+        "list_appointment_types", "find_available_appointments", "create_calendar_booking"
+    ]
+    assert session["tool_choice"] == "auto"
     assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
     assert FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"].startswith("tenant_")
     assert "Salon Haarkunst" not in FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"]

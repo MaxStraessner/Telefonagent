@@ -4,6 +4,7 @@ import type { RealtimeAgentConfig, RealtimeClientSecret } from "../../types/api"
 import type { ConversationState } from "../conversation/state";
 import { normalizedRealtimeEventType, sanitizedRealtimeEventDetail } from "./events";
 import { realtimeErrors } from "./errors";
+import { createCalendarTools } from "./calendarTools";
 
 export const CONNECTION_TIMEOUT_MS = 15_000;
 
@@ -51,11 +52,12 @@ export class BrowserRealtimeClient {
     audioElement.addEventListener("error", this.handleAudioError);
 
     const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement });
+    const calendarTools = createCalendarTools(config.tool_names, this.callbacks.onEvent);
     const agent = new RealtimeAgent({
       name: config.assistant_name,
       instructions: config.instructions,
       voice: config.voice,
-      tools: [],
+      tools: calendarTools,
     });
     const turnDetection = config.vad.type === "semantic_vad"
       ? { type: "semantic_vad" as const, eagerness: config.vad.eagerness ?? "medium", createResponse: config.vad.create_response, interruptResponse: config.vad.interrupt_response }
@@ -67,8 +69,7 @@ export class BrowserRealtimeClient {
       tracingDisabled: true,
       config: {
         outputModalities: ["audio"],
-        toolChoice: "none",
-        tools: [],
+        toolChoice: calendarTools.length ? "auto" : "none",
         audio: {
           input: {
             noiseReduction: { type: "near_field" },

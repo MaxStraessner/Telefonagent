@@ -16,6 +16,9 @@ def test_migration_created_all_tables():
         "agent_behavior_rules", "agent_knowledge_profiles", "agent_faqs",
         "agent_knowledge_services", "agent_business_hours", "agent_capabilities",
         "agent_configuration_audits",
+        "calendar_connections", "calendar_oauth_states", "external_calendars",
+        "booking_configurations", "calendar_business_hours", "calendar_appointment_types",
+        "calendar_bookings",
     } <= tables
 
 

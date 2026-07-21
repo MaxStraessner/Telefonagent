@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     active_tenant_slug: str = "salon-haarkunst-test"
     active_user_email: str = "owner@telefonagent.local"
     frontend_url: str = "http://localhost:5173"
+    app_base_url: str = "http://localhost:8000"
     cors_origins: str = "http://localhost:5173"
     log_level: str = "INFO"
     openai_api_key: str | None = None
@@ -23,6 +24,14 @@ class Settings(BaseSettings):
     openai_safety_identifier_salt: str = "telefonagent-local-installation"
     telephony_configured: bool = False
     calendar_configured: bool = False
+    calendar_token_encryption_key: str | None = None
+    google_calendar_client_id: str | None = None
+    google_calendar_client_secret: str | None = None
+    google_calendar_redirect_uri: str | None = None
+    microsoft_calendar_client_id: str | None = None
+    microsoft_calendar_client_secret: str | None = None
+    microsoft_calendar_redirect_uri: str | None = None
+    microsoft_calendar_tenant: str = "common"
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
@@ -31,6 +40,45 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def google_calendar_configured(self) -> bool:
+        return bool(
+            self.calendar_token_encryption_key
+            and self.google_calendar_client_id
+            and self.google_calendar_client_secret
+            and self.google_calendar_redirect_uri
+        )
+
+    @property
+    def microsoft_calendar_configured(self) -> bool:
+        return bool(
+            self.calendar_token_encryption_key
+            and self.microsoft_calendar_client_id
+            and self.microsoft_calendar_client_secret
+            and self.microsoft_calendar_redirect_uri
+        )
+
+    @property
+    def any_calendar_provider_configured(self) -> bool:
+        return self.google_calendar_configured or self.microsoft_calendar_configured
+
+    @field_validator(
+        "calendar_token_encryption_key",
+        "google_calendar_client_id",
+        "google_calendar_client_secret",
+        "google_calendar_redirect_uri",
+        "microsoft_calendar_client_id",
+        "microsoft_calendar_client_secret",
+        "microsoft_calendar_redirect_uri",
+        mode="before",
+    )
+    @classmethod
+    def empty_calendar_values_are_none(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @field_validator("openai_realtime_max_session_minutes", mode="before")
     @classmethod

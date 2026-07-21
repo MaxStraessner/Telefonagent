@@ -7,6 +7,7 @@ import { usePlatformData } from "../api/PlatformDataProvider";
 const navigation = [
   ["/", "Übersicht", "home"], ["/testgespraech", "Testgespräch", "call"],
   ["/ki-konfigurieren", "KI konfigurieren", "mic"],
+  ["/kalender", "Kalenderintegration", "calendar"],
   ["/termine", "Termine", "calendar"], ["/leistungen", "Leistungen", "services"],
   ["/mitarbeiter", "Mitarbeiter", "staff"], ["/unternehmen", "Unternehmen", "company"],
   ["/system", "System", "system"],

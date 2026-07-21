@@ -85,9 +85,9 @@ Voraussetzungen: API-Projekt mit eingerichteter Abrechnung, gültiger Key nur in
 1. Systemseite öffnen; OpenAI Realtime muss „Konfiguriert“ zeigen.
 2. Testgespräch öffnen und starten.
 3. Mikrofon erlauben und die Begrüßung hören.
-4. Sagen: „Hallo, ich hätte gerne nächste Woche einen Termin zum Haareschneiden.“
-5. Eine kurze Rückfrage hören; der Agent darf keine Verfügbarkeit behaupten.
-6. Sagen: „Dienstag am Nachmittag.“ Der Agent soll den Wunsch bestätigen und die spätere verbindliche Prüfung erklären.
+4. Ohne eingerichteten Kalender sagen: „Hallo, ich hätte gerne nächste Woche einen Termin.“ Der Agent muss die fehlende Buchungsmöglichkeit offen benennen und darf keine Verfügbarkeit behaupten.
+5. Optional einen Kalender gemäß [calendar-integrations.md](calendar-integrations.md) einrichten und dieselbe Anfrage wiederholen. Der Agent soll Terminart und Zeitraum klären und nur tatsächlich gelieferte Slots nennen.
+6. Einen angebotenen Slot auswählen und Kontaktdaten bestätigen. Der Agent darf die Buchung erst nach erfolgreicher Tool- und Providerantwort als bestätigt melden.
 7. Während einer Antwort sprechen; alte Audioausgabe muss abbrechen.
 8. Mikrofon stummschalten und wieder aktivieren.
 9. Nutzer- und Agententranskript, Zustände, Ereignisse und Latenzen prüfen.
@@ -114,6 +114,6 @@ Ziel für lokale Entwicklung ist eine erste hörbare Antwort überwiegend unter 
 
 Realtime-Audio nutzt die kostenpflichtige OpenAI API. Ein ChatGPT-Abonnement deckt API-Nutzung nicht automatisch ab. Sitzungsgrenze und manueller Start reduzieren unbeabsichtigte Nutzung, ersetzen aber kein Projektbudget oder Usage-Limit.
 
-Nicht enthalten sind Function Tools, Leistungsabfrage, Mitarbeiterabfrage, Öffnungszeiten, Verfügbarkeit, Buchung, Stornierung, Kalender, SIP/Telefonnummer, CRM, n8n, Aufzeichnung oder persistente Transkripte. Der Agent darf solche Fähigkeiten nicht vortäuschen.
+Enthalten sind ausschließlich die kontrollierten Kalenderwerkzeuge für Terminarten, Verfügbarkeit und Neubuchung. Nicht enthalten sind Mitarbeiter- oder Ressourcenverteilung, Terminverschiebung, Stornierung, SIP/Telefonnummer, CRM, n8n, Aufzeichnung oder persistente Transkripte. Der Agent darf diese Fähigkeiten nicht vortäuschen.
 
 Bewusste SDK-Abweichungen sind auf Kontrolle beschränkt: Ein explizites Audioelement ermöglicht echte Wiedergabelatenz, ein expliziter MediaStream erlaubt zuverlässigen Track-Cleanup, und Transportereignisse liefern Diagnosezustände. Signalisierung, Audiotransport und Barge-in bleiben beim offiziellen SDK.

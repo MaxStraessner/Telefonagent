@@ -9,6 +9,7 @@ from alembic.config import Config
 
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
 os.environ["ACTIVE_TENANT_SLUG"] = "salon-haarkunst-test"
+os.environ["CALENDAR_TOKEN_ENCRYPTION_KEY"] = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 
 from app.core.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext, UserContext, get_tenant_context, get_tenant_repository, get_user_context
 from app.api.v1.agent import router as agent_router
+from app.api.v1.calendar import router as calendar_router
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models import AgentConfiguration
@@ -24,6 +25,7 @@ from app.services.realtime import agent_config, create_client_secret
 
 router = APIRouter()
 router.include_router(agent_router)
+router.include_router(calendar_router)
 
 
 def database_is_connected(db: Session) -> bool:
@@ -55,7 +57,7 @@ def platform_status(
         backend_version=settings.backend_version,
         realtime_voice_configured=bool(settings.openai_api_key),
         telephony_configured=settings.telephony_configured,
-        calendar_configured=settings.calendar_configured,
+        calendar_configured=settings.any_calendar_provider_configured,
         database_connected=database_is_connected(db),
         realtime_model=settings.openai_realtime_model,
         realtime_voice=agent_configuration.voice if agent_configuration else settings.openai_realtime_voice,

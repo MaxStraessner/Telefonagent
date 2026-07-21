@@ -1,0 +1,415 @@
+import asyncio
+from datetime import datetime, time, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import delete, select
+
+from app.api.dependencies import TenantContext, UserContext, get_tenant_context, get_user_context
+from app.calendar.errors import CalendarProviderError
+from app.calendar.providers import (
+    BusyInterval,
+    CalendarProvider,
+    CreatedEvent,
+    OAuthTokens,
+    ProviderAccount,
+    ProviderCalendar,
+)
+from app.core.config import Settings, get_settings
+from app.core.encryption import CalendarTokenCipher
+from app.main import app
+from app.models import (
+    AppUser,
+    BookingConfiguration,
+    CalendarAppointmentType,
+    CalendarBooking,
+    CalendarBusinessHour,
+    CalendarConnection,
+    CalendarConnectionStatus,
+    CalendarLocationType,
+    CalendarOAuthState,
+    CalendarProviderName,
+    ExternalCalendar,
+    Tenant,
+    TenantRole,
+)
+from app.services.calendar_connections import valid_access_token
+
+TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+
+
+def calendar_settings(**overrides):
+    values = {
+        "database_url": "sqlite:///./test.db",
+        "calendar_token_encryption_key": TEST_KEY,
+        "google_calendar_client_id": "google-client",
+        "google_calendar_client_secret": "google-secret",
+        "google_calendar_redirect_uri": "http://testserver/api/v1/calendar/oauth/google/callback",
+        "microsoft_calendar_client_id": "microsoft-client",
+        "microsoft_calendar_client_secret": "microsoft-secret",
+        "microsoft_calendar_redirect_uri": "http://testserver/api/v1/calendar/oauth/microsoft/callback",
+        "frontend_url": "http://frontend.test",
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+class FakeProvider(CalendarProvider):
+    def __init__(self):
+        self.busy: list[BusyInterval] = []
+        self.created_events = []
+        self.refreshes = 0
+        self.revoked = False
+        self.fail_create = False
+
+    def build_authorization_url(self, state, code_challenge):
+        return f"https://provider.test/auth?state={state}&challenge={code_challenge}"
+
+    async def exchange_authorization_code(self, code, code_verifier):
+        assert code == "valid-code"
+        assert code_verifier
+        return OAuthTokens("oauth-access", "oauth-refresh", datetime.now(timezone.utc) + timedelta(hours=1), ["calendar"])
+
+    async def refresh_access_token(self, refresh_token):
+        assert refresh_token == "refresh-token"
+        self.refreshes += 1
+        return OAuthTokens("refreshed-access", "refreshed-refresh", datetime.now(timezone.utc) + timedelta(hours=1), ["calendar"])
+
+    async def get_account_information(self, access_token):
+        return ProviderAccount("provider-account", "calendar@example.test", "Kalenderkonto")
+
+    async def list_calendars(self, access_token):
+        return [ProviderCalendar("external-1", "Hauptkalender", "Europe/Berlin", "Owner", "owner", True, True)]
+
+    async def get_busy_intervals(self, access_token, calendar_ids, start, end):
+        assert calendar_ids
+        return list(self.busy)
+
+    async def create_event(self, access_token, calendar_id, event):
+        if self.fail_create:
+            raise CalendarProviderError("provider_unavailable", "temporär", transient=True)
+        self.created_events.append(event)
+        return CreatedEvent(f"event-{len(self.created_events)}", "provider-reference")
+
+    async def revoke_connection(self, access_token, refresh_token):
+        self.revoked = True
+
+
+@pytest.fixture()
+def calendar_env(db, monkeypatch):
+    for model in (
+        CalendarBooking,
+        ExternalCalendar,
+        CalendarOAuthState,
+        CalendarConnection,
+        CalendarAppointmentType,
+        CalendarBusinessHour,
+        BookingConfiguration,
+    ):
+        db.execute(delete(model))
+    db.commit()
+    tenant = db.scalar(select(Tenant).where(Tenant.slug == "salon-haarkunst-test"))
+    owner = db.scalar(select(AppUser).where(AppUser.email == "owner@telefonagent.local"))
+    app.dependency_overrides[get_tenant_context] = lambda: TenantContext(id=tenant.id, tenant=tenant)
+    app.dependency_overrides[get_user_context] = lambda: UserContext(id=owner.id, email=owner.email, role=TenantRole.owner)
+    settings = calendar_settings()
+    app.dependency_overrides[get_settings] = lambda: settings
+    provider = FakeProvider()
+    for path in (
+        "app.services.calendar_oauth.create_calendar_provider",
+        "app.services.calendar_connections.create_calendar_provider",
+        "app.services.availability.create_calendar_provider",
+        "app.services.calendar_booking.create_calendar_provider",
+    ):
+        monkeypatch.setattr(path, lambda *_args, **_kwargs: provider)
+    yield tenant, owner, settings, provider
+    app.dependency_overrides.clear()
+    for model in (
+        CalendarBooking,
+        ExternalCalendar,
+        CalendarOAuthState,
+        CalendarConnection,
+        CalendarAppointmentType,
+        CalendarBusinessHour,
+        BookingConfiguration,
+    ):
+        db.execute(delete(model))
+    db.commit()
+
+
+def create_connected_calendar(db, tenant, owner, settings, *, can_write=True):
+    cipher = CalendarTokenCipher(settings.calendar_token_encryption_key)
+    connection = CalendarConnection(
+        tenant_id=tenant.id,
+        created_by_user_id=owner.id,
+        provider=CalendarProviderName.google,
+        provider_account_id=f"account-{uuid4()}",
+        account_email="calendar@example.test",
+        display_name="Kalenderkonto",
+        encrypted_access_token=cipher.encrypt("access-token"),
+        encrypted_refresh_token=cipher.encrypt("refresh-token"),
+        access_token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        granted_scopes=["calendar"],
+        connection_status=CalendarConnectionStatus.connected,
+    )
+    db.add(connection)
+    db.flush()
+    calendar = ExternalCalendar(
+        tenant_id=tenant.id,
+        calendar_connection_id=connection.id,
+        external_calendar_id="external-1",
+        calendar_name="Hauptkalender",
+        calendar_timezone="Europe/Berlin",
+        owner_name="Owner",
+        access_role="owner" if can_write else "reader",
+        is_primary=True,
+        can_write=can_write,
+        is_selected_for_availability=True,
+        is_selected_for_booking=True,
+    )
+    appointment = CalendarAppointmentType(
+        tenant_id=tenant.id,
+        name=f"Beratung {uuid4().hex[:5]}",
+        description="Persönliche Beratung",
+        duration_minutes=30,
+        buffer_before_minutes=0,
+        buffer_after_minutes=0,
+        location_type=CalendarLocationType.phone,
+        location_text="",
+        is_active=True,
+    )
+    config = BookingConfiguration(
+        tenant_id=tenant.id,
+        timezone="Europe/Berlin",
+        slot_interval_minutes=15,
+        minimum_notice_minutes=0,
+        maximum_booking_horizon_days=60,
+        buffer_before_minutes=0,
+        buffer_after_minutes=0,
+        maximum_suggestions_per_request=3,
+    )
+    db.add_all([calendar, appointment, config])
+    db.add(CalendarBusinessHour(tenant_id=tenant.id, weekday=0, start_time=time(9), end_time=time(12), is_active=True))
+    db.commit()
+    return connection, calendar, appointment
+
+
+def test_provider_configuration_never_exposes_secrets(client, calendar_env):
+    response = client.get("/api/v1/calendar/connections")
+    assert response.status_code == 200
+    assert all(item["configured"] for item in response.json()["providers"])
+    assert "google-secret" not in response.text
+    assert "microsoft-secret" not in response.text
+    assert TEST_KEY not in response.text
+
+
+def test_oauth_callback_is_single_use_encrypted_and_synchronizes_calendars(client, db, calendar_env):
+    _, _, _, _provider = calendar_env
+    started = client.post("/api/v1/calendar/oauth/google/start")
+    assert started.status_code == 200
+    authorization_url = started.json()["authorization_url"]
+    state = parse_qs(urlparse(authorization_url).query)["state"][0]
+    stored_state = db.scalar(select(CalendarOAuthState))
+    assert state not in stored_state.state_hash
+    assert "oauth" not in stored_state.encrypted_code_verifier
+
+    callback = client.get(
+        "/api/v1/calendar/oauth/google/callback",
+        params={"state": state, "code": "valid-code"},
+        follow_redirects=False,
+    )
+    assert callback.status_code == 303
+    assert "calendar_oauth=success" in callback.headers["location"]
+    connection = db.scalar(select(CalendarConnection))
+    db.refresh(connection)
+    assert connection.encrypted_access_token != "oauth-access"
+    assert db.scalar(select(ExternalCalendar)).calendar_name == "Hauptkalender"
+
+    repeated = client.get(
+        "/api/v1/calendar/oauth/google/callback",
+        params={"state": state, "code": "valid-code"},
+        follow_redirects=False,
+    )
+    assert "oauth_state_invalid" in repeated.headers["location"]
+
+
+def test_invalid_oauth_state_and_access_denial_are_controlled(client, calendar_env):
+    invalid = client.get(
+        "/api/v1/calendar/oauth/google/callback",
+        params={"state": "invalid", "code": "valid-code"},
+        follow_redirects=False,
+    )
+    assert "oauth_state_invalid" in invalid.headers["location"]
+    started = client.post("/api/v1/calendar/oauth/google/start").json()
+    state = parse_qs(urlparse(started["authorization_url"]).query)["state"][0]
+    denied = client.get(
+        "/api/v1/calendar/oauth/google/callback",
+        params={"state": state, "error": "access_denied"},
+        follow_redirects=False,
+    )
+    assert "oauth_access_denied" in denied.headers["location"]
+
+
+def test_reauthorization_updates_existing_provider_account(client, db, calendar_env):
+    for _attempt in range(2):
+        started = client.post("/api/v1/calendar/oauth/google/start").json()
+        state = parse_qs(urlparse(started["authorization_url"]).query)["state"][0]
+        callback = client.get(
+            "/api/v1/calendar/oauth/google/callback",
+            params={"state": state, "code": "valid-code"},
+            follow_redirects=False,
+        )
+        assert "calendar_oauth=success" in callback.headers["location"]
+
+    connections = list(db.scalars(select(CalendarConnection)))
+    assert len(connections) == 1
+    assert connections[0].provider_account_id == "provider-account"
+    assert connections[0].connection_status == CalendarConnectionStatus.connected
+
+
+def test_expired_access_token_is_refreshed_and_reencrypted(db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    connection, _, _ = create_connected_calendar(db, tenant, owner, settings)
+    connection.access_token_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+    token = asyncio.run(valid_access_token(db, connection, settings))
+    assert token == "refreshed-access"
+    assert provider.refreshes == 1
+    assert CalendarTokenCipher(TEST_KEY).decrypt(connection.encrypted_refresh_token) == "refreshed-refresh"
+
+
+def test_disconnect_revokes_provider_and_removes_local_credentials(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    connection, _, _ = create_connected_calendar(db, tenant, owner, settings)
+
+    response = client.delete(f"/api/v1/calendar/connections/{connection.id}")
+
+    assert response.status_code == 204
+    assert provider.revoked is True
+    assert db.scalar(select(CalendarConnection).where(CalendarConnection.id == connection.id)) is None
+    assert db.scalar(select(ExternalCalendar).where(ExternalCalendar.calendar_connection_id == connection.id)) is None
+
+
+def test_calendar_selection_requires_one_writable_target_and_persists(client, db, calendar_env):
+    tenant, owner, settings, _ = calendar_env
+    _, calendar, _ = create_connected_calendar(db, tenant, owner, settings)
+    invalid = client.put(
+        "/api/v1/calendar/configuration/calendars",
+        json={"calendars": [{"calendar_id": str(calendar.id), "is_selected_for_availability": True, "is_selected_for_booking": False}]},
+    )
+    assert invalid.status_code == 400
+    calendar.can_write = False
+    db.commit()
+    unwritable = client.put(
+        "/api/v1/calendar/configuration/calendars",
+        json={"calendars": [{"calendar_id": str(calendar.id), "is_selected_for_availability": True, "is_selected_for_booking": True}]},
+    )
+    assert unwritable.json()["error"]["code"] == "booking_calendar_not_writable"
+    calendar.can_write = True
+    db.commit()
+    saved = client.put(
+        "/api/v1/calendar/configuration/calendars",
+        json={"calendars": [{"calendar_id": str(calendar.id), "is_selected_for_availability": True, "is_selected_for_booking": True}]},
+    )
+    assert saved.status_code == 200
+    assert saved.json()[0]["is_selected_for_booking"] is True
+
+
+def test_configuration_and_appointment_types_are_real_crud_without_examples(client, calendar_env):
+    configuration = client.get("/api/v1/calendar/configuration")
+    assert configuration.status_code == 200
+    assert configuration.json()["timezone"] == "Europe/Berlin"
+    assert client.get("/api/v1/calendar/appointment-types").json() == []
+    created = client.post(
+        "/api/v1/calendar/appointment-types",
+        json={"name": "Erstberatung", "description": "", "duration_minutes": 45, "buffer_before_minutes": 5, "buffer_after_minutes": 10, "location_type": "phone", "location_text": "", "is_active": True},
+    )
+    assert created.status_code == 201
+    item_id = created.json()["id"]
+    updated = client.put(
+        f"/api/v1/calendar/appointment-types/{item_id}",
+        json={**created.json(), "name": "Ausführliche Erstberatung", "is_active": False},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["is_active"] is False
+    assert client.delete(f"/api/v1/calendar/appointment-types/{item_id}").status_code == 204
+
+
+def test_availability_booking_idempotency_and_provider_confirmation(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    search = client.post(
+        "/api/v1/calendar/tools/find-available-appointments",
+        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+    )
+    assert search.status_code == 200, search.text
+    slot = search.json()["slots"][0]
+    payload = {
+        "slot_id": slot["slot_id"], "appointment_type_id": str(appointment.id),
+        "customer_name": "Max Mustermann", "customer_phone": "+49123456",
+        "customer_email": "max@example.test", "customer_notes": "Bitte anrufen",
+        "idempotency_key": "call-12345678",
+    }
+    booked = client.post("/api/v1/calendar/tools/create-calendar-booking", json=payload)
+    assert booked.status_code == 200
+    assert booked.json()["success"] is True
+    assert booked.json()["status"] == "confirmed"
+    assert len(provider.created_events) == 1
+    assert "Buchungsnummer:" in provider.created_events[0].description
+    repeated = client.post("/api/v1/calendar/tools/create-calendar-booking", json=payload)
+    assert repeated.json()["booking_id"] == booked.json()["booking_id"]
+    assert len(provider.created_events) == 1
+
+
+def test_slot_is_rechecked_and_conflict_returns_new_alternatives(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    slot = client.post(
+        "/api/v1/calendar/tools/find-available-appointments",
+        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+    ).json()["slots"][0]
+    provider.busy = [BusyInterval(datetime.fromisoformat(slot["start"]), datetime.fromisoformat(slot["end"]))]
+    response = client.post(
+        "/api/v1/calendar/tools/create-calendar-booking",
+        json={"slot_id": slot["slot_id"], "appointment_type_id": str(appointment.id), "customer_name": "Kunde", "customer_phone": "12345", "customer_email": "", "customer_notes": "", "idempotency_key": "conflict-12345678"},
+    )
+    assert response.json()["success"] is False
+    assert response.json()["error_code"] == "slot_no_longer_available"
+    assert provider.created_events == []
+
+
+def test_provider_failure_never_confirms_booking(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    slot = client.post(
+        "/api/v1/calendar/tools/find-available-appointments",
+        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+    ).json()["slots"][0]
+    provider.fail_create = True
+    response = client.post(
+        "/api/v1/calendar/tools/create-calendar-booking",
+        json={"slot_id": slot["slot_id"], "appointment_type_id": str(appointment.id), "customer_name": "Kunde", "customer_phone": "12345", "customer_email": "", "customer_notes": "", "idempotency_key": "failure-12345678"},
+    )
+    assert response.json()["success"] is False
+    assert response.json()["error_code"] == "calendar_event_creation_failed"
+    assert db.scalar(select(CalendarBooking)).status.value == "failed"
+
+
+def test_tenant_ids_from_client_cannot_cross_account_boundaries(client, db, calendar_env):
+    tenant, owner, settings, _ = calendar_env
+    _, calendar, _ = create_connected_calendar(db, tenant, owner, settings)
+    second = Tenant(slug=f"second-{uuid4().hex[:6]}", name="Second", industry="test", timezone="Europe/Berlin", status="active")
+    db.add(second)
+    db.commit()
+    calendar.tenant_id = second.id
+    db.commit()
+    response = client.put(
+        "/api/v1/calendar/configuration/calendars",
+        json={"calendars": [{"calendar_id": str(calendar.id), "is_selected_for_availability": True, "is_selected_for_booking": True}]},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "tenant_access_denied"
+    db.delete(calendar)
+    db.delete(second)
+    db.commit()
