@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.calendar.errors import CalendarError, CalendarProviderError
+from app.calendar.errors import CalendarConfigurationError, CalendarError, CalendarProviderError
 from app.calendar.providers import CalendarProvider, ProviderCalendar, create_calendar_provider
 from app.core.config import Settings
 from app.core.encryption import CalendarTokenCipher
@@ -86,27 +86,48 @@ def get_provider_and_cipher(
     return create_calendar_provider(connection.provider, settings), CalendarTokenCipher(settings.calendar_token_encryption_key)
 
 
+def record_connection_error(
+    db: Session, connection: CalendarConnection, error: CalendarError
+) -> None:
+    connection.connection_status = (
+        CalendarConnectionStatus.reauthorization_required
+        if error.reauthorization_required or error.code == "token_decryption_failed"
+        else CalendarConnectionStatus.error
+    )
+    connection.last_error_code = error.code
+    connection.last_error_at = utc_now()
+    db.commit()
+
+
 async def valid_access_token(db: Session, connection: CalendarConnection, settings: Settings) -> str:
     provider, cipher = get_provider_and_cipher(connection, settings)
     expires_at = as_utc(connection.access_token_expires_at)
     if expires_at is None or expires_at > utc_now() + timedelta(seconds=90):
-        return cipher.decrypt(connection.encrypted_access_token)
+        try:
+            return cipher.decrypt(connection.encrypted_access_token)
+        except CalendarConfigurationError as exc:
+            if exc.code == "token_decryption_failed":
+                record_connection_error(db, connection, exc)
+            raise
     if not connection.encrypted_refresh_token:
-        connection.connection_status = CalendarConnectionStatus.reauthorization_required
-        connection.last_error_code = "reauthorization_required"
-        connection.last_error_at = utc_now()
-        db.commit()
+        record_connection_error(
+            db,
+            connection,
+            CalendarError(
+                "reauthorization_required",
+                "Die Kalenderverbindung muss erneut autorisiert werden.",
+                reauthorization_required=True,
+            ),
+        )
         raise CalendarError("reauthorization_required", "Die Kalenderverbindung muss erneut autorisiert werden.")
     try:
-        tokens = await provider.refresh_access_token(cipher.decrypt(connection.encrypted_refresh_token))
-    except CalendarProviderError as exc:
-        connection.connection_status = (
-            CalendarConnectionStatus.error if exc.transient else CalendarConnectionStatus.reauthorization_required
-        )
-        connection.last_error_code = "token_refresh_failed" if exc.transient else "reauthorization_required"
-        connection.last_error_at = utc_now()
-        db.commit()
-        raise CalendarError(connection.last_error_code, "Das Kalenderzugangstoken konnte nicht aktualisiert werden.") from exc
+        refresh_token = cipher.decrypt(connection.encrypted_refresh_token)
+        tokens = await provider.refresh_access_token(refresh_token)
+    except (CalendarConfigurationError, CalendarProviderError) as exc:
+        if isinstance(exc, CalendarConfigurationError) and exc.code != "token_decryption_failed":
+            raise
+        record_connection_error(db, connection, exc)
+        raise CalendarError(exc.code, "Das Kalenderzugangstoken konnte nicht aktualisiert werden.") from exc
     connection.encrypted_access_token = cipher.encrypt(tokens.access_token)
     if tokens.refresh_token:
         connection.encrypted_refresh_token = cipher.encrypt(tokens.refresh_token)
@@ -170,12 +191,7 @@ async def synchronize_calendars(
     try:
         calendars = await provider.list_calendars(token)
     except CalendarProviderError as exc:
-        connection.connection_status = (
-            CalendarConnectionStatus.error if exc.transient else CalendarConnectionStatus.reauthorization_required
-        )
-        connection.last_error_code = exc.code
-        connection.last_error_at = utc_now()
-        db.commit()
+        record_connection_error(db, connection, exc)
         raise
     return upsert_calendar_metadata(db, connection, calendars)
 
@@ -185,14 +201,23 @@ async def test_connection(
 ) -> tuple[int, int, datetime, datetime]:
     provider = create_calendar_provider(connection.provider, settings)
     token = await valid_access_token(db, connection, settings)
-    calendars = await provider.list_calendars(token)
+    try:
+        calendars = await provider.list_calendars(token)
+    except CalendarProviderError as exc:
+        record_connection_error(db, connection, exc)
+        raise
     saved = upsert_calendar_metadata(db, connection, calendars)
     selected = [item.external_calendar_id for item in saved if item.is_selected_for_availability]
-    readable = selected or ([calendars[0].external_id] if calendars else [])
+    primary_calendar = next((item.external_id for item in calendars if item.is_primary), None)
+    readable = selected or ([primary_calendar] if primary_calendar else [])
     start = utc_now()
     end = start + timedelta(hours=24)
     if readable:
-        await provider.get_busy_intervals(token, readable, start, end)
+        try:
+            await provider.get_busy_intervals(token, readable, start, end)
+        except CalendarProviderError as exc:
+            record_connection_error(db, connection, exc)
+            raise
     connection.last_successful_request_at = utc_now()
     connection.connection_status = CalendarConnectionStatus.connected
     connection.last_error_code = None

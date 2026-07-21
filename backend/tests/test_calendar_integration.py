@@ -34,6 +34,7 @@ from app.models import (
     Tenant,
     TenantRole,
 )
+from app.services.calendar_connections import test_connection as run_connection_test
 from app.services.calendar_connections import valid_access_token
 
 TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
@@ -62,6 +63,10 @@ class FakeProvider(CalendarProvider):
         self.refreshes = 0
         self.revoked = False
         self.fail_create = False
+        self.oauth_refresh_token: str | None = "oauth-refresh"
+        self.account_email = "calendar@example.test"
+        self.calendars = [ProviderCalendar("external-1", "Hauptkalender", "Europe/Berlin", "Owner", "owner", True, True)]
+        self.last_busy_calendar_ids: list[str] | None = None
 
     def build_authorization_url(self, state, code_challenge):
         return f"https://provider.test/auth?state={state}&challenge={code_challenge}"
@@ -69,7 +74,7 @@ class FakeProvider(CalendarProvider):
     async def exchange_authorization_code(self, code, code_verifier):
         assert code == "valid-code"
         assert code_verifier
-        return OAuthTokens("oauth-access", "oauth-refresh", datetime.now(timezone.utc) + timedelta(hours=1), ["calendar"])
+        return OAuthTokens("oauth-access", self.oauth_refresh_token, datetime.now(timezone.utc) + timedelta(hours=1), ["calendar"])
 
     async def refresh_access_token(self, refresh_token):
         assert refresh_token == "refresh-token"
@@ -77,13 +82,14 @@ class FakeProvider(CalendarProvider):
         return OAuthTokens("refreshed-access", "refreshed-refresh", datetime.now(timezone.utc) + timedelta(hours=1), ["calendar"])
 
     async def get_account_information(self, access_token):
-        return ProviderAccount("provider-account", "calendar@example.test", "Kalenderkonto")
+        return ProviderAccount("provider-account", self.account_email, "Kalenderkonto")
 
     async def list_calendars(self, access_token):
-        return [ProviderCalendar("external-1", "Hauptkalender", "Europe/Berlin", "Owner", "owner", True, True)]
+        return self.calendars
 
     async def get_busy_intervals(self, access_token, calendar_ids, start, end):
         assert calendar_ids
+        self.last_busy_calendar_ids = calendar_ids
         return list(self.busy)
 
     async def create_event(self, access_token, calendar_id, event):
@@ -268,6 +274,40 @@ def test_reauthorization_updates_existing_provider_account(client, db, calendar_
     assert connections[0].connection_status == CalendarConnectionStatus.connected
 
 
+def test_reauthorization_without_refresh_token_preserves_existing_token(client, db, calendar_env):
+    _, _, settings, provider = calendar_env
+    for refresh_token in ("oauth-refresh", None):
+        provider.oauth_refresh_token = refresh_token
+        state = parse_qs(urlparse(client.post("/api/v1/calendar/oauth/google/start").json()["authorization_url"]).query)["state"][0]
+        response = client.get(
+            "/api/v1/calendar/oauth/google/callback",
+            params={"state": state, "code": "valid-code"},
+            follow_redirects=False,
+        )
+        assert "calendar_oauth=success" in response.headers["location"]
+
+    connection = db.scalar(select(CalendarConnection))
+    assert CalendarTokenCipher(settings.calendar_token_encryption_key).decrypt(connection.encrypted_refresh_token) == "oauth-refresh"
+
+
+def test_google_alias_email_updates_the_same_provider_account(client, db, calendar_env):
+    _, _, _, provider = calendar_env
+    for email in ("max.straessner@gmail.com", "max.straessner@googlemail.com"):
+        provider.account_email = email
+        state = parse_qs(urlparse(client.post("/api/v1/calendar/oauth/google/start").json()["authorization_url"]).query)["state"][0]
+        response = client.get(
+            "/api/v1/calendar/oauth/google/callback",
+            params={"state": state, "code": "valid-code"},
+            follow_redirects=False,
+        )
+        assert "calendar_oauth=success" in response.headers["location"]
+
+    connections = list(db.scalars(select(CalendarConnection)))
+    assert len(connections) == 1
+    assert connections[0].provider_account_id == "provider-account"
+    assert connections[0].account_email == "max.straessner@googlemail.com"
+
+
 def test_expired_access_token_is_refreshed_and_reencrypted(db, calendar_env):
     tenant, owner, settings, provider = calendar_env
     connection, _, _ = create_connected_calendar(db, tenant, owner, settings)
@@ -277,6 +317,53 @@ def test_expired_access_token_is_refreshed_and_reencrypted(db, calendar_env):
     assert token == "refreshed-access"
     assert provider.refreshes == 1
     assert CalendarTokenCipher(TEST_KEY).decrypt(connection.encrypted_refresh_token) == "refreshed-refresh"
+
+
+def test_connection_prefers_primary_calendar_when_nothing_is_selected(db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    connection, calendar, _ = create_connected_calendar(db, tenant, owner, settings)
+    calendar.is_selected_for_availability = False
+    provider.calendars = [
+        ProviderCalendar("secondary", "Feiertage", "Europe/Berlin", "", "reader", False, False),
+        ProviderCalendar("external-1", "Hauptkalender", "Europe/Berlin", "Owner", "owner", True, True),
+    ]
+    db.commit()
+
+    found, readable, _, _ = asyncio.run(run_connection_test(db, connection, settings))
+
+    assert found == 2
+    assert readable == 1
+    assert provider.last_busy_calendar_ids == ["external-1"]
+
+
+def test_temporary_refresh_failure_sets_technical_error_not_reauthorization(db, calendar_env, monkeypatch):
+    tenant, owner, settings, provider = calendar_env
+    connection, _, _ = create_connected_calendar(db, tenant, owner, settings)
+    connection.access_token_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+
+    async def unavailable(_refresh_token):
+        raise CalendarProviderError("provider_unavailable", "temporär", transient=True)
+
+    monkeypatch.setattr(provider, "refresh_access_token", unavailable)
+    with pytest.raises(Exception, match="aktualisiert"):
+        asyncio.run(valid_access_token(db, connection, settings))
+    db.refresh(connection)
+    assert connection.connection_status == CalendarConnectionStatus.error
+    assert connection.last_error_code == "provider_unavailable"
+
+
+def test_undecryptable_token_requires_controlled_reauthorization(db, calendar_env):
+    tenant, owner, settings, _ = calendar_env
+    connection, _, _ = create_connected_calendar(db, tenant, owner, settings)
+    connection.encrypted_access_token = CalendarTokenCipher("MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDE=").encrypt("other-key-token")
+    db.commit()
+
+    with pytest.raises(Exception, match="entschl"):
+        asyncio.run(valid_access_token(db, connection, settings))
+    db.refresh(connection)
+    assert connection.connection_status == CalendarConnectionStatus.reauthorization_required
+    assert connection.last_error_code == "token_decryption_failed"
 
 
 def test_disconnect_revokes_provider_and_removes_local_credentials(client, db, calendar_env):

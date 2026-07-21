@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import pytest
 
 from app.calendar.providers.google import GOOGLE_SCOPES, GoogleCalendarProvider
+from app.calendar.providers.http import ensure_success
 from app.calendar.providers.microsoft import MICROSOFT_SCOPES, MicrosoftCalendarProvider
 
 
@@ -36,6 +38,17 @@ def test_google_authorization_uses_exact_scopes_and_pkce():
     assert set(query["scope"][0].split()) == set(GOOGLE_SCOPES)
     assert query["code_challenge_method"] == ["S256"]
     assert query["access_type"] == ["offline"]
+    assert query["prompt"] == ["consent"]
+
+
+def test_provider_http_statuses_only_require_reauthorization_for_oauth_errors():
+    with pytest.raises(Exception) as forbidden:
+        ensure_success(httpx.Response(403, json={"error": {"errors": [{"reason": "forbidden"}]}}), "google")
+    assert forbidden.value.reauthorization_required is False
+
+    with pytest.raises(Exception) as revoked:
+        ensure_success(httpx.Response(400, json={"error": "invalid_grant"}), "google")
+    assert revoked.value.reauthorization_required is True
 
 
 def test_microsoft_authorization_supports_common_accounts_and_pkce():

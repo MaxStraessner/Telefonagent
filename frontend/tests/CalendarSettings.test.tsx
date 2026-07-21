@@ -110,6 +110,25 @@ describe("Kalenderverwaltung", () => {
     expect(screen.queryByText("Verbunden")).not.toBeInTheDocument();
   });
 
+  it("lädt nach erfolgreichem OAuth neu und entfernt alte Callback-Parameter", async () => {
+    window.history.replaceState({}, "", "/kalender?calendar_oauth=success&provider=google&error_code=reauthorization_required");
+    installFetch(); render(<CalendarSettingsPage />);
+    expect(await screen.findByText("Die Kalenderverbindung wurde erfolgreich hergestellt und synchronisiert.")).toBeInTheDocument();
+    expect(screen.getByText("Verbunden")).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(screen.queryByText(/fehlgeschlagen/)).not.toBeInTheDocument();
+  });
+
+  it("zeigt Reautorisierung nur für den aktuellen Backend-Status", async () => {
+    const reauthorizationOverview = {
+      ...overview,
+      providers: overview.providers.map((provider) => provider.provider === "google" ? { ...provider, configured: true, missing_configuration: [] } : provider),
+      connections: [{ ...overview.connections[0], provider: "google", connection_status: "reauthorization_required" as const }],
+    };
+    installFetch({ overview: reauthorizationOverview }); render(<CalendarSettingsPage />);
+    expect(await screen.findByText("Erneut verbinden")).toBeInTheDocument();
+  });
+
   it("bleibt auf schmalen Ansichten semantisch vollständig bedienbar", async () => {
     Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
     installFetch(); render(<CalendarSettingsPage />);

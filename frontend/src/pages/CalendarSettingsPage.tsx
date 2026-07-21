@@ -35,12 +35,19 @@ export function CalendarSettingsPage() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("calendar_oauth") === "success") setNotice("Die Kalenderverbindung wurde erfolgreich hergestellt und synchronisiert.");
-    if (params.get("calendar_oauth") === "error") setError(`Die Kalenderverbindung ist fehlgeschlagen (${params.get("error_code") ?? "oauth_error"}).`);
-  }, []);
+    const oauthResult = params.get("calendar_oauth");
+    if (!oauthResult) { void load(); return; }
+    window.history.replaceState({}, "", window.location.pathname);
+    if (oauthResult === "success") {
+      setError(null);
+      setNotice("Die Kalenderverbindung wurde erfolgreich hergestellt und synchronisiert.");
+      void load();
+    } else if (oauthResult === "error") {
+      void load().then(() => setError(`Die Kalenderverbindung ist fehlgeschlagen (${params.get("error_code") ?? "oauth_error"}).`));
+    }
+  }, [load]);
 
   const calendars = useMemo(() => overview?.connections.flatMap((connection) => connection.calendars.map((calendar) => ({ ...calendar, provider: connection.provider, account: connection.account_email }))) ?? [], [overview]);
 

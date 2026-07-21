@@ -18,10 +18,32 @@ def parse_provider_datetime(value: str) -> datetime:
 def ensure_success(response: httpx.Response, provider: str) -> None:
     if response.is_success:
         return
+    error_reason = ""
+    try:
+        payload = response.json()
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        if isinstance(error, dict):
+            error_reason = str(error.get("status") or error.get("message") or "").lower()
+            details = error.get("errors") or []
+            if details and isinstance(details, list) and isinstance(details[0], dict):
+                error_reason = str(details[0].get("reason") or error_reason).lower()
+        elif isinstance(error, str):
+            error_reason = error.lower()
+    except (ValueError, TypeError):
+        pass
+    requires_reauthorization = False
     if response.status_code == 429:
         code, transient = "provider_rate_limited", True
-    elif response.status_code in {401, 403}:
-        code, transient = "reauthorization_required", False
+    elif response.status_code == 401:
+        code, transient, requires_reauthorization = "reauthorization_required", False, True
+    elif response.status_code == 403 and error_reason in {
+        "autherror", "invalidcredentials", "insufficientpermissions", "permission_denied",
+    }:
+        code, transient, requires_reauthorization = "reauthorization_required", False, True
+    elif response.status_code == 403:
+        code, transient = "provider_access_denied", False
+    elif error_reason in {"invalid_grant", "invalid_client", "access_revoked", "refresh_token_invalid"}:
+        code, transient, requires_reauthorization = "reauthorization_required", False, True
     elif response.status_code >= 500:
         code, transient = "provider_unavailable", True
     else:
@@ -30,7 +52,12 @@ def ensure_success(response: httpx.Response, provider: str) -> None:
         "Calendar provider request failed",
         extra={"calendar_provider": provider, "provider_status": response.status_code, "calendar_error_code": code},
     )
-    raise CalendarProviderError(code, "Der Kalenderanbieter konnte die Anfrage nicht verarbeiten.", transient=transient)
+    raise CalendarProviderError(
+        code,
+        "Der Kalenderanbieter konnte die Anfrage nicht verarbeiten.",
+        transient=transient,
+        reauthorization_required=requires_reauthorization,
+    )
 
 
 def provider_network_error(provider: str, exc: httpx.HTTPError) -> CalendarProviderError:
