@@ -39,6 +39,21 @@ export interface Appointment {
 export interface PlatformStatus {
   environment: string; backend_version: string; realtime_voice_configured: boolean;
   telephony_configured: boolean; calendar_configured: boolean; database_connected: boolean;
+  realtime_model: string; realtime_voice: string;
+}
+export interface RealtimeVadConfig {
+  type: string; threshold: number; prefix_padding_ms: number; silence_duration_ms: number;
+  create_response: boolean; interrupt_response: boolean;
+}
+export interface RealtimeAgentConfig {
+  tenant_id: string; tenant_name: string; assistant_name: string; language: string;
+  welcome_message: string; instructions: string; model: string; voice: string;
+  maximum_session_minutes: number; transcription_enabled: boolean; raw_event_logging: boolean;
+  vad: RealtimeVadConfig;
+}
+export interface RealtimeClientSecret {
+  client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
+  tenant_id: string;
 }
 export interface Health { status: string; database: string; }
 export interface PlatformData {

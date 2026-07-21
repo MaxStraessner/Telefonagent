@@ -61,6 +61,22 @@ def test_platform_status_without_openai_key(client):
     payload = client.get("/api/v1/platform/status").json()
     assert payload["realtime_voice_configured"] is False
     assert payload["database_connected"] is True
+    assert payload["realtime_model"] == "gpt-realtime-2.1"
+    assert payload["realtime_voice"] == "marin"
+
+
+def test_platform_status_with_openai_key_uses_central_model_and_voice(client):
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        database_url="sqlite:///./test.db",
+        openai_api_key="server-only",
+        openai_realtime_model="gpt-realtime-custom",
+        openai_realtime_voice="cedar",
+    )
+    payload = client.get("/api/v1/platform/status").json()
+    assert payload["realtime_voice_configured"] is True
+    assert payload["realtime_model"] == "gpt-realtime-custom"
+    assert payload["realtime_voice"] == "cedar"
+    assert "server-only" not in str(payload)
 
 
 def test_unknown_active_tenant_is_controlled_error(client):
@@ -78,3 +94,5 @@ def test_openapi_contains_typed_response_contracts(client):
     assert tenant_response["$ref"].endswith("/TenantResponse")
     assert "ServiceResponse" in schema["components"]["schemas"]
     assert "AppointmentResponse" in schema["components"]["schemas"]
+    assert "/api/v1/realtime/client-secret" in schema["paths"]
+    assert "RealtimeAgentConfigResponse" in schema["components"]["schemas"]
