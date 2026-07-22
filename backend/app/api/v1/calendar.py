@@ -20,6 +20,7 @@ from app.calendar.errors import CalendarError
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models import (
+    BookingState,
     CalendarAppointmentType,
     CalendarBooking,
     CalendarBookingSource,
@@ -30,6 +31,7 @@ from app.models import (
 from app.schemas.calendar import (
     AgentAppointmentCreate,
     AgentAvailabilityRequest,
+    AlternativeSlotsRequest,
     AppointmentTypeResponse,
     AppointmentTypeWrite,
     AvailabilityResponse,
@@ -44,13 +46,22 @@ from app.schemas.calendar import (
     CalendarConnectionsOverview,
     CalendarSelectionUpdate,
     ConnectionTestResponse,
+    ConversationBootstrapRequest,
+    ConversationBootstrapResponse,
     ExactAvailabilityRequest,
     ExactAvailabilityResponse,
     ExternalCalendarResponse,
+    FinalizeAppointmentRequest,
+    ListBookableServicesRequest,
     OAuthStartResponse,
     ProviderConfigurationResponse,
+    ResolveServiceRequest,
+    SnapshotAvailabilityRequest,
+    SnapshotAvailabilityResponse,
 )
 from app.services.availability import AvailabilityService, SlotSigner, aware_utc
+from app.services.availability_snapshot import AvailabilitySnapshotService
+from app.services.booking_orchestrator import AppointmentBookingOrchestrator
 from app.services.calendar_agenda import calendar_agenda
 from app.services.calendar_booking import BookingServiceResult, CalendarBookingService
 from app.services.calendar_configuration import (
@@ -67,6 +78,8 @@ from app.services.calendar_connections import (
     test_connection,
 )
 from app.services.calendar_oauth import complete_oauth, consume_state, load_valid_state, start_oauth
+from app.services.conversation_orchestrator import ConversationOrchestrator
+from app.services.tool_audit import ToolAudit
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
@@ -651,10 +664,14 @@ def tool_list_appointment_types(
     _user: UserContext = Depends(get_user_context),
     db: Session = Depends(get_db),
 ) -> dict:
+    return bookable_services(db, context.id)
+
+
+def bookable_services(db: Session, tenant_id: UUID) -> dict:
     items = list(
         db.scalars(
             select(CalendarAppointmentType).where(
-                CalendarAppointmentType.tenant_id == context.id,
+                CalendarAppointmentType.tenant_id == tenant_id,
                 CalendarAppointmentType.is_active.is_(True),
                 Service.is_active.is_(True),
             ).join(Service, Service.id == CalendarAppointmentType.service_id).options(
@@ -704,4 +721,181 @@ async def tool_create_calendar_booking(
         result = await CalendarBookingService(db, settings, context.id, context.tenant.timezone).create(payload)
         return booking_api_response(result)
     except CalendarError as exc:
+        return CalendarBookingResponse(success=False, error_code=exc.code, message=exc.message)
+
+
+@router.post("/conversation/bootstrap", response_model=ConversationBootstrapResponse)
+async def bootstrap_booking_conversation(
+    payload: ConversationBootstrapRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ConversationBootstrapResponse:
+    orchestrator = ConversationOrchestrator(db, context.id, payload.session_id, context.tenant.timezone)
+    orchestrator.bootstrap_started()
+    db.commit()
+    catalog_available = bool(bookable_services(db, context.id)["services"])
+    snapshot_status = "ready"
+    error_code = None
+    try:
+        await AvailabilitySnapshotService(
+            db, settings, context.id, payload.session_id, context.tenant.timezone
+        ).refresh()
+    except CalendarError as exc:
+        snapshot_status = "unavailable"
+        error_code = exc.code
+    orchestrator.bootstrap_completed(catalog_available=catalog_available)
+    current = orchestrator.commit()
+    return ConversationBootstrapResponse(
+        success=True, state=current.state.value, snapshot_status=snapshot_status, error_code=error_code
+    )
+
+
+@router.post("/tools/list-bookable-services", response_model=dict)
+def conversation_list_bookable_services(
+    payload: ListBookableServicesRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    ConversationOrchestrator(db, context.id, payload.session_id, context.tenant.timezone)
+    audit = ToolAudit(db, context.id, payload.session_id, payload.tool_call_id, "list_bookable_services")
+    try:
+        result = bookable_services(db, context.id)
+        audit.complete(success=True)
+        return result
+    except Exception:
+        audit.complete(success=False, error_code="catalog_unavailable")
+        raise
+
+
+@router.post("/tools/resolve-service", response_model=dict)
+def conversation_resolve_service(
+    payload: ResolveServiceRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    orchestrator = ConversationOrchestrator(db, context.id, payload.session_id, context.tenant.timezone)
+    audit = ToolAudit(db, context.id, payload.session_id, payload.tool_call_id, "resolve_service")
+    normalized = payload.service_name.strip().casefold()
+    candidates = list(db.scalars(select(Service).where(
+        Service.tenant_id == context.id, Service.is_active.is_(True)
+    ).order_by(Service.name)))
+    exact = [item for item in candidates if item.name.casefold() == normalized]
+    partial = [item for item in candidates if normalized in item.name.casefold() or item.name.casefold() in normalized]
+    matches = exact or partial
+    if len(matches) != 1:
+        audit.complete(success=False, error_code="service_not_unique")
+        return {"success": False, "error_code": "service_not_unique", "matches": [
+            {"service_id": str(item.id), "name": item.name} for item in matches[:5]
+        ]}
+    service = matches[0]
+    appointment_types = list(db.scalars(select(CalendarAppointmentType).where(
+        CalendarAppointmentType.tenant_id == context.id,
+        CalendarAppointmentType.service_id == service.id,
+        CalendarAppointmentType.is_active.is_(True),
+    )))
+    appointment_type_id = appointment_types[0].id if len(appointment_types) == 1 else None
+    orchestrator.select_service(service.id, service.name, appointment_type_id)
+    db.commit()
+    audit.complete(success=True)
+    return {
+        "success": True, "service_id": str(service.id), "name": service.name,
+        "appointment_types": [{"appointment_type_id": str(item.id), "appointment_format": item.location_type.value}
+                              for item in appointment_types],
+    }
+
+
+@router.post("/tools/check-appointment-availability/session", response_model=SnapshotAvailabilityResponse)
+async def conversation_check_availability(
+    payload: SnapshotAvailabilityRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SnapshotAvailabilityResponse:
+    orchestrator = ConversationOrchestrator(db, context.id, payload.session_id, context.tenant.timezone)
+    audit = ToolAudit(db, context.id, payload.session_id, payload.tool_call_id, "check_appointment_availability")
+    service = active_tenant_service(db, context.id, payload.service_id)
+    if orchestrator.context.state in {BookingState.ready, BookingState.service_required, BookingState.service_selected}:
+        if orchestrator.context.state != BookingState.service_selected:
+            orchestrator.select_service(payload.service_id, service.name, payload.appointment_type_id)
+        elif orchestrator.context.appointment_type_id is None:
+            orchestrator.context.appointment_type_id = payload.appointment_type_id
+            orchestrator.transition(BookingState.date_time_required)
+    orchestrator.context.requested_start = aware_utc(payload.requested_start)
+    orchestrator.transition(BookingState.availability_checking)
+    appointment_type = db.scalar(select(CalendarAppointmentType).where(
+        CalendarAppointmentType.id == payload.appointment_type_id,
+        CalendarAppointmentType.tenant_id == context.id,
+        CalendarAppointmentType.service_id == payload.service_id,
+    ).options(selectinload(CalendarAppointmentType.service)))
+    if appointment_type is None or appointment_type.service is None:
+        audit.complete(success=False, error_code="invalid_appointment_type")
+        raise calendar_http_error(CalendarError("invalid_appointment_type", "Die Terminart ist ungültig."))
+    requested_end = aware_utc(payload.requested_start) + timedelta(minutes=appointment_type.service.duration_minutes)
+    timezone_name, slots, refreshed = await AvailabilitySnapshotService(
+        db, settings, context.id, payload.session_id, context.tenant.timezone
+    ).search(payload.appointment_type_id, payload.requested_start - timedelta(hours=1), requested_end + timedelta(days=7), maximum_results=5)
+    exact = next((slot for slot in slots if aware_utc(slot.start) == aware_utc(payload.requested_start)), None)
+    slots.sort(key=lambda slot: abs((aware_utc(slot.start) - aware_utc(payload.requested_start)).total_seconds()))
+    available = exact is not None
+    orchestrator.context.requested_end = requested_end
+    if available:
+        orchestrator.context.selected_slot_start = aware_utc(exact.start)
+        orchestrator.context.selected_slot_end = aware_utc(exact.end)
+    orchestrator.transition(BookingState.slot_available if available else BookingState.slot_unavailable)
+    db.commit()
+    audit.complete(success=True)
+    return SnapshotAvailabilityResponse(
+        available=available, appointment_start=aware_utc(payload.requested_start), appointment_end=requested_end,
+        blocked_start=aware_utc(payload.requested_start), blocked_end=requested_end,
+        slot_id=exact.slot_id if exact else None, reason=None if available else "slot_unavailable",
+        alternatives=[] if available else slots[:3], source="targeted_refresh" if refreshed else "snapshot",
+        timezone=timezone_name,
+    )
+
+
+@router.post("/tools/find-alternative-slots", response_model=AvailabilityResponse)
+async def conversation_find_alternatives(
+    payload: AlternativeSlotsRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AvailabilityResponse:
+    ConversationOrchestrator(db, context.id, payload.session_id, context.tenant.timezone)
+    audit = ToolAudit(db, context.id, payload.session_id, payload.tool_call_id, "find_alternative_slots")
+    timezone_name, slots, _refreshed = await AvailabilitySnapshotService(
+        db, settings, context.id, payload.session_id, context.tenant.timezone
+    ).search(
+        payload.appointment_type_id, payload.search_start,
+        payload.search_start + timedelta(days=payload.search_days), preferred_day=payload.preferred_day,
+        preferred_time_range=payload.preferred_time_of_day, maximum_results=payload.maximum_results,
+    )
+    audit.complete(success=True)
+    return AvailabilityResponse(timezone=timezone_name, slots=slots)
+
+
+@router.post("/tools/finalize-appointment-booking", response_model=CalendarBookingResponse)
+async def conversation_finalize_booking(
+    payload: FinalizeAppointmentRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CalendarBookingResponse:
+    ConversationOrchestrator(db, context.id, payload.session_id, context.tenant.timezone)
+    audit = ToolAudit(db, context.id, payload.session_id, payload.tool_call_id, "finalize_appointment_booking")
+    try:
+        result = await AppointmentBookingOrchestrator(
+            db, settings, context.id, context.tenant.timezone
+        ).finalize(payload)
+        success = result.booking is not None and result.booking.status.value == "confirmed" and bool(result.booking.external_event_id)
+        audit.complete(success=success, error_code=None if success else result.error_code)
+        return booking_api_response(result)
+    except CalendarError as exc:
+        audit.complete(success=False, error_code=exc.code)
         return CalendarBookingResponse(success=False, error_code=exc.code, message=exc.message)

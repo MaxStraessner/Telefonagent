@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -256,7 +257,10 @@ class AvailabilityService:
             raise CalendarError("invalid_service", "Die zugehörige Leistung ist ungültig oder nicht aktiv.")
         return configuration, hours, appointment_type
 
-    async def current_busy_intervals(self, start: datetime, end: datetime) -> list[BusyInterval]:
+    def load_rules_for_snapshot(self) -> tuple[BookingConfiguration, list[CalendarBusinessHour]]:
+        return get_or_create_booking_configuration(self.db, self.tenant_id, self.tenant_timezone)
+
+    async def external_busy_intervals(self, start: datetime, end: datetime) -> list[BusyInterval]:
         calendars = list(
             self.db.scalars(
                 select(ExternalCalendar).where(
@@ -283,7 +287,16 @@ class AvailabilityService:
                 raise CalendarError("calendar_not_connected", "Für diesen Account ist kein funktionsfähiger Kalender verbunden.")
             provider = create_calendar_provider(connection.provider, self.settings)
             access_token = await valid_access_token(self.db, connection, self.settings)
-            intervals.extend(await provider.get_busy_intervals(access_token, calendar_ids, start, end))
+            try:
+                async with asyncio.timeout(self.settings.calendar_provider_timeout_seconds):
+                    intervals.extend(await provider.get_busy_intervals(access_token, calendar_ids, start, end))
+            except TimeoutError as exc:
+                raise CalendarError(
+                    "provider_timeout", "Die Kalenderprüfung dauert gerade zu lange.", transient=True
+                ) from exc
+        return merge_busy_intervals(intervals)
+
+    def local_busy_intervals(self, start: datetime, end: datetime) -> list[BusyInterval]:
         local_bookings = list(
             self.db.scalars(
                 select(CalendarBooking).where(
@@ -294,10 +307,13 @@ class AvailabilityService:
                 )
             )
         )
-        intervals.extend(
+        return merge_busy_intervals([
             BusyInterval(aware_utc(item.blocked_start_at), aware_utc(item.blocked_end_at)) for item in local_bookings
-        )
-        return merge_busy_intervals(intervals)
+        ])
+
+    async def current_busy_intervals(self, start: datetime, end: datetime) -> list[BusyInterval]:
+        external = await self.external_busy_intervals(start, end)
+        return merge_busy_intervals([*external, *self.local_busy_intervals(start, end)])
 
     async def search(
         self,

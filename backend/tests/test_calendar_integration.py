@@ -22,7 +22,9 @@ from app.core.encryption import CalendarTokenCipher
 from app.main import app
 from app.models import (
     AppUser,
+    AvailabilitySnapshot,
     BookingConfiguration,
+    BookingConversation,
     CalendarAppointmentType,
     CalendarBooking,
     CalendarBusinessHour,
@@ -31,10 +33,13 @@ from app.models import (
     CalendarLocationType,
     CalendarOAuthState,
     CalendarProviderName,
+    CallChannel,
+    CallSession,
     ExternalCalendar,
     Service,
     Tenant,
     TenantRole,
+    ToolExecution,
 )
 from app.services.calendar_connections import test_connection as run_connection_test
 from app.services.calendar_connections import valid_access_token
@@ -518,6 +523,55 @@ def test_new_agent_tools_validate_service_snapshot_and_confirmation(client, db, 
     repeated = client.post("/api/v1/calendar/tools/create-appointment", json=payload)
     assert repeated.json()["booking_id"] == booked.json()["booking_id"]
     assert len(provider.created_events) == 1
+
+
+def test_conversation_orchestration_bootstrap_snapshot_and_final_booking(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    call = CallSession(tenant_id=tenant.id, channel=CallChannel.browser, status="active")
+    db.add(call)
+    db.commit()
+
+    bootstrap = client.post("/api/v1/calendar/conversation/bootstrap", json={"session_id": str(call.id)})
+    assert bootstrap.status_code == 200, bootstrap.text
+    assert bootstrap.json()["snapshot_status"] == "ready"
+
+    resolved = client.post("/api/v1/calendar/tools/resolve-service", json={
+        "session_id": str(call.id), "tool_call_id": "resolve-1", "service_name": appointment.name,
+    })
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["service_id"] == str(appointment.service_id)
+
+    checked = client.post("/api/v1/calendar/tools/check-appointment-availability/session", json={
+        "session_id": str(call.id), "tool_call_id": "availability-1",
+        "service_id": str(appointment.service_id), "appointment_type_id": str(appointment.id),
+        "requested_start": "2026-08-03T09:00:00+02:00", "timezone": "Europe/Berlin",
+    })
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["available"] is True
+    assert checked.json()["preliminary"] is True
+
+    payload = {
+        "session_id": str(call.id), "tool_call_id": "finalize-1",
+        "service_id": str(appointment.service_id), "appointment_type_id": str(appointment.id),
+        "customer_name": "Max Mustermann", "customer_phone": "+49123456", "customer_email": None,
+        "start_at": "2026-08-03T09:00:00+02:00", "timezone": "Europe/Berlin",
+        "confirmation_version": 1, "confirmed": True,
+    }
+    booked = client.post("/api/v1/calendar/tools/finalize-appointment-booking", json=payload)
+    assert booked.status_code == 200, booked.text
+    assert booked.json()["success"] is True
+    assert booked.json()["external_event_id"] == "event-1"
+    repeated = client.post("/api/v1/calendar/tools/finalize-appointment-booking", json=payload)
+    assert repeated.json()["booking_id"] == booked.json()["booking_id"]
+    assert len(provider.created_events) == 1
+
+    db.execute(delete(ToolExecution).where(ToolExecution.call_session_id == call.id))
+    db.execute(delete(AvailabilitySnapshot).where(AvailabilitySnapshot.call_session_id == call.id))
+    db.execute(delete(BookingConversation).where(BookingConversation.call_session_id == call.id))
+    db.execute(delete(CalendarBooking).where(CalendarBooking.conversation_session_id == call.id))
+    db.delete(call)
+    db.commit()
 
 
 def test_appointments_agenda_deduplicates_platform_and_provider_event(client, db, calendar_env):

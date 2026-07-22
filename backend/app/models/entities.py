@@ -108,6 +108,25 @@ class CalendarBookingSource(str, enum.Enum):
     admin_api = "admin_api"
 
 
+class BookingState(str, enum.Enum):
+    idle = "idle"
+    catalog_loading = "catalog_loading"
+    ready = "ready"
+    service_required = "service_required"
+    service_selected = "service_selected"
+    date_time_required = "date_time_required"
+    availability_checking = "availability_checking"
+    slot_available = "slot_available"
+    slot_unavailable = "slot_unavailable"
+    customer_data_required = "customer_data_required"
+    confirmation_required = "confirmation_required"
+    final_check_running = "final_check_running"
+    booking_running = "booking_running"
+    booking_confirmed = "booking_confirmed"
+    booking_failed = "booking_failed"
+    completed = "completed"
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -416,6 +435,10 @@ class CalendarBooking(Base, TimestampMixin):
     )
     source: Mapped[CalendarBookingSource] = mapped_column(Enum(CalendarBookingSource, native_enum=False))
     idempotency_key: Mapped[str] = mapped_column(String(200))
+    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    conversation_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("call_sessions.id"), nullable=True, index=True
+    )
     provider_response_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sync_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
@@ -492,6 +515,8 @@ class CallSession(Base):
     channel: Mapped[CallChannel] = mapped_column(Enum(CallChannel, native_enum=False))
     status: Mapped[str] = mapped_column(String(50))
     configuration_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_state: Mapped[str] = mapped_column(String(50), default="idle")
+    bootstrap_status: Mapped[str] = mapped_column(String(50), default="not_started")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -499,11 +524,78 @@ class CallSession(Base):
 
 class ToolExecution(Base):
     __tablename__ = "tool_executions"
+    __table_args__ = (UniqueConstraint("call_session_id", "call_id", name="uq_tool_execution_session_call"),)
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     call_session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("call_sessions.id"), index=True)
+    call_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     tool_name: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50))
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    continuation_mode: Mapped[str] = mapped_column(String(50), default="sdk_automatic")
+    result_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    continuation_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    continuation_response_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    booking_state_before: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    booking_state_after: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    runtime_state_before: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    runtime_state_after: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    success: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BookingConversation(Base, TimestampMixin):
+    __tablename__ = "booking_conversations"
+    __table_args__ = (UniqueConstraint("call_session_id", name="uq_booking_conversation_session"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    call_session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("call_sessions.id"), index=True)
+    state: Mapped[BookingState] = mapped_column(
+        Enum(BookingState, native_enum=False), default=BookingState.idle, index=True
+    )
+    service_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("services.id"), nullable=True)
+    service_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    appointment_type_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("calendar_appointment_types.id"), nullable=True
+    )
+    requested_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    selected_slot_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    selected_slot_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(100), default="Europe/Berlin")
+    customer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    customer_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    booking_confirmed_by_customer: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmation_version: Mapped[int] = mapped_column(Integer, default=0)
+    appointment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("calendar_bookings.id"), nullable=True)
+    external_event_id: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class AvailabilitySnapshot(Base):
+    __tablename__ = "availability_snapshots"
+    __table_args__ = (UniqueConstraint("call_session_id", name="uq_availability_snapshot_session"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    call_session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("call_sessions.id"), index=True)
+    calendar_connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("calendar_connections.id"), nullable=True
+    )
+    external_calendar_id: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(100))
+    horizon_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    horizon_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    catalog: Mapped[list] = mapped_column(JSON, default=list)
+    business_hours: Mapped[list] = mapped_column(JSON, default=list)
+    calendar_ids: Mapped[list] = mapped_column(JSON, default=list)
+    availability_status: Mapped[str] = mapped_column(String(50), default="ready")
+    busy_intervals: Mapped[list] = mapped_column(JSON, default=list)
+    local_appointment_intervals: Mapped[list] = mapped_column(JSON, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
 

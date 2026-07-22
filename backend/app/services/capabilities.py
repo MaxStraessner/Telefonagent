@@ -18,7 +18,7 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
         key="calendar_booking",
         display_name="Kalender und Terminbuchung",
         description="Aktive Leistungen laden, echte Verfügbarkeit prüfen und bestätigte Termine verbindlich buchen.",
-        tool_name="create_appointment",
+        tool_name="finalize_appointment_booking",
         risk_level="write",
         requires_confirmation=True,
     )
@@ -42,6 +42,17 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "name": "resolve_service",
+            "description": "Löst eine genannte Leistung eindeutig gegen den aktiven Katalog auf.",
+            "parameters": {
+                "type": "object",
+                "properties": {"service_name": {"type": "string"}},
+                "required": ["service_name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
             "name": "check_appointment_availability",
             "description": "Prüft eine konkrete Startzeit serverseitig gegen lokale und externe Kalenderdaten.",
             "parameters": {
@@ -58,7 +69,26 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
-            "name": "create_appointment",
+            "name": "find_alternative_slots",
+            "description": "Findet freie Alternativtermine serverseitig aus dem Sitzungssnapshot.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_id": {"type": "string"},
+                    "appointment_type_id": {"type": "string"},
+                    "search_start": {"type": "string"},
+                    "search_days": {"type": "integer", "minimum": 1, "maximum": 30},
+                    "preferred_day": {"type": "string"},
+                    "preferred_time_of_day": {"type": "string", "enum": ["morning", "afternoon", "evening"]},
+                    "maximum_results": {"type": "integer", "minimum": 1, "maximum": 10},
+                },
+                "required": ["service_id", "appointment_type_id", "search_start", "search_days", "maximum_results"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "finalize_appointment_booking",
             "description": (
                 "Bucht erst nach ausdrücklicher Kundenbestätigung. Nur success=true, status=confirmed und "
                 "external_event_id bedeuten, dass der Termin erfolgreich eingetragen wurde."
@@ -73,12 +103,12 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
                     "customer_email": {"type": ["string", "null"]},
                     "start_at": {"type": "string"},
                     "timezone": {"type": "string"},
-                    "idempotency_key": {"type": "string"},
+                    "confirmation_version": {"type": "integer", "minimum": 1},
                     "confirmed": {"type": "boolean", "const": True},
                 },
                 "required": [
                     "service_id", "appointment_type_id", "customer_name", "customer_phone",
-                    "customer_email", "start_at", "timezone", "idempotency_key", "confirmed",
+                    "customer_email", "start_at", "timezone", "confirmation_version", "confirmed",
                 ],
                 "additionalProperties": False,
             },

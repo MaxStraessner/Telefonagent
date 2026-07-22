@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     microsoft_calendar_client_secret: str | None = None
     microsoft_calendar_redirect_uri: str | None = None
     microsoft_calendar_tenant: str = "common"
+    availability_snapshot_horizon_days: int = 14
+    availability_snapshot_ttl_seconds: int = 120
+    calendar_provider_timeout_seconds: float = 8.0
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"

@@ -6,6 +6,7 @@ import pytest
 from app.calendar.providers import BusyInterval
 from app.models import BookingConfiguration, CalendarAppointmentType, CalendarBusinessHour, CalendarLocationType
 from app.services.availability import calculate_available_slots, merge_busy_intervals
+from app.services.availability_snapshot import _dump, _load
 
 BERLIN = ZoneInfo("Europe/Berlin")
 
@@ -176,3 +177,17 @@ def test_preferred_day_and_time_filter_without_inventing_slots():
         maximum_results=2,
     )
     assert [item[0].astimezone(BERLIN).hour for item in result] == [12, 12]
+
+
+def test_snapshot_contains_only_privacy_minimal_busy_ranges():
+    serialized = _dump([BusyInterval(dt(3, 9), dt(3, 10))])
+    assert set(serialized[0]) == {"start", "end"}
+    assert "title" not in serialized[0] and "attendees" not in serialized[0]
+
+
+def test_snapshot_busy_ranges_roundtrip_across_dst_boundaries():
+    before = datetime(2026, 3, 29, 1, 0, tzinfo=BERLIN)
+    after = datetime(2026, 3, 29, 4, 0, tzinfo=BERLIN)
+    restored = _load(_dump([BusyInterval(before, after)]))[0]
+    assert restored.start == before.astimezone(ZoneInfo("UTC"))
+    assert restored.end == after.astimezone(ZoneInfo("UTC"))

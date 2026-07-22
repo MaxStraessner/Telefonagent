@@ -262,3 +262,61 @@ class CalendarEntryResponse(BaseModel):
 class CalendarAgendaResponse(BaseModel):
     calendar_connected: bool
     entries: list[CalendarEntryResponse]
+
+
+class ConversationToolRequest(BaseModel):
+    session_id: UUID
+    tool_call_id: str = Field(min_length=1, max_length=200)
+
+
+class ConversationBootstrapRequest(BaseModel):
+    session_id: UUID
+
+
+class ConversationBootstrapResponse(BaseModel):
+    success: bool
+    state: str
+    snapshot_status: Literal["ready", "unavailable"]
+    error_code: str | None = None
+
+
+class ListBookableServicesRequest(ConversationToolRequest):
+    pass
+
+
+class ResolveServiceRequest(ConversationToolRequest):
+    service_name: str = Field(min_length=1, max_length=150)
+
+
+class SnapshotAvailabilityRequest(ConversationToolRequest):
+    service_id: UUID
+    appointment_type_id: UUID
+    requested_start: datetime
+    timezone: str = Field(min_length=1, max_length=100)
+
+
+class AlternativeSlotsRequest(ConversationToolRequest):
+    service_id: UUID
+    appointment_type_id: UUID
+    search_start: datetime
+    search_days: int = Field(default=7, ge=1, le=30)
+    preferred_day: date | None = None
+    preferred_time_of_day: Literal["morning", "afternoon", "evening"] | None = None
+    maximum_results: int = Field(default=3, ge=1, le=10)
+
+
+class SnapshotAvailabilityResponse(ExactAvailabilityResponse):
+    source: Literal["snapshot", "targeted_refresh"]
+    preliminary: bool = True
+
+
+class FinalizeAppointmentRequest(ConversationToolRequest):
+    service_id: UUID
+    appointment_type_id: UUID
+    customer_name: str = Field(min_length=1, max_length=150)
+    customer_phone: str | None = Field(default=None, max_length=50)
+    customer_email: str | None = Field(default=None, max_length=320)
+    start_at: datetime
+    timezone: str = Field(min_length=1, max_length=100)
+    confirmation_version: int = Field(ge=1)
+    confirmed: Literal[True]

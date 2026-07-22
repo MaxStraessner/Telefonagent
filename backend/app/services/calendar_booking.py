@@ -82,7 +82,12 @@ class CalendarBookingService:
         self.db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
 
     async def create(
-        self, payload: CalendarBookingCreate, *, source: CalendarBookingSource = CalendarBookingSource.voice_agent
+        self,
+        payload: CalendarBookingCreate,
+        *,
+        source: CalendarBookingSource = CalendarBookingSource.voice_agent,
+        tool_call_id: str | None = None,
+        conversation_session_id: UUID | None = None,
     ) -> BookingServiceResult:
         existing = self.existing_for_key(payload.idempotency_key)
         if existing is not None:
@@ -207,6 +212,8 @@ class CalendarBookingService:
             appointment_format_snapshot=configured_type.location_type.value,
             location_snapshot=configured_type.location_text,
             calendar_name_snapshot=target.calendar_name,
+            tool_call_id=tool_call_id,
+            conversation_session_id=conversation_session_id,
         )
         self.db.add(booking)
         try:

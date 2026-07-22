@@ -168,7 +168,7 @@ describe("Realtime browser voice flow", () => {
     expect(sdk.close).toHaveBeenCalled();
     expect(sdk.transportClose).toHaveBeenCalled();
     expect(trackStop).toHaveBeenCalled();
-    expect(sdk.sessionOff).toHaveBeenCalledTimes(4);
+    expect(sdk.sessionOff).toHaveBeenCalledTimes(6);
     expect(sdk.transportOff).toHaveBeenCalledOnce();
     expect(microphoneTrack.removeEventListener).toHaveBeenCalledWith("ended", expect.any(Function));
     expect(screen.getByLabelText("Sprachausgabe des Assistenten")).toHaveProperty("srcObject", null);
@@ -418,12 +418,12 @@ describe("Realtime browser voice flow", () => {
     client.close();
   });
 
-  it("schließt zehn aufeinanderfolgende Antworten erst nach dem jeweiligen echten Buffer-Stopp ab", async () => {
+  it("schließt zwanzig aufeinanderfolgende Antworten erst nach dem jeweiligen echten Buffer-Stopp ab", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
     await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
     vi.mocked(callbacks.onPlaybackStatus).mockClear();
-    for (let index = 1; index <= 10; index += 1) {
+    for (let index = 1; index <= 20; index += 1) {
       const responseId = `r-sequence-${index}`;
       act(() => {
         sdk.emit("transport_event", { type: "response.created", response: { id: responseId } });
@@ -436,8 +436,8 @@ describe("Realtime browser voice flow", () => {
       expect(microphoneTrack.enabled).toBe(true);
     }
     const completedCalls = vi.mocked(callbacks.onPlaybackStatus).mock.calls.filter(([status]) => status === "completed");
-    expect(completedCalls).toHaveLength(10);
-    expect(completedCalls.map(([, responseId]) => responseId)).toEqual(Array.from({ length: 10 }, (_, index) => `r-sequence-${index + 1}`));
+    expect(completedCalls).toHaveLength(20);
+    expect(completedCalls.map(([, responseId]) => responseId)).toEqual(Array.from({ length: 20 }, (_, index) => `r-sequence-${index + 1}`));
     expect(vi.mocked(callbacks.onPlaybackStatus).mock.calls.some(([status]) => status === "interrupted")).toBe(false);
     client.close();
   });

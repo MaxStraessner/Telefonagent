@@ -6,6 +6,7 @@ import { createCalendarTools } from "./calendarTools";
 import { sanitizedRealtimeEventDetail } from "./events";
 import { realtimeErrors } from "./errors";
 import { derivePlaybackStatus, incompleteResponseWasInterrupted, type PlaybackStatus } from "./playback";
+import { RealtimeToolExecutor, type ConversationRuntimeState } from "./toolExecution";
 
 export const CONNECTION_TIMEOUT_MS = 15_000;
 
@@ -75,6 +76,8 @@ export class BrowserRealtimeClient {
   private manuallyMuted = false;
   private activeResponse = emptyActiveResponse();
   private playbackStatus: PlaybackStatus | null = null;
+  private toolExecutor: RealtimeToolExecutor | null = null;
+  private runtimeState: ConversationRuntimeState = "idle";
 
   constructor(callbacks: RealtimeClientCallbacks) {
     this.callbacks = callbacks;
@@ -96,7 +99,12 @@ export class BrowserRealtimeClient {
     audioElement.addEventListener("error", this.handleAudioError);
 
     const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement });
-    const calendarTools = createCalendarTools(config.tool_names, this.callbacks.onEvent);
+    this.toolExecutor = new RealtimeToolExecutor(
+      secret.call_session_id,
+      this.callbacks.onEvent,
+      (state) => this.setRuntimeState(state),
+    );
+    const calendarTools = createCalendarTools(config.tool_names, this.toolExecutor);
     const agent = new RealtimeAgent({ name: config.assistant_name, instructions: config.instructions, voice: config.voice, tools: calendarTools });
     const turnDetection = config.vad.type === "semantic_vad"
       ? { type: "semantic_vad" as const, eagerness: config.vad.eagerness ?? "medium", createResponse: config.vad.create_response, interruptResponse: false }
@@ -148,8 +156,17 @@ export class BrowserRealtimeClient {
     const transportEvent = (event: TransportEvent) => this.handleTransportEvent(event);
     const agentStart = () => {
       this.assistantGenerating = true;
+      this.setRuntimeState("generation_running");
       this.callbacks.onState("assistant_thinking");
       this.emitInternalEvent("sdk_agent_generation_started", "openai_sdk");
+    };
+    const toolStart = (event: unknown) => {
+      this.setRuntimeState("tool_running");
+      this.callbacks.onEvent("sdk_agent_tool_start", JSON.stringify(event));
+    };
+    const toolEnd = (event: unknown) => {
+      this.setRuntimeState("continuation_starting");
+      this.callbacks.onEvent("sdk_agent_tool_end", JSON.stringify(event));
     };
     const sessionError = (event: { error: unknown }) => this.callbacks.onError(event.error);
     const connectionChange = (status: "connecting" | "connected" | "disconnected") => {
@@ -160,12 +177,16 @@ export class BrowserRealtimeClient {
     session.on("history_updated", historyUpdated);
     session.on("transport_event", transportEvent);
     session.on("agent_start", agentStart);
+    session.on("agent_tool_start", toolStart);
+    session.on("agent_tool_end", toolEnd);
     session.on("error", sessionError);
     transport.on("connection_change", connectionChange);
     this.listenerDisposers.push(
       () => session.off("history_updated", historyUpdated),
       () => session.off("transport_event", transportEvent),
       () => session.off("agent_start", agentStart),
+      () => session.off("agent_tool_start", toolStart),
+      () => session.off("agent_tool_end", toolEnd),
       () => session.off("error", sessionError),
       () => transport.off("connection_change", connectionChange),
     );
@@ -180,6 +201,8 @@ export class BrowserRealtimeClient {
     if (rawEventType === "response.created") {
       this.activeResponse = emptyActiveResponse(incomingResponseId);
       this.assistantGenerating = true;
+      this.setRuntimeState("generation_running");
+      if (incomingResponseId) this.toolExecutor?.attachContinuationResponse(incomingResponseId);
     } else if (incomingResponseId && !this.activeResponse.responseId) {
       this.activeResponse.responseId = incomingResponseId;
     }
@@ -190,6 +213,7 @@ export class BrowserRealtimeClient {
         this.activeResponse.bufferStarted = true;
         this.activeResponse.playbackStopped = false;
         this.setAssistantSpeaking(true);
+        this.setRuntimeState("playback_running");
         internalEventName = "assistant_playback_started";
         break;
       case "response.output_audio.done":
@@ -202,16 +226,19 @@ export class BrowserRealtimeClient {
         this.activeResponse.responseStatus = response?.status ?? null;
         this.activeResponse.explicitlyCancelled = incompleteResponseWasInterrupted(response);
         this.callbacks.onResponseCompleted(response?.status === undefined || response.status === "completed");
+        this.toolExecutor?.completeResponse(incomingResponseId);
         internalEventName = this.activeResponse.explicitlyCancelled ? "assistant_response_interrupted" : "assistant_response_generation_completed";
         break;
       case "output_audio_buffer.stopped":
         this.activeResponse.playbackStopped = true;
         this.setAssistantSpeaking(false);
+        this.setRuntimeState("idle");
         internalEventName = "assistant_playback_completed";
         break;
       case "output_audio_buffer.cleared":
         this.activeResponse.bufferCleared = true;
         this.setAssistantSpeaking(false);
+        this.setRuntimeState("idle");
         internalEventName = "assistant_playback_interrupted";
         break;
       case "conversation.item.truncated":
@@ -311,7 +338,7 @@ export class BrowserRealtimeClient {
   mute(muted: boolean) {
     this.manuallyMuted = muted;
     this.session?.mute(muted);
-    this.setMicrophoneEnabled(!muted && !this.assistantSpeaking);
+    this.setMicrophoneEnabled(!muted && this.runtimeState === "idle");
     this.callbacks.onState(muted ? "muted" : (this.assistantSpeaking ? "assistant_speaking" : "connected"));
     this.emitInternalEvent(muted ? "microphone_muted" : "microphone_unmuted", "ui");
   }
@@ -331,8 +358,16 @@ export class BrowserRealtimeClient {
   private setAssistantSpeaking(speaking: boolean) {
     if (this.closed || this.assistantSpeaking === speaking) return;
     this.assistantSpeaking = speaking;
-    this.setMicrophoneEnabled(!speaking && !this.manuallyMuted);
+    this.setMicrophoneEnabled(!speaking && !this.manuallyMuted && this.runtimeState === "idle");
     this.callbacks.onState(speaking ? "assistant_speaking" : (this.manuallyMuted ? "muted" : "connected"));
+  }
+
+  private setRuntimeState(state: ConversationRuntimeState) {
+    if (this.closed) return;
+    const before = this.runtimeState;
+    this.runtimeState = state;
+    this.setMicrophoneEnabled(state === "idle" && !this.manuallyMuted && !this.assistantSpeaking);
+    if (before !== state) this.callbacks.onEvent("conversation_runtime_state_changed", JSON.stringify({ before, after: state }));
   }
 
   close() {
@@ -341,6 +376,7 @@ export class BrowserRealtimeClient {
     this.connected = false;
     this.assistantSpeaking = false;
     this.assistantGenerating = false;
+    this.runtimeState = "idle";
     this.setMicrophoneEnabled(false);
     this.listenerDisposers.splice(0).forEach((dispose) => {
       try { dispose(); } catch { /* one faulty SDK listener must not block the remaining cleanup */ }

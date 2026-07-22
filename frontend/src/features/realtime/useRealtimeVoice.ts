@@ -149,6 +149,10 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
         return;
       }
       addEvent("client_secret.received");
+      void api.bootstrapBookingConversation(secret.call_session_id).then(
+        (result) => addEvent("booking.bootstrap_completed", JSON.stringify(result)),
+        (error) => addEvent("booking.bootstrap_failed", error instanceof Error ? error.message : String(error)),
+      );
       if (secret.tenant_id !== agentConfig.tenant_id || secret.model !== agentConfig.model || secret.voice !== agentConfig.voice || secret.speed !== agentConfig.speed || secret.configuration_version !== agentConfig.configuration_version) {
         throw realtimeErrors.configurationMismatch();
       }

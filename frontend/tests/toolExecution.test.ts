@@ -1,0 +1,38 @@
+import { describe, expect, it, vi } from "vitest";
+import { RealtimeToolExecutor } from "../src/features/realtime/toolExecution";
+
+const continuationPaths = [
+  ["list_bookable_services", true], ["resolve_service", true],
+  ["check_appointment_availability", true], ["find_alternative_slots", true],
+  ["finalize_appointment_booking", true], ["list_bookable_services", false],
+  ["resolve_service", false], ["check_appointment_availability", false],
+  ["find_alternative_slots", false], ["finalize_appointment_booking", false],
+  ["provider_timeout", false], ["slot_conflict", true],
+] as const;
+
+describe("RealtimeToolExecutor continuation", () => {
+  it.each(continuationPaths)("verarbeitet %s mit Erfolg=%s genau einmal", async (toolName, success) => {
+    const events = vi.fn();
+    const states = vi.fn();
+    const action = success ? vi.fn().mockResolvedValue({ success: true }) : vi.fn().mockRejectedValue(new Error("controlled"));
+    const executor = new RealtimeToolExecutor("session-1", events, states);
+    const result = executor.execute("call-1", toolName, action);
+    if (success) await expect(result).resolves.toEqual({ success: true });
+    else await expect(result).rejects.toThrow("controlled");
+    expect(action).toHaveBeenCalledOnce();
+    expect(events.mock.calls.filter(([name]) => name === "tool_result_sent")).toHaveLength(success ? 1 : 0);
+  });
+
+  it("dedupliziert dieselbe Tool-Call-ID und ordnet genau eine SDK-Fortsetzungsantwort zu", async () => {
+    const events = vi.fn();
+    const action = vi.fn().mockResolvedValue({ success: true });
+    const executor = new RealtimeToolExecutor("session-1", events, vi.fn());
+    const first = executor.execute("same-call", "resolve_service", action);
+    const second = executor.execute("same-call", "resolve_service", action);
+    await Promise.all([first, second]);
+    executor.attachContinuationResponse("response-1");
+    executor.attachContinuationResponse("response-2");
+    expect(action).toHaveBeenCalledOnce();
+    expect(events.mock.calls.filter(([name]) => name === "tool_continuation_response_created")).toHaveLength(1);
+  });
+});
