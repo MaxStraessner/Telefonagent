@@ -58,7 +58,7 @@ vi.mock("@openai/agents/realtime", () => {
 });
 
 import { App } from "../src/App";
-import { BrowserRealtimeClient, CONNECTION_TIMEOUT_MS } from "../src/features/realtime/realtimeClient";
+import { BrowserRealtimeClient, CONNECTION_TIMEOUT_MS, type RealtimeClientCallbacks } from "../src/features/realtime/realtimeClient";
 
 const tenant = {
   id: "11111111-1111-1111-1111-111111111111", slug: "salon-haarkunst-test", name: "Salon Haarkunst Test",
@@ -76,9 +76,17 @@ const agentConfig = {
 };
 const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", speed: 1, configuration_version: 1, call_session_id: "call-local", tenant_id: tenant.id };
 
+function clientCallbacks(): RealtimeClientCallbacks {
+  return {
+    onState: vi.fn(), onHistory: vi.fn(), onEvent: vi.fn(), onError: vi.fn(), onConnected: vi.fn(),
+    onUserSpeechStopped: vi.fn(), onAssistantAudioPlaying: vi.fn(), onResponseCompleted: vi.fn(), onPlaybackStatus: vi.fn(), onCallId: vi.fn(),
+  };
+}
+
 let trackStop: ReturnType<typeof vi.fn>;
 let getUserMedia: ReturnType<typeof vi.fn>;
 let microphoneTrack: {
+  enabled: boolean;
   stop: ReturnType<typeof vi.fn>;
   addEventListener: ReturnType<typeof vi.fn>;
   removeEventListener: ReturnType<typeof vi.fn>;
@@ -115,6 +123,7 @@ beforeEach(() => {
   trackStop = vi.fn();
   let endedHandler: (() => void) | undefined;
   microphoneTrack = {
+    enabled: true,
     stop: trackStop,
     addEventListener: vi.fn((type: string, handler: () => void) => { if (type === "ended") endedHandler = handler; }),
     removeEventListener: vi.fn((type: string, handler: () => void) => { if (type === "ended" && endedHandler === handler) endedHandler = undefined; }),
@@ -159,7 +168,7 @@ describe("Realtime browser voice flow", () => {
     expect(sdk.close).toHaveBeenCalled();
     expect(sdk.transportClose).toHaveBeenCalled();
     expect(trackStop).toHaveBeenCalled();
-    expect(sdk.sessionOff).toHaveBeenCalledTimes(7);
+    expect(sdk.sessionOff).toHaveBeenCalledTimes(4);
     expect(sdk.transportOff).toHaveBeenCalledOnce();
     expect(microphoneTrack.removeEventListener).toHaveBeenCalledWith("ended", expect.any(Function));
     expect(screen.getByLabelText("Sprachausgabe des Assistenten")).toHaveProperty("srcObject", null);
@@ -231,13 +240,51 @@ describe("Realtime browser voice flow", () => {
     expect(alert).not.toHaveTextContent("secret endpoint");
   });
 
-  it("unterbricht eine laufende Assistentenantwort kontrolliert", async () => {
+  it("hält das Mikrofon bis zum tatsächlichen Ende des Audiopuffers gesperrt", async () => {
     render(<App />);
     await screen.findByText("Gespräch mit Lina");
     await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
     await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.");
-    await userEvent.click(screen.getByRole("button", { name: "Antwort unterbrechen" }));
-    expect(sdk.interrupt).toHaveBeenCalledOnce();
+    act(() => sdk.emit("transport_event", { type: "output_audio_buffer.started", response: { id: "r1" } }));
+    expect(microphoneTrack.enabled).toBe(false);
+    expect(screen.getByText("Wiedergabe läuft")).toBeInTheDocument();
+    act(() => sdk.emit("transport_event", { type: "response.output_audio.done", response_id: "r1" }));
+    expect(microphoneTrack.enabled).toBe(false);
+    expect(screen.getByText("Wiedergabe läuft")).toBeInTheDocument();
+    act(() => sdk.emit("transport_event", { type: "response.done", response: { id: "r1", status: "completed" } }));
+    expect(microphoneTrack.enabled).toBe(false);
+    expect(screen.queryByText("Unterbrochen")).not.toBeInTheDocument();
+    expect(sdk.close).not.toHaveBeenCalled();
+    act(() => sdk.emit("transport_event", { type: "output_audio_buffer.stopped", response: { id: "r1" } }));
+    expect(microphoneTrack.enabled).toBe(true);
+    expect(screen.getByText("Vollständig wiedergegeben")).toBeInTheDocument();
+  });
+
+  it("markiert nur eine nachgewiesene Pufferlöschung und Stornierung als unterbrochen", async () => {
+    render(<App />);
+    await screen.findByText("Gespräch mit Lina");
+    await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
+    await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.");
+    act(() => {
+      sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: "r-cancel" });
+      sdk.emit("transport_event", { type: "output_audio_buffer.cleared", response_id: "r-cancel" });
+      sdk.emit("transport_event", { type: "response.done", response: { id: "r-cancel", status: "cancelled" } });
+    });
+    expect(microphoneTrack.enabled).toBe(true);
+    expect(screen.getByText("Unterbrochen")).toBeInTheDocument();
+  });
+
+  it("behandelt completed plus echtes Buffer-Stopped stets als normalen Abschluss", async () => {
+    render(<App />);
+    await screen.findByText("Gespräch mit Lina");
+    await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
+    await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.");
+    act(() => {
+      sdk.emit("transport_event", { type: "response.done", response: { id: "r-complete", status: "completed" } });
+      sdk.emit("transport_event", { type: "output_audio_buffer.stopped", response_id: "r-complete" });
+    });
+    expect(screen.getByText("Vollständig wiedergegeben")).toBeInTheDocument();
+    expect(screen.queryByText("Unterbrochen")).not.toBeInTheDocument();
   });
 
   it("beendet die Sitzung kontrolliert, wenn der Mikrofontrack endet", async () => {
@@ -300,7 +347,7 @@ describe("Realtime browser voice flow", () => {
     expect(trackStop).toHaveBeenCalled();
   });
 
-  it("normalisiert Diagnoseereignisse, zählt Gesprächsrunden und begrenzt den Puffer", async () => {
+  it("zeigt unveränderte Raw-Ereignisse, zählt Gesprächsrunden und begrenzt den Puffer", async () => {
     render(<App />);
     await screen.findByText("Gespräch mit Lina");
     await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
@@ -312,11 +359,11 @@ describe("Realtime browser voice flow", () => {
       sdk.emit("transport_event", { type: "response.done", response: { status: "completed" } });
     });
     fireEvent.playing(screen.getByLabelText("Sprachausgabe des Assistenten"));
-    expect(await screen.findByText("speech_started")).toBeInTheDocument();
-    expect(screen.getByText("speech_stopped")).toBeInTheDocument();
-    expect(screen.getByText("response_created")).toBeInTheDocument();
-    expect(screen.getByText("response_completed")).toBeInTheDocument();
-    expect(screen.getByText("first_audio_playing")).toBeInTheDocument();
+    expect(await screen.findByText("input_audio_buffer.speech_started")).toBeInTheDocument();
+    expect(screen.getByText("input_audio_buffer.speech_stopped")).toBeInTheDocument();
+    expect(screen.getByText("response.created")).toBeInTheDocument();
+    expect(screen.getByText("response.done")).toBeInTheDocument();
+    expect(screen.getByText("html_audio_playing")).toBeInTheDocument();
     expect(screen.getByText("Gesprächsrunden").parentElement).toHaveTextContent("1");
     act(() => { for (let index = 0; index < 45; index += 1) sdk.emit("transport_event", { type: `test.event.${index}` }); });
     expect(document.querySelectorAll(".event-row")).toHaveLength(40);
@@ -332,13 +379,73 @@ describe("Realtime browser voice flow", () => {
     expect(screen.getAllByText("Mikrofon ist stumm").length).toBeGreaterThan(0);
   });
 
+  it("erzeugt aus response.output_audio.done kein künstliches Buffer-Stopped-Ereignis", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    vi.mocked(callbacks.onEvent).mockClear();
+    act(() => {
+      sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: "r-no-fake" });
+      sdk.emit("transport_event", { type: "response.output_audio.done", response_id: "r-no-fake" });
+    });
+    const serializedEvents = vi.mocked(callbacks.onEvent).mock.calls.map((call) => JSON.stringify(call)).join("\n");
+    expect(serializedEvents).toContain("response.output_audio.done");
+    expect(serializedEvents).not.toContain("output_audio_buffer.stopped");
+    expect(microphoneTrack.enabled).toBe(false);
+    client.close();
+  });
+
+  it("ignoriert SDK-audio_stopped und verarbeitet ein echtes Buffer-Stopped genau einmal", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    act(() => {
+      sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: "r-once" });
+      sdk.emit("transport_event", { type: "response.done", response: { id: "r-once", status: "completed" } });
+    });
+    vi.mocked(callbacks.onState).mockClear();
+    vi.mocked(callbacks.onPlaybackStatus).mockClear();
+    act(() => sdk.emit("audio_stopped"));
+    expect(microphoneTrack.enabled).toBe(false);
+    expect(callbacks.onState).not.toHaveBeenCalled();
+    expect(sdk.handlers.has("audio_stopped")).toBe(false);
+    act(() => sdk.emit("transport_event", { type: "output_audio_buffer.stopped", response_id: "r-once" }));
+    expect(microphoneTrack.enabled).toBe(true);
+    expect(callbacks.onState).toHaveBeenCalledTimes(1);
+    expect(callbacks.onState).toHaveBeenCalledWith("connected");
+    expect(callbacks.onPlaybackStatus).toHaveBeenCalledOnce();
+    expect(callbacks.onPlaybackStatus).toHaveBeenCalledWith("completed", "r-once");
+    client.close();
+  });
+
+  it("schließt zehn aufeinanderfolgende Antworten erst nach dem jeweiligen echten Buffer-Stopp ab", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    vi.mocked(callbacks.onPlaybackStatus).mockClear();
+    for (let index = 1; index <= 10; index += 1) {
+      const responseId = `r-sequence-${index}`;
+      act(() => {
+        sdk.emit("transport_event", { type: "response.created", response: { id: responseId } });
+        sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: responseId });
+        sdk.emit("transport_event", { type: "response.output_audio.done", response_id: responseId });
+        sdk.emit("transport_event", { type: "response.done", response: { id: responseId, status: "completed" } });
+      });
+      expect(microphoneTrack.enabled).toBe(false);
+      act(() => sdk.emit("transport_event", { type: "output_audio_buffer.stopped", response_id: responseId }));
+      expect(microphoneTrack.enabled).toBe(true);
+    }
+    const completedCalls = vi.mocked(callbacks.onPlaybackStatus).mock.calls.filter(([status]) => status === "completed");
+    expect(completedCalls).toHaveLength(10);
+    expect(completedCalls.map(([, responseId]) => responseId)).toEqual(Array.from({ length: 10 }, (_, index) => `r-sequence-${index + 1}`));
+    expect(vi.mocked(callbacks.onPlaybackStatus).mock.calls.some(([status]) => status === "interrupted")).toBe(false);
+    client.close();
+  });
+
   it("bricht einen hängenden SDK-Verbindungsaufbau nach 15 Sekunden ab", async () => {
     vi.useFakeTimers();
     sdk.connect.mockReturnValue(new Promise<void>(() => undefined));
-    const callbacks = {
-      onState: vi.fn(), onHistory: vi.fn(), onEvent: vi.fn(), onError: vi.fn(), onConnected: vi.fn(),
-      onUserSpeechStopped: vi.fn(), onAssistantAudioPlaying: vi.fn(), onResponseCompleted: vi.fn(), onCallId: vi.fn(),
-    };
+    const callbacks = clientCallbacks();
     const audio = document.createElement("audio");
     const client = new BrowserRealtimeClient(callbacks);
     const connecting = client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, audio);

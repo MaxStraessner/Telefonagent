@@ -121,12 +121,12 @@ export interface BookingConfiguration {
   maximum_suggestions_per_request: number; business_hours: CalendarBusinessHour[]; updated_at: string;
 }
 export interface CalendarAppointmentType {
-  id: string; tenant_id: string; name: string; description: string; duration_minutes: number;
+  id: string; tenant_id: string; service_id: string; name: string; service_name: string; description: string; duration_minutes: number;
   buffer_before_minutes: number | null; buffer_after_minutes: number | null;
   location_type: "phone" | "onsite" | "video" | "custom"; location_text: string;
   is_active: boolean; created_at: string; updated_at: string;
 }
-export type AppointmentTypeWrite = Omit<CalendarAppointmentType, "id" | "tenant_id" | "created_at" | "updated_at">;
+export type AppointmentTypeWrite = Pick<CalendarAppointmentType, "service_id" | "buffer_before_minutes" | "buffer_after_minutes" | "location_type" | "location_text" | "is_active">;
 export interface AvailableCalendarSlot {
   slot_id: string; start: string; end: string; spoken_date: string; spoken_time: string;
 }
@@ -139,5 +139,14 @@ export interface CalendarBookingResult {
   success: boolean; booking_id?: string; status?: "pending" | "confirmed" | "failed" | "cancelled";
   start?: string; end?: string; timezone?: string; error_code?: string; message?: string;
   alternative_slots: AvailableCalendarSlot[];
+  external_event_id?: string; calendar_name?: string; service_name?: string;
 }
+export interface CalendarEntry {
+  id: string; kind: "platform" | "external"; service_name: string; customer_name: string;
+  start_at: string; end_at: string; duration_minutes: number; appointment_format: string; location: string;
+  status: string; sync_status: string; source: string; calendar_provider: string; calendar_id: string;
+  calendar_name: string; external_event_id: string | null; buffer_before_minutes: number;
+  buffer_after_minutes: number; created_at: string | null;
+}
+export interface CalendarAgenda { calendar_connected: boolean; entries: CalendarEntry[]; }
 

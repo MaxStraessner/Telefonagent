@@ -58,6 +58,7 @@ const initialState: RealtimeViewState = {
   callId: null,
   remainingSeconds: null,
   vadSummary: null,
+  playbackStatus: null,
 };
 
 export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioElement | null) {
@@ -174,6 +175,19 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
           metricsRef.current.responseCompleted(completed);
           setView((current) => ({ ...current, metrics: metricsRef.current.snapshot() }));
         },
+        onPlaybackStatus: (playbackStatus) => setView((current) => {
+          if (playbackStatus !== "completed" && playbackStatus !== "interrupted") {
+            return { ...current, playbackStatus };
+          }
+          const transcript = [...current.transcript];
+          for (let index = transcript.length - 1; index >= 0; index -= 1) {
+            if (transcript[index].speaker === "assistant") {
+              transcript[index] = { ...transcript[index], status: playbackStatus };
+              break;
+            }
+          }
+          return { ...current, playbackStatus, transcript };
+        }),
         onCallId: (callId) => setView((current) => ({ ...current, callId })),
       });
       clientRef.current = client;

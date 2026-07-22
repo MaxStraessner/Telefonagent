@@ -6,6 +6,7 @@ from app.calendar.providers.base import (
     OAuthTokens,
     ProviderAccount,
     ProviderCalendar,
+    ProviderEvent,
 )
 from app.calendar.providers.factory import create_calendar_provider
 
@@ -17,5 +18,6 @@ __all__ = [
     "OAuthTokens",
     "ProviderAccount",
     "ProviderCalendar",
+    "ProviderEvent",
     "create_calendar_provider",
 ]

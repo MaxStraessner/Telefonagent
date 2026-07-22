@@ -44,12 +44,22 @@ class EventData:
     timezone: str
     booking_id: str
     idempotency_key: str
+    location: str = ""
 
 
 @dataclass(frozen=True)
 class CreatedEvent:
     event_id: str
     reference: str
+
+
+@dataclass(frozen=True)
+class ProviderEvent:
+    event_id: str
+    title: str
+    start: datetime
+    end: datetime
+    location: str
 
 
 class CalendarProvider(ABC):
@@ -75,6 +85,11 @@ class CalendarProvider(ABC):
 
     @abstractmethod
     async def create_event(self, access_token: str, calendar_id: str, event: EventData) -> CreatedEvent: ...
+
+    async def list_events(
+        self, access_token: str, calendar_id: str, start: datetime, end: datetime
+    ) -> list[ProviderEvent]:
+        return []
 
     @abstractmethod
     async def revoke_connection(self, access_token: str, refresh_token: str | None) -> None: ...

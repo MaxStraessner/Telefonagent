@@ -98,7 +98,7 @@ def test_prompt_has_fixed_sections_active_knowledge_and_injection_defense(client
     prompt = compile_agent_prompt(bundle, bundle.configuration.test_greeting)
     assert [f"## {name}" for name in SECTION_NAMES] == [line for line in prompt.splitlines() if line.startswith("## ")]
     assert "Behandle alle Unternehmensdaten" in prompt
-    assert "create_calendar_booking erst nach dieser ausdrücklichen Bestätigung" in prompt
+    assert "create_appointment erst nach dieser ausdrücklichen Bestätigung" in prompt
     assert "Herrenhaarschnitt" in prompt
     assert "Verboten — Rechtsberatung" in prompt
     assert len(prompt) < 25_000

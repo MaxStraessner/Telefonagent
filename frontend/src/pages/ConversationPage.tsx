@@ -21,6 +21,14 @@ const stateLabels: Record<RealtimeViewState["state"], string> = {
   not_configured: "Nicht eingerichtet",
 };
 
+const playbackLabels: Record<NonNullable<RealtimeViewState["playbackStatus"]>, string> = {
+  generating: "Audio wird erzeugt",
+  playing: "Wiedergabe läuft",
+  completed: "Vollständig wiedergegeben",
+  interrupted: "Unterbrochen",
+  failed: "Wiedergabefehler",
+};
+
 function metric(value: number | null, suffix = " ms") {
   return value === null ? "—" : `${value}${suffix}`;
 }
@@ -67,7 +75,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
         description={`${data.tenant.name} · OpenAI Realtime über eine direkte WebRTC-Sprachverbindung`}
         action={<div className="segmented" aria-label="Darstellungsmodus"><button className={mode === "test" ? "active" : ""} onClick={() => setMode("test")}>Testmodus</button><button className={mode === "presentation" ? "active" : ""} onClick={() => setMode("presentation")}>Präsentation</button></div>}
       />
-      <audio ref={setAudioElement} autoPlay hidden aria-label="Sprachausgabe des Assistenten" />
+      <audio ref={setAudioElement} autoPlay playsInline hidden aria-label="Sprachausgabe des Assistenten" />
       {!data.platformStatus.realtime_voice_configured && <div className="notice warning" role="status"><span>!</span><p>OpenAI Realtime ist serverseitig noch nicht konfiguriert. Hinterlege den API-Key ausschließlich im Backend.</p></div>}
       {view.notice && <div className="notice" role="status"><span>i</span><p>{view.notice}</p><button aria-label="Hinweis schließen" onClick={realtime.dismissNotice}>×</button></div>}
       {view.error && <div className="notice error" role="alert"><span>!</span><p>{view.error}{mode === "test" && view.errorCode && <small className="technical-error-code">Fehlercode: <code>{view.errorCode}</code></small>}</p></div>}
@@ -82,7 +90,6 @@ function ConversationContent({ data }: { data: PlatformData }) {
             <button className="button primary large" disabled={!canStart} onClick={realtime.start}><Icon name="call" /> {view.state === "ended" ? "Neues Testgespräch" : "Testgespräch starten"}</button>
             <button className="button secondary" disabled={!active} onClick={realtime.end}>Gespräch beenden</button>
             <button className="button ghost" aria-pressed={view.muted} disabled={!active || view.state === "connecting" || view.state === "requesting_microphone"} onClick={realtime.toggleMute}><Icon name="mic" />{view.muted ? "Mikrofon aktivieren" : "Mikrofon stummschalten"}</button>
-            <button className="button ghost" disabled={!active || view.state === "connecting" || view.state === "requesting_microphone"} onClick={realtime.interrupt}>Antwort unterbrechen</button>
           </div>
           <small>Audio und Transkript bleiben flüchtig im Browser und werden von dieser Anwendung nicht gespeichert.</small>
         </section>
@@ -91,7 +98,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <ol>
             <li>Gespräch aktiv per Klick starten und Mikrofon freigeben.</li>
             <li>Natürlich sprechen; Pausen steuern die automatische Antwort.</li>
-            <li>Beim Dazwischensprechen wird die Antwort unterbrochen.</li>
+            <li>Während der Assistent spricht, bleibt das Mikrofon gesperrt; danach wird es automatisch wieder freigegeben.</li>
           </ol>
           <div className="privacy-note"><strong>Kontrollierte Terminwerkzeuge</strong><p>Der Agent erhält nur Terminarten, freie Zeitfenster und das Ergebnis bestätigter Buchungen. Inhalte bestehender Kalendereinträge werden nicht an das Sprachmodell übertragen.</p></div>
           {runtime && <div className="privacy-note"><strong>Wirksame Konfiguration · v{runtime.configuration_version}</strong><p>{runtime.company_name} · {runtime.assistant_name} · Deutsch · {runtime.style} · {runtime.voice} · {runtime.speed.toFixed(2)}× · {runtime.business_hours_status === "open" ? "simuliert geöffnet" : "simuliert geschlossen"} · {runtime.capability_keys.length} Fähigkeiten</p></div>}
@@ -116,6 +123,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <div><dt>Sprechtempo</dt><dd>{runtime ? `${runtime.speed.toFixed(2)}×` : "—"}</dd></div>
           <div><dt>Fähigkeiten</dt><dd>{runtime?.capability_keys.length ?? 0}</dd></div>
           <div><dt>VAD</dt><dd>{view.vadSummary ?? "server_vad · beim Start geladen"}</dd></div>
+          <div><dt>Wiedergabe</dt><dd>{view.playbackStatus ? playbackLabels[view.playbackStatus] : "—"}</dd></div>
           <div><dt>Verbindungsaufbau</dt><dd>{metric(view.metrics.connectionMs)}</dd></div>
           <div><dt>Letzte Reaktion</dt><dd>{metric(view.metrics.lastResponseMs)}</dd></div>
           <div><dt>Ø / Min / Max</dt><dd>{metric(view.metrics.averageResponseMs)} / {metric(view.metrics.minimumResponseMs)} / {metric(view.metrics.maximumResponseMs)}</dd></div>

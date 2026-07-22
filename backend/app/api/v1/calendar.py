@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.dependencies import (
     TenantContext,
@@ -25,8 +25,10 @@ from app.models import (
     CalendarBookingSource,
     CalendarLocationType,
     CalendarProviderName,
+    Service,
 )
 from app.schemas.calendar import (
+    AgentAppointmentCreate,
     AgentAvailabilityRequest,
     AppointmentTypeResponse,
     AppointmentTypeWrite,
@@ -35,18 +37,22 @@ from app.schemas.calendar import (
     BookingConfigurationResponse,
     BookingConfigurationUpdate,
     BookingDetailResponse,
+    CalendarAgendaResponse,
     CalendarBookingCreate,
     CalendarBookingResponse,
     CalendarConnectionResponse,
     CalendarConnectionsOverview,
     CalendarSelectionUpdate,
     ConnectionTestResponse,
+    ExactAvailabilityRequest,
+    ExactAvailabilityResponse,
     ExternalCalendarResponse,
     OAuthStartResponse,
     ProviderConfigurationResponse,
 )
-from app.services.availability import AvailabilityService, aware_utc
-from app.services.calendar_booking import CalendarBookingService
+from app.services.availability import AvailabilityService, SlotSigner, aware_utc
+from app.services.calendar_agenda import calendar_agenda
+from app.services.calendar_booking import BookingServiceResult, CalendarBookingService
 from app.services.calendar_configuration import (
     get_or_create_booking_configuration,
     update_booking_configuration,
@@ -85,6 +91,7 @@ def calendar_http_error(exc: CalendarError) -> HTTPException:
         "slot_no_longer_available": status.HTTP_409_CONFLICT,
         "duplicate_booking": status.HTTP_409_CONFLICT,
         "calendar_event_creation_failed": status.HTTP_502_BAD_GATEWAY,
+        "local_confirmation_failed": status.HTTP_502_BAD_GATEWAY,
         "reauthorization_required": status.HTTP_409_CONFLICT,
     }
     return HTTPException(
@@ -137,7 +144,41 @@ def booking_api_response(result) -> CalendarBookingResponse:
         start=aware_utc(booking.start_at),
         end=aware_utc(booking.end_at),
         timezone=booking.timezone,
+        external_event_id=booking.external_event_id,
+        calendar_name=booking.calendar_name_snapshot,
+        service_name=booking.service_name_snapshot,
     )
+
+
+def appointment_type_response(item: CalendarAppointmentType) -> AppointmentTypeResponse:
+    return AppointmentTypeResponse(
+        id=item.id,
+        tenant_id=item.tenant_id,
+        service_id=item.service_id,
+        name=item.service.name,
+        service_name=item.service.name,
+        description=item.service.description,
+        duration_minutes=item.service.duration_minutes,
+        buffer_before_minutes=item.buffer_before_minutes,
+        buffer_after_minutes=item.buffer_after_minutes,
+        location_type=item.location_type.value,
+        location_text=item.location_text,
+        is_active=item.is_active,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def active_tenant_service(db: Session, tenant_id: UUID, service_id: UUID) -> Service:
+    service = db.scalar(
+        select(Service).where(Service.id == service_id, Service.tenant_id == tenant_id, Service.is_active.is_(True))
+    )
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "invalid_service", "message": "Die Leistung ist ungültig oder nicht aktiv."},
+        )
+    return service
 
 
 @router.get("/connections", response_model=CalendarConnectionsOverview)
@@ -301,10 +342,11 @@ def appointment_types(
         db.scalars(
             select(CalendarAppointmentType)
             .where(CalendarAppointmentType.tenant_id == context.id)
+            .options(selectinload(CalendarAppointmentType.service))
             .order_by(CalendarAppointmentType.name)
         )
     )
-    return [AppointmentTypeResponse.model_validate(item) for item in items]
+    return [appointment_type_response(item) for item in items]
 
 
 @router.post("/appointment-types", response_model=AppointmentTypeResponse, status_code=status.HTTP_201_CREATED)
@@ -314,8 +356,12 @@ def create_appointment_type(
     _admin: UserContext = Depends(require_agent_admin),
     db: Session = Depends(get_db),
 ) -> AppointmentTypeResponse:
+    service = active_tenant_service(db, context.id, payload.service_id)
     item = CalendarAppointmentType(
         tenant_id=context.id,
+        name=service.name,
+        description=service.description,
+        duration_minutes=service.duration_minutes,
         **payload.model_dump(exclude={"location_type"}),
         location_type=CalendarLocationType(payload.location_type),
     )
@@ -329,7 +375,8 @@ def create_appointment_type(
             detail={"code": "invalid_appointment_type", "message": "Eine Terminart mit diesem Namen existiert bereits."},
         ) from exc
     db.refresh(item)
-    return AppointmentTypeResponse.model_validate(item)
+    item.service = service
+    return appointment_type_response(item)
 
 
 def tenant_appointment_type(db: Session, tenant_id: UUID, appointment_type_id: UUID) -> CalendarAppointmentType:
@@ -337,7 +384,7 @@ def tenant_appointment_type(db: Session, tenant_id: UUID, appointment_type_id: U
         select(CalendarAppointmentType).where(
             CalendarAppointmentType.id == appointment_type_id,
             CalendarAppointmentType.tenant_id == tenant_id,
-        )
+        ).options(selectinload(CalendarAppointmentType.service))
     )
     if item is None:
         raise HTTPException(
@@ -356,8 +403,12 @@ def update_appointment_type(
     db: Session = Depends(get_db),
 ) -> AppointmentTypeResponse:
     item = tenant_appointment_type(db, context.id, appointment_type_id)
+    service = active_tenant_service(db, context.id, payload.service_id)
     for field, value in payload.model_dump(exclude={"location_type"}).items():
         setattr(item, field, value)
+    item.name = service.name
+    item.description = service.description
+    item.duration_minutes = service.duration_minutes
     item.location_type = CalendarLocationType(payload.location_type)
     try:
         db.commit()
@@ -368,7 +419,8 @@ def update_appointment_type(
             detail={"code": "invalid_appointment_type", "message": "Eine Terminart mit diesem Namen existiert bereits."},
         ) from exc
     db.refresh(item)
-    return AppointmentTypeResponse.model_validate(item)
+    item.service = service
+    return appointment_type_response(item)
 
 
 @router.delete("/appointment-types/{appointment_type_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -438,6 +490,111 @@ async def agent_search(payload: AgentAvailabilityRequest, context, db, settings)
         raise calendar_http_error(exc) from exc
 
 
+async def exact_availability_result(payload: ExactAvailabilityRequest, context, db, settings) -> ExactAvailabilityResponse:
+    availability = AvailabilityService(db, settings, context.id, context.tenant.timezone)
+    configuration, _hours, appointment_type = availability.load_rules(payload.appointment_type_id)
+    if appointment_type.service_id != payload.service_id:
+        raise CalendarError("invalid_service", "Leistung und Terminart gehören nicht zusammen.")
+    if payload.timezone != configuration.timezone:
+        raise CalendarError("invalid_timezone", "Die angegebene Zeitzone entspricht nicht der Buchungskonfiguration.")
+    start = aware_utc(payload.requested_start)
+    end = start + timedelta(minutes=appointment_type.service.duration_minutes)
+    before = appointment_type.buffer_before_minutes
+    if before is None:
+        before = configuration.buffer_before_minutes
+    after = appointment_type.buffer_after_minutes
+    if after is None:
+        after = configuration.buffer_after_minutes
+    available = await availability.exact_slot_available(appointment_type.id, start, end)
+    alternatives = []
+    slot_id = None
+    if available:
+        slot_id = SlotSigner(settings).sign(context.id, appointment_type.id, start, end)
+    else:
+        _timezone_name, alternatives = await availability.search(
+            appointment_type.id, start, start + timedelta(days=7), maximum_results=3
+        )
+    zone = ZoneInfo(configuration.timezone)
+    return ExactAvailabilityResponse(
+        available=available,
+        appointment_start=start.astimezone(zone),
+        appointment_end=end.astimezone(zone),
+        blocked_start=(start - timedelta(minutes=before)).astimezone(zone),
+        blocked_end=(end + timedelta(minutes=after)).astimezone(zone),
+        slot_id=slot_id,
+        reason=None if available else "calendar_conflict",
+        alternatives=alternatives,
+    )
+
+
+@router.post("/tools/check-appointment-availability", response_model=ExactAvailabilityResponse)
+async def tool_check_appointment_availability(
+    payload: ExactAvailabilityRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ExactAvailabilityResponse:
+    try:
+        return await exact_availability_result(payload, context, db, settings)
+    except CalendarError as exc:
+        raise calendar_http_error(exc) from exc
+
+
+@router.post("/tools/create-appointment", response_model=CalendarBookingResponse)
+async def tool_create_appointment(
+    payload: AgentAppointmentCreate,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CalendarBookingResponse:
+    if not payload.confirmed:
+        return CalendarBookingResponse(
+            success=False,
+            error_code="confirmation_required",
+            message="Der Termin darf erst nach ausdrücklicher Bestätigung gebucht werden.",
+        )
+    try:
+        booking_service = CalendarBookingService(db, settings, context.id, context.tenant.timezone)
+        existing = booking_service.existing_for_key(payload.idempotency_key)
+        if existing is not None and existing.status.value == "confirmed":
+            return booking_api_response(BookingServiceResult(existing))
+        exact = await exact_availability_result(
+            ExactAvailabilityRequest(
+                service_id=payload.service_id,
+                appointment_type_id=payload.appointment_type_id,
+                requested_start=payload.start_at,
+                timezone=payload.timezone,
+            ),
+            context,
+            db,
+            settings,
+        )
+        if not exact.available or not exact.slot_id:
+            return CalendarBookingResponse(
+                success=False,
+                error_code="slot_no_longer_available",
+                message="Der ausgewählte Termin ist inzwischen belegt.",
+                alternative_slots=exact.alternatives,
+            )
+        result = await booking_service.create(
+            CalendarBookingCreate(
+                slot_id=exact.slot_id,
+                service_id=payload.service_id,
+                appointment_type_id=payload.appointment_type_id,
+                customer_name=payload.customer_name,
+                customer_phone=payload.customer_phone or "",
+                customer_email=payload.customer_email or "",
+                customer_notes="",
+                idempotency_key=payload.idempotency_key,
+            )
+        )
+        return booking_api_response(result)
+    except CalendarError as exc:
+        return CalendarBookingResponse(success=False, error_code=exc.code, message=exc.message)
+
+
 @router.post("/bookings", response_model=CalendarBookingResponse)
 async def create_booking(
     payload: CalendarBookingCreate,
@@ -473,7 +630,22 @@ def get_booking(
     return BookingDetailResponse.model_validate(booking, from_attributes=True)
 
 
-@router.get("/tools/list-appointment-types", response_model=dict)
+@router.get("/appointments", response_model=CalendarAgendaResponse)
+async def appointments_agenda(
+    start: datetime,
+    end: datetime,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CalendarAgendaResponse:
+    if aware_utc(end) <= aware_utc(start) or aware_utc(end) - aware_utc(start) > timedelta(days=93):
+        raise HTTPException(status_code=400, detail={"code": "invalid_range", "message": "Ungültiger Terminzeitraum."})
+    return await calendar_agenda(db, settings, context.id, start, end)
+
+
+@router.get("/tools/list-bookable-services", response_model=dict)
+@router.get("/tools/list-appointment-types", response_model=dict, include_in_schema=False)
 def tool_list_appointment_types(
     context: TenantContext = Depends(get_tenant_context),
     _user: UserContext = Depends(get_user_context),
@@ -484,16 +656,29 @@ def tool_list_appointment_types(
             select(CalendarAppointmentType).where(
                 CalendarAppointmentType.tenant_id == context.id,
                 CalendarAppointmentType.is_active.is_(True),
-            ).order_by(CalendarAppointmentType.name)
+                Service.is_active.is_(True),
+            ).join(Service, Service.id == CalendarAppointmentType.service_id).options(
+                selectinload(CalendarAppointmentType.service)
+            ).order_by(Service.name)
         )
     )
-    return {
-        "success": True,
-        "appointment_types": [
-            {"id": str(item.id), "name": item.name, "duration_minutes": item.duration_minutes, "description": item.description}
-            for item in items
-        ],
-    }
+    grouped: dict[str, dict] = {}
+    for item in items:
+        key = str(item.service_id)
+        grouped.setdefault(key, {
+            "service_id": key,
+            "name": item.service.name,
+            "description": item.service.description,
+            "duration_minutes": item.service.duration_minutes,
+            "appointment_types": [],
+        })["appointment_types"].append({
+            "appointment_type_id": str(item.id),
+            "appointment_format": item.location_type.value,
+            "location": item.location_text,
+            "buffer_before_minutes": item.buffer_before_minutes or 0,
+            "buffer_after_minutes": item.buffer_after_minutes or 0,
+        })
+    return {"success": True, "services": list(grouped.values())}
 
 
 @router.post("/tools/find-available-appointments", response_model=AvailabilityResponse)

@@ -13,13 +13,12 @@ class CapabilityDefinition:
     requires_confirmation: bool
 
 
-# Only capabilities with implemented, tenant-authorized backend handlers belong here.
 CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
     "calendar_booking": CapabilityDefinition(
         key="calendar_booking",
         display_name="Kalender und Terminbuchung",
-        description="Terminarten laden, freie Zeiten suchen und bestätigte Termine verbindlich buchen.",
-        tool_name="create_calendar_booking",
+        description="Aktive Leistungen laden, echte Verfügbarkeit prüfen und bestätigte Termine verbindlich buchen.",
+        tool_name="create_appointment",
         risk_level="write",
         requires_confirmation=True,
     )
@@ -37,44 +36,49 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
     return [
         {
             "type": "function",
-            "name": "list_appointment_types",
-            "description": "Lädt ausschließlich die aktiven Terminarten dieses Unternehmensaccounts.",
+            "name": "list_bookable_services",
+            "description": "Lädt nur aktive Leistungen und deren aktive Terminarten. Keine Leistungen erfinden.",
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
         {
             "type": "function",
-            "name": "find_available_appointments",
-            "description": "Sucht serverseitig freie Termine. Niemals selbst Verfügbarkeiten berechnen.",
+            "name": "check_appointment_availability",
+            "description": "Prüft eine konkrete Startzeit serverseitig gegen lokale und externe Kalenderdaten.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "service_id": {"type": "string"},
                     "appointment_type_id": {"type": "string"},
-                    "preferred_date": {"type": ["string", "null"], "description": "Datum im Format YYYY-MM-DD oder null."},
-                    "preferred_time_of_day": {"type": ["string", "null"], "enum": ["morning", "afternoon", "evening", None]},
-                    "search_days": {"type": "integer", "minimum": 1, "maximum": 30},
+                    "requested_start": {"type": "string", "description": "ISO-8601-Zeitpunkt mit Zeitzone."},
+                    "timezone": {"type": "string"},
                 },
-                "required": ["appointment_type_id", "preferred_date", "preferred_time_of_day", "search_days"],
+                "required": ["service_id", "appointment_type_id", "requested_start", "timezone"],
                 "additionalProperties": False,
             },
         },
         {
             "type": "function",
-            "name": "create_calendar_booking",
-            "description": "Bucht einen zuvor angebotenen Termin erst nach ausdrücklicher Kundenbestätigung.",
+            "name": "create_appointment",
+            "description": (
+                "Bucht erst nach ausdrücklicher Kundenbestätigung. Nur success=true, status=confirmed und "
+                "external_event_id bedeuten, dass der Termin erfolgreich eingetragen wurde."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "slot_id": {"type": "string"},
+                    "service_id": {"type": "string"},
                     "appointment_type_id": {"type": "string"},
                     "customer_name": {"type": "string"},
-                    "customer_phone": {"type": "string"},
+                    "customer_phone": {"type": ["string", "null"]},
                     "customer_email": {"type": ["string", "null"]},
-                    "customer_notes": {"type": ["string", "null"]},
+                    "start_at": {"type": "string"},
+                    "timezone": {"type": "string"},
                     "idempotency_key": {"type": "string"},
+                    "confirmed": {"type": "boolean", "const": True},
                 },
                 "required": [
-                    "slot_id", "appointment_type_id", "customer_name", "customer_phone",
-                    "customer_email", "customer_notes", "idempotency_key",
+                    "service_id", "appointment_type_id", "customer_name", "customer_phone",
+                    "customer_email", "start_at", "timezone", "idempotency_key", "confirmed",
                 ],
                 "additionalProperties": False,
             },

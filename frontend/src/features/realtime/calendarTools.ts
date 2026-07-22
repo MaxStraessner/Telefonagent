@@ -4,58 +4,61 @@ import { api } from "../../api/client";
 
 export function createCalendarTools(toolNames: string[], onEvent: (type: string, detail?: string) => void) {
   const enabled = new Set(toolNames);
-  const listAppointmentTypesTool = tool({
-    name: "list_appointment_types",
-    description: "Lädt ausschließlich die aktiven Terminarten dieses Unternehmensaccounts.",
+  const listBookableServices = tool({
+    name: "list_bookable_services",
+    description: "Lädt nur aktive Leistungen und deren aktive Terminarten. Keine Leistung erfinden.",
     parameters: z.object({}),
     execute: async () => {
-      onEvent("tool_started", "list_appointment_types");
-      const result = await api.listAgentAppointmentTypes();
-      onEvent("tool_completed", "list_appointment_types");
+      onEvent("tool_started", "list_bookable_services");
+      const result = await api.listBookableServices();
+      onEvent("tool_completed", `list_bookable_services:${result.services.length}`);
       return result;
     },
-    errorFunction: (_context, error) => JSON.stringify({ success: false, error_code: "tool_request_failed", message: error instanceof Error ? error.message : "Terminarten konnten nicht geladen werden." }),
+    errorFunction: (_context, error) => JSON.stringify({ success: false, error_code: "tool_request_failed", message: error instanceof Error ? error.message : "Leistungen konnten nicht geladen werden." }),
   });
-  const findAvailableAppointmentsTool = tool({
-    name: "find_available_appointments",
-    description: "Sucht serverseitig freie Termine. Niemals selbst Verfügbarkeiten berechnen.",
+  const checkAvailability = tool({
+    name: "check_appointment_availability",
+    description: "Prüft eine konkrete Startzeit serverseitig. Verfügbarkeit niemals selbst schätzen.",
     parameters: z.object({
+      service_id: z.string().uuid(),
       appointment_type_id: z.string().uuid(),
-      preferred_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-      preferred_time_of_day: z.enum(["morning", "afternoon", "evening"]).nullable(),
-      search_days: z.number().int().min(1).max(30),
+      requested_start: z.string().datetime({ offset: true }),
+      timezone: z.string().min(1),
     }),
     execute: async (input) => {
-      onEvent("tool_started", "find_available_appointments");
-      const result = await api.findAvailableAppointments(input);
-      onEvent("tool_completed", `find_available_appointments:${result.slots.length}`);
+      onEvent("tool_started", "check_appointment_availability");
+      const result = await api.checkAppointmentAvailability(input);
+      onEvent("tool_completed", `check_appointment_availability:${result.available}`);
       return result;
     },
-    errorFunction: (_context, error) => JSON.stringify({ success: false, error_code: "tool_request_failed", message: error instanceof Error ? error.message : "Freie Termine konnten nicht ermittelt werden." }),
+    errorFunction: (_context, error) => JSON.stringify({ success: false, error_code: "tool_request_failed", message: error instanceof Error ? error.message : "Verfügbarkeit konnte nicht geprüft werden." }),
   });
-  const createCalendarBookingTool = tool({
-    name: "create_calendar_booking",
-    description: "Bucht einen zuvor angebotenen Termin erst nach ausdrücklicher Kundenbestätigung.",
+  const createAppointment = tool({
+    name: "create_appointment",
+    description: "Erstellt den Termin erst nach ausdrücklicher Bestätigung und bestätigt Erfolg nur mit externer Ereignis-ID.",
     parameters: z.object({
-      slot_id: z.string().min(20),
+      service_id: z.string().uuid(),
       appointment_type_id: z.string().uuid(),
       customer_name: z.string().min(1),
-      customer_phone: z.string().min(3),
+      customer_phone: z.string().nullable(),
       customer_email: z.string().nullable(),
-      customer_notes: z.string().nullable(),
+      start_at: z.string().datetime({ offset: true }),
+      timezone: z.string().min(1),
       idempotency_key: z.string().min(8).max(200),
+      confirmed: z.literal(true),
     }),
     execute: async (input) => {
-      onEvent("tool_started", "create_calendar_booking");
-      const result = await api.createCalendarBooking({ ...input, customer_email: input.customer_email ?? "", customer_notes: input.customer_notes ?? "" });
-      onEvent(result.success ? "tool_completed" : "tool_failed", `create_calendar_booking:${result.status ?? result.error_code ?? "unknown"}`);
-      return result;
+      onEvent("tool_started", "create_appointment");
+      const result = await api.createAppointment(input);
+      const verified = result.success && result.status === "confirmed" && Boolean(result.external_event_id);
+      onEvent(verified ? "tool_completed" : "tool_failed", `create_appointment:${result.status ?? result.error_code ?? "unknown"}`);
+      return verified ? result : { ...result, success: false, error_code: result.error_code ?? "calendar_confirmation_missing", message: result.message ?? "Die externe Kalenderbestätigung fehlt." };
     },
     errorFunction: (_context, error) => JSON.stringify({ success: false, error_code: "tool_request_failed", message: error instanceof Error ? error.message : "Der Termin konnte nicht gebucht werden." }),
   });
   return [
-    enabled.has("list_appointment_types") ? listAppointmentTypesTool : null,
-    enabled.has("find_available_appointments") ? findAvailableAppointmentsTool : null,
-    enabled.has("create_calendar_booking") ? createCalendarBookingTool : null,
+    enabled.has("list_bookable_services") ? listBookableServices : null,
+    enabled.has("check_appointment_availability") ? checkAvailability : null,
+    enabled.has("create_appointment") ? createAppointment : null,
   ].filter((value) => value !== null);
 }

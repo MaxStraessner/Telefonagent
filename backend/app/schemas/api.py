@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ORMModel(BaseModel):
@@ -110,6 +110,21 @@ class ServiceResponse(ORMModel):
     description: str
     duration_minutes: int
     is_active: bool
+
+
+class ServiceWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=150)
+    description: str = Field(default="", max_length=5000)
+    duration_minutes: int = Field(ge=5, le=720)
+    is_active: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Name darf nicht leer sein.")
+        return normalized
 
 
 class StaffResponse(ORMModel):

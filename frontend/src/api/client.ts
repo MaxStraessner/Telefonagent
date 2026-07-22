@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -29,8 +29,11 @@ async function request<T>(path: string, options: { signal?: AbortSignal; method?
 export const api = {
   tenant: (signal?: AbortSignal) => request<Tenant>("/tenant", { signal }),
   services: (signal?: AbortSignal) => request<Service[]>("/services", { signal }),
+  createService: (value: Omit<Service, "id">) => request<Service>("/services", { method: "POST", body: value }),
+  updateService: (id: string, value: Omit<Service, "id">) => request<Service>(`/services/${id}`, { method: "PUT", body: value }),
   staff: (signal?: AbortSignal) => request<StaffMember[]>("/staff", { signal }),
   appointments: (signal?: AbortSignal) => request<Appointment[]>("/appointments", { signal }),
+  calendarAgenda: (start: string, end: string, signal?: AbortSignal) => request<CalendarAgenda>(`/calendar/appointments?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
   status: (signal?: AbortSignal) => request<PlatformStatus>("/platform/status", { signal }),
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   realtimeAgentConfig: (signal?: AbortSignal) => request<RealtimeAgentConfig>("/realtime/agent-config", { signal }),
@@ -62,7 +65,9 @@ export const api = {
   createAppointmentType: (value: AppointmentTypeWrite) => request<CalendarAppointmentType>("/calendar/appointment-types", { method: "POST", body: value }),
   updateAppointmentType: (id: string, value: AppointmentTypeWrite) => request<CalendarAppointmentType>(`/calendar/appointment-types/${id}`, { method: "PUT", body: value }),
   deleteAppointmentType: (id: string) => request<void>(`/calendar/appointment-types/${id}`, { method: "DELETE" }),
-  listAgentAppointmentTypes: () => request<{ success: boolean; appointment_types: Array<{ id: string; name: string; duration_minutes: number; description: string }> }>("/calendar/tools/list-appointment-types"),
+  listBookableServices: () => request<{ success: boolean; services: Array<{ service_id: string; name: string; description: string; duration_minutes: number; appointment_types: Array<{ appointment_type_id: string; appointment_format: string; location: string; buffer_before_minutes: number; buffer_after_minutes: number }> }> }>("/calendar/tools/list-bookable-services"),
+  checkAppointmentAvailability: (value: { service_id: string; appointment_type_id: string; requested_start: string; timezone: string }) => request<{ available: boolean; appointment_start: string; appointment_end: string; blocked_start: string; blocked_end: string; slot_id: string | null; reason: string | null; alternatives: Array<{ start: string; end: string }> }>("/calendar/tools/check-appointment-availability", { method: "POST", body: value }),
+  createAppointment: (value: { service_id: string; appointment_type_id: string; customer_name: string; customer_phone: string | null; customer_email: string | null; start_at: string; timezone: string; idempotency_key: string; confirmed: true }) => request<CalendarBookingResult>("/calendar/tools/create-appointment", { method: "POST", body: value }),
   findAvailableAppointments: (value: AgentAvailabilityRequest) => request<CalendarAvailabilityResult>("/calendar/tools/find-available-appointments", { method: "POST", body: value }),
   createCalendarBooking: (value: { slot_id: string; appointment_type_id: string; customer_name: string; customer_phone: string; customer_email: string; customer_notes: string; idempotency_key: string }) => request<CalendarBookingResult>("/calendar/tools/create-calendar-booking", { method: "POST", body: value }),
 };

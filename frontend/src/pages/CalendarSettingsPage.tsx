@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
-import type { AppointmentTypeWrite, BookingConfiguration, CalendarAppointmentType, CalendarConnectionsOverview, CalendarProviderConfiguration, ExternalCalendar } from "../types/api";
+import type { AppointmentTypeWrite, BookingConfiguration, CalendarAppointmentType, CalendarConnectionsOverview, CalendarProviderConfiguration, ExternalCalendar, Service } from "../types/api";
 import { PageHeader } from "./shared";
 
 type Tab = "providers" | "calendars" | "availability" | "appointment-types";
 const weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
-const emptyAppointment: AppointmentTypeWrite = { name: "", description: "", duration_minutes: 30, buffer_before_minutes: null, buffer_after_minutes: null, location_type: "phone", location_text: "", is_active: true };
+const emptyAppointment: AppointmentTypeWrite = { service_id: "", buffer_before_minutes: null, buffer_after_minutes: null, location_type: "phone", location_text: "", is_active: true };
 
 function readableError(error: unknown) {
   if (error instanceof ApiError) return error.message;
@@ -18,6 +18,7 @@ export function CalendarSettingsPage() {
   const [overview, setOverview] = useState<CalendarConnectionsOverview | null>(null);
   const [configuration, setConfiguration] = useState<BookingConfiguration | null>(null);
   const [appointmentTypes, setAppointmentTypes] = useState<CalendarAppointmentType[]>([]);
+  const [services, setServices] = useState<Service[]>([]);
   const [editingType, setEditingType] = useState<CalendarAppointmentType | null>(null);
   const [typeDraft, setTypeDraft] = useState<AppointmentTypeWrite>(emptyAppointment);
   const [loading, setLoading] = useState(true);
@@ -28,9 +29,9 @@ export function CalendarSettingsPage() {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [connections, config, types] = await Promise.all([api.calendarConnections(), api.bookingConfiguration(), api.appointmentTypes()]);
+      const [connections, config, types, serviceItems] = await Promise.all([api.calendarConnections(), api.bookingConfiguration(), api.appointmentTypes(), api.services()]);
       config.business_hours = config.business_hours.map((item) => ({ ...item, start_time: item.start_time.slice(0, 5), end_time: item.end_time.slice(0, 5) }));
-      setOverview(connections); setConfiguration(config); setAppointmentTypes(types);
+      setOverview(connections); setConfiguration(config); setAppointmentTypes(types); setServices(serviceItems);
     } catch (loadError) { setError(readableError(loadError)); }
     finally { setLoading(false); }
   }, []);
@@ -155,16 +156,15 @@ export function CalendarSettingsPage() {
 
     {tab === "appointment-types" && <div className="calendar-type-layout"><section className="card calendar-section">
       <div className="section-heading"><div><h2>Terminarten</h2><p>Keine Beispieldaten: Nur hier angelegte aktive Terminarten stehen dem Telefonagenten zur Verfügung.</p></div></div>
-      {!appointmentTypes.length ? <div className="calendar-empty"><strong>Noch keine Terminart angelegt</strong><p>Lege rechts die erste wirksame Terminart an.</p></div> : <div className="appointment-type-list">{appointmentTypes.map((item) => <article key={item.id}><div><strong>{item.name}</strong><span>{item.duration_minutes} Minuten · {item.location_type} · {item.is_active ? "Aktiv" : "Inaktiv"}</span><p>{item.description || "Keine Beschreibung"}</p></div><div><button className="text-button" onClick={() => { setEditingType(item); setTypeDraft({ name: item.name, description: item.description, duration_minutes: item.duration_minutes, buffer_before_minutes: item.buffer_before_minutes, buffer_after_minutes: item.buffer_after_minutes, location_type: item.location_type, location_text: item.location_text, is_active: item.is_active }); }}>Bearbeiten</button><button className="text-button danger" onClick={() => { if (window.confirm("Terminart wirklich löschen?")) void run(`delete-${item.id}`, async () => { await api.deleteAppointmentType(item.id); setAppointmentTypes(await api.appointmentTypes()); }, "Terminart gelöscht."); }}>Löschen</button></div></article>)}</div>}
+      {!appointmentTypes.length ? <div className="calendar-empty"><strong>Noch keine Terminart angelegt</strong><p>Lege rechts die erste wirksame Terminart an.</p></div> : <div className="appointment-type-list">{appointmentTypes.map((item) => <article key={item.id}><div><strong>{item.service_name}</strong><span>{item.duration_minutes} Minuten · {item.location_type} · {item.is_active ? "Aktiv" : "Inaktiv"}</span><p>{item.description || "Keine Beschreibung"}</p></div><div><button className="text-button" onClick={() => { setEditingType(item); setTypeDraft({ service_id: item.service_id, buffer_before_minutes: item.buffer_before_minutes, buffer_after_minutes: item.buffer_after_minutes, location_type: item.location_type, location_text: item.location_text, is_active: item.is_active }); }}>Bearbeiten</button><button className="text-button danger" onClick={() => { if (window.confirm("Terminart wirklich löschen?")) void run(`delete-${item.id}`, async () => { await api.deleteAppointmentType(item.id); setAppointmentTypes(await api.appointmentTypes()); }, "Terminart gelöscht."); }}>Löschen</button></div></article>)}</div>}
     </section><section className="card calendar-section appointment-type-form"><h2>{editingType ? "Terminart bearbeiten" : "Terminart anlegen"}</h2>
-      <label>Name<input value={typeDraft.name} onChange={(event) => setTypeDraft({ ...typeDraft, name: event.target.value })} /></label>
-      <label>Dauer (Minuten)<input type="number" min="5" value={typeDraft.duration_minutes} onChange={(event) => setTypeDraft({ ...typeDraft, duration_minutes: Number(event.target.value) })} /></label>
-      <label>Beschreibung<textarea value={typeDraft.description} onChange={(event) => setTypeDraft({ ...typeDraft, description: event.target.value })} /></label>
+      <label>Leistung<select value={typeDraft.service_id} onChange={(event) => setTypeDraft({ ...typeDraft, service_id: event.target.value })}><option value="">Leistung auswählen</option>{services.filter((item) => item.is_active || item.id === typeDraft.service_id).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.duration_minutes} Minuten</option>)}</select></label>
+      {typeDraft.service_id && <div className="privacy-note"><strong>{services.find((item) => item.id === typeDraft.service_id)?.name}</strong><p>Dauer: {services.find((item) => item.id === typeDraft.service_id)?.duration_minutes} Minuten. Name und Dauer stammen aus der Leistung.</p></div>}
       <div className="calendar-form-pair"><label>Puffer vorher<input type="number" min="0" value={typeDraft.buffer_before_minutes ?? ""} placeholder="Standard" onChange={(event) => setTypeDraft({ ...typeDraft, buffer_before_minutes: event.target.value === "" ? null : Number(event.target.value) })} /></label><label>Puffer nachher<input type="number" min="0" value={typeDraft.buffer_after_minutes ?? ""} placeholder="Standard" onChange={(event) => setTypeDraft({ ...typeDraft, buffer_after_minutes: event.target.value === "" ? null : Number(event.target.value) })} /></label></div>
       <label>Terminform<select value={typeDraft.location_type} onChange={(event) => setTypeDraft({ ...typeDraft, location_type: event.target.value as AppointmentTypeWrite["location_type"] })}><option value="phone">Telefon</option><option value="onsite">Vor Ort</option><option value="video">Video</option><option value="custom">Individuell</option></select></label>
       <label>Ort oder Hinweis<input value={typeDraft.location_text} onChange={(event) => setTypeDraft({ ...typeDraft, location_text: event.target.value })} /></label>
       <label className="agent-toggle"><input type="checkbox" checked={typeDraft.is_active} onChange={(event) => setTypeDraft({ ...typeDraft, is_active: event.target.checked })} /><span><strong>Aktiv</strong><small>Nur aktive Terminarten kann der Agent anbieten.</small></span></label>
-      <div className="calendar-actions"><button className="button primary" disabled={!typeDraft.name.trim() || busy !== null} onClick={() => void saveAppointmentType()}>{editingType ? "Änderungen speichern" : "Terminart anlegen"}</button>{editingType && <button className="button secondary" onClick={() => { setEditingType(null); setTypeDraft(emptyAppointment); }}>Abbrechen</button>}</div>
+      <div className="calendar-actions"><button className="button primary" disabled={!typeDraft.service_id || busy !== null} onClick={() => void saveAppointmentType()}>{editingType ? "Änderungen speichern" : "Terminart anlegen"}</button>{editingType && <button className="button secondary" onClick={() => { setEditingType(null); setTypeDraft(emptyAppointment); }}>Abbrechen</button>}</div>
     </section></div>}
   </div>;
 }

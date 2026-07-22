@@ -22,8 +22,11 @@ function transcriptText(item: HistoryItem): string {
     .trim();
 }
 
-function transcriptStatus(item: HistoryItem, speaker: TranscriptSpeaker): TranscriptStatus {
-  if (speaker === "assistant" && item.status === "incomplete") return "interrupted";
+function transcriptStatus(item: HistoryItem, speaker: TranscriptSpeaker, previous?: TranscriptStatus): TranscriptStatus {
+  if (speaker === "assistant") {
+    if (previous === "completed" || previous === "interrupted") return previous;
+    return "partial";
+  }
   return item.status === "completed" ? "completed" : "partial";
 }
 
@@ -37,6 +40,6 @@ export function mapRealtimeHistory(history: readonly unknown[], previous: readon
     const id = item.itemId ?? item.id ?? `${item.role}-${index}`;
     const old = previousById.get(id);
     const speaker = item.role;
-    return [{ id, speaker, text, status: transcriptStatus(item, speaker), startedAt: old?.startedAt ?? now + index }];
+    return [{ id, speaker, text, status: transcriptStatus(item, speaker, old?.status), startedAt: old?.startedAt ?? now + index }];
   });
 }

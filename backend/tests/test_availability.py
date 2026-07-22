@@ -98,8 +98,7 @@ def test_buffers_before_and_after_existing_and_new_appointments_apply():
     )
     local = [item[0].astimezone(BERLIN).strftime("%H:%M") for item in result]
     assert "08:30" not in local
-    assert "09:45" not in local
-    assert local[0] == "10:00"
+    assert local[0] == "09:45"
 
 
 def test_minimum_notice_and_booking_horizon_clamp_search():

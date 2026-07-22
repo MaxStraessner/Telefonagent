@@ -14,6 +14,7 @@ from app.calendar.providers.base import (
     OAuthTokens,
     ProviderAccount,
     ProviderCalendar,
+    ProviderEvent,
 )
 from app.calendar.providers.http import ensure_success, parse_provider_datetime, provider_network_error
 
@@ -178,6 +179,7 @@ class GoogleCalendarProvider(CalendarProvider):
             "start": {"dateTime": event.start.isoformat(), "timeZone": event.timezone},
             "end": {"dateTime": event.end.isoformat(), "timeZone": event.timezone},
             "transparency": "opaque",
+            "location": event.location,
             "extendedProperties": {
                 "private": {"telefonagent_booking_id": event.booking_id, "telefonagent_idempotency_key": event.idempotency_key}
             },
@@ -196,6 +198,43 @@ class GoogleCalendarProvider(CalendarProvider):
         if not event_id:
             raise CalendarProviderError("provider_invalid_response", "Google hat keine Ereigniskennung geliefert.")
         return CreatedEvent(event_id, str(payload.get("htmlLink") or event_id))
+
+    async def list_events(self, access_token: str, calendar_id: str, start: datetime, end: datetime) -> list[ProviderEvent]:
+        url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events"
+        base_params = {
+            "timeMin": start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "timeMax": end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "maxResults": "2500",
+        }
+        params = dict(base_params)
+        events: list[ProviderEvent] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                while url:
+                    response = await client.get(url, params=params, headers={"Authorization": f"Bearer {access_token}"})
+                    ensure_success(response, "google")
+                    payload = response.json()
+                    for item in payload.get("items", []):
+                        if item.get("status") == "cancelled":
+                            continue
+                        start_value = (item.get("start") or {}).get("dateTime")
+                        end_value = (item.get("end") or {}).get("dateTime")
+                        if start_value and end_value:
+                            events.append(ProviderEvent(
+                                event_id=str(item.get("id") or ""),
+                                title=str(item.get("summary") or "Belegter Termin"),
+                                start=parse_provider_datetime(start_value),
+                                end=parse_provider_datetime(end_value),
+                                location=str(item.get("location") or ""),
+                            ))
+                    token = payload.get("nextPageToken")
+                    url = f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events" if token else ""
+                    params = {**base_params, "pageToken": token} if token else {}
+        except httpx.HTTPError as exc:
+            raise provider_network_error("google", exc) from exc
+        return events
 
     async def revoke_connection(self, access_token: str, refresh_token: str | None) -> None:
         token = refresh_token or access_token

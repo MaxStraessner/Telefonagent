@@ -376,6 +376,7 @@ class CalendarAppointmentType(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_calendar_appointment_type_name"),)
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    service_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("services.id"), index=True)
     name: Mapped[str] = mapped_column(String(150))
     description: Mapped[str] = mapped_column(Text, default="")
     duration_minutes: Mapped[int] = mapped_column(Integer)
@@ -386,6 +387,7 @@ class CalendarAppointmentType(Base, TimestampMixin):
     )
     location_text: Mapped[str] = mapped_column(String(300), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    service: Mapped["Service"] = relationship()
 
 
 class CalendarBooking(Base, TimestampMixin):
@@ -396,6 +398,7 @@ class CalendarBooking(Base, TimestampMixin):
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    service_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("services.id"), index=True)
     appointment_type_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("calendar_appointment_types.id"), index=True)
     calendar_connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("calendar_connections.id"), index=True)
     external_calendar_id: Mapped[str] = mapped_column(String(1000))
@@ -415,6 +418,18 @@ class CalendarBooking(Base, TimestampMixin):
     idempotency_key: Mapped[str] = mapped_column(String(200))
     provider_response_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sync_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    service_name_snapshot: Mapped[str] = mapped_column(String(150))
+    duration_minutes_snapshot: Mapped[int] = mapped_column(Integer)
+    buffer_before_minutes_snapshot: Mapped[int] = mapped_column(Integer)
+    buffer_after_minutes_snapshot: Mapped[int] = mapped_column(Integer)
+    blocked_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    blocked_end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    appointment_format_snapshot: Mapped[str] = mapped_column(String(30), default="phone")
+    location_snapshot: Mapped[str] = mapped_column(String(300), default="")
+    calendar_name_snapshot: Mapped[str] = mapped_column(String(300), default="")
+    service: Mapped["Service"] = relationship()
+    appointment_type: Mapped[CalendarAppointmentType] = relationship()
 
 
 class Location(Base, TimestampMixin):

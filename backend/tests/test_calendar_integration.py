@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, time, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import delete, select
@@ -15,6 +15,7 @@ from app.calendar.providers import (
     OAuthTokens,
     ProviderAccount,
     ProviderCalendar,
+    ProviderEvent,
 )
 from app.core.config import Settings, get_settings
 from app.core.encryption import CalendarTokenCipher
@@ -31,6 +32,7 @@ from app.models import (
     CalendarOAuthState,
     CalendarProviderName,
     ExternalCalendar,
+    Service,
     Tenant,
     TenantRole,
 )
@@ -67,6 +69,7 @@ class FakeProvider(CalendarProvider):
         self.account_email = "calendar@example.test"
         self.calendars = [ProviderCalendar("external-1", "Hauptkalender", "Europe/Berlin", "Owner", "owner", True, True)]
         self.last_busy_calendar_ids: list[str] | None = None
+        self.events: list[ProviderEvent] = []
 
     def build_authorization_url(self, state, code_challenge):
         return f"https://provider.test/auth?state={state}&challenge={code_challenge}"
@@ -98,6 +101,9 @@ class FakeProvider(CalendarProvider):
         self.created_events.append(event)
         return CreatedEvent(f"event-{len(self.created_events)}", "provider-reference")
 
+    async def list_events(self, access_token, calendar_id, start, end):
+        return list(self.events)
+
     async def revoke_connection(self, access_token, refresh_token):
         self.revoked = True
 
@@ -127,6 +133,7 @@ def calendar_env(db, monkeypatch):
         "app.services.calendar_connections.create_calendar_provider",
         "app.services.availability.create_calendar_provider",
         "app.services.calendar_booking.create_calendar_provider",
+        "app.services.calendar_agenda.create_calendar_provider",
     ):
         monkeypatch.setattr(path, lambda *_args, **_kwargs: provider)
     yield tenant, owner, settings, provider
@@ -174,9 +181,19 @@ def create_connected_calendar(db, tenant, owner, settings, *, can_write=True):
         is_selected_for_availability=True,
         is_selected_for_booking=True,
     )
-    appointment = CalendarAppointmentType(
+    service = Service(
         tenant_id=tenant.id,
         name=f"Beratung {uuid4().hex[:5]}",
+        description="Persönliche Beratung",
+        duration_minutes=30,
+        is_active=True,
+    )
+    db.add(service)
+    db.flush()
+    appointment = CalendarAppointmentType(
+        tenant_id=tenant.id,
+        service_id=service.id,
+        name=service.name,
         description="Persönliche Beratung",
         duration_minutes=30,
         buffer_before_minutes=0,
@@ -408,19 +425,36 @@ def test_configuration_and_appointment_types_are_real_crud_without_examples(clie
     assert configuration.status_code == 200
     assert configuration.json()["timezone"] == "Europe/Berlin"
     assert client.get("/api/v1/calendar/appointment-types").json() == []
+    service_id = client.get("/api/v1/services").json()[0]["id"]
     created = client.post(
         "/api/v1/calendar/appointment-types",
-        json={"name": "Erstberatung", "description": "", "duration_minutes": 45, "buffer_before_minutes": 5, "buffer_after_minutes": 10, "location_type": "phone", "location_text": "", "is_active": True},
+        json={"service_id": service_id, "buffer_before_minutes": 5, "buffer_after_minutes": 10, "location_type": "phone", "location_text": "", "is_active": True},
     )
     assert created.status_code == 201
     item_id = created.json()["id"]
     updated = client.put(
         f"/api/v1/calendar/appointment-types/{item_id}",
-        json={**created.json(), "name": "Ausführliche Erstberatung", "is_active": False},
+        json={"service_id": service_id, "buffer_before_minutes": 5, "buffer_after_minutes": 10, "location_type": "phone", "location_text": "", "is_active": False},
     )
     assert updated.status_code == 200
     assert updated.json()["is_active"] is False
     assert client.delete(f"/api/v1/calendar/appointment-types/{item_id}").status_code == 204
+
+
+def test_service_crud_supports_deactivation_without_hard_delete(client, calendar_env):
+    created = client.post(
+        "/api/v1/services",
+        json={"name": f"Damenhaarschnitt {uuid4().hex[:5]}", "description": "Waschen und Schneiden", "duration_minutes": 60, "is_active": True},
+    )
+    assert created.status_code == 201
+    item = created.json()
+    updated = client.put(
+        f"/api/v1/services/{item['id']}",
+        json={"name": item["name"], "description": item["description"], "duration_minutes": 60, "is_active": False},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["is_active"] is False
+    assert any(service["id"] == item["id"] for service in client.get("/api/v1/services").json())
 
 
 def test_availability_booking_idempotency_and_provider_confirmation(client, db, calendar_env):
@@ -443,10 +477,74 @@ def test_availability_booking_idempotency_and_provider_confirmation(client, db, 
     assert booked.json()["success"] is True
     assert booked.json()["status"] == "confirmed"
     assert len(provider.created_events) == 1
-    assert "Buchungsnummer:" in provider.created_events[0].description
+    assert "Interne Termin ID:" in provider.created_events[0].description
     repeated = client.post("/api/v1/calendar/tools/create-calendar-booking", json=payload)
     assert repeated.json()["booking_id"] == booked.json()["booking_id"]
     assert len(provider.created_events) == 1
+
+
+def test_new_agent_tools_validate_service_snapshot_and_confirmation(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    checked = client.post(
+        "/api/v1/calendar/tools/check-appointment-availability",
+        json={
+            "service_id": str(appointment.service_id),
+            "appointment_type_id": str(appointment.id),
+            "requested_start": "2026-08-03T09:00:00+02:00",
+            "timezone": "Europe/Berlin",
+        },
+    )
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["available"] is True
+    payload = {
+        "service_id": str(appointment.service_id),
+        "appointment_type_id": str(appointment.id),
+        "customer_name": "Max Mustermann",
+        "customer_phone": None,
+        "customer_email": None,
+        "start_at": "2026-08-03T09:00:00+02:00",
+        "timezone": "Europe/Berlin",
+        "idempotency_key": "new-agent-tool-1234",
+        "confirmed": True,
+    }
+    booked = client.post("/api/v1/calendar/tools/create-appointment", json=payload)
+    assert booked.json()["success"] is True
+    assert booked.json()["external_event_id"] == "event-1"
+    booking = db.scalar(select(CalendarBooking).where(CalendarBooking.id == UUID(booked.json()["booking_id"])))
+    assert booking.service_name_snapshot == appointment.name
+    assert booking.duration_minutes_snapshot == 30
+    assert booking.sync_status == "synced"
+    repeated = client.post("/api/v1/calendar/tools/create-appointment", json=payload)
+    assert repeated.json()["booking_id"] == booked.json()["booking_id"]
+    assert len(provider.created_events) == 1
+
+
+def test_appointments_agenda_deduplicates_platform_and_provider_event(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    slot = client.post(
+        "/api/v1/calendar/tools/find-available-appointments",
+        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+    ).json()["slots"][0]
+    booked = client.post("/api/v1/calendar/tools/create-calendar-booking", json={
+        "slot_id": slot["slot_id"], "appointment_type_id": str(appointment.id), "customer_name": "Kunde",
+        "customer_phone": "12345", "customer_email": "", "customer_notes": "", "idempotency_key": "agenda-12345678",
+    }).json()
+    start = datetime.fromisoformat(slot["start"])
+    end = datetime.fromisoformat(slot["end"])
+    provider.events = [
+        ProviderEvent(booked["external_event_id"], "Doppelt", start, end, ""),
+        ProviderEvent("external-only", "Teammeeting", start + timedelta(hours=2), end + timedelta(hours=2), "Büro"),
+    ]
+    response = client.get(
+        "/api/v1/calendar/appointments",
+        params={"start": "2026-08-03T00:00:00+02:00", "end": "2026-08-04T00:00:00+02:00"},
+    )
+    assert response.status_code == 200, response.text
+    entries = response.json()["entries"]
+    assert len(entries) == 2
+    assert {item["kind"] for item in entries} == {"platform", "external"}
 
 
 def test_slot_is_rechecked_and_conflict_returns_new_alternatives(client, db, calendar_env):

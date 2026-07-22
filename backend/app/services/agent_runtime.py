@@ -44,14 +44,14 @@ def build_runtime_config(
     if config.turn_detection_type.value == "semantic_vad":
         turn_detection: dict[str, object] = {
             "type": "semantic_vad", "eagerness": config.turn_eagerness.value,
-            "create_response": True, "interrupt_response": config.interruptions_enabled,
+            "create_response": True, "interrupt_response": False,
         }
     else:
         turn_detection = {
             "type": "server_vad", "threshold": config.vad_threshold,
             "prefix_padding_ms": config.prefix_padding_ms,
             "silence_duration_ms": SERVER_VAD_SILENCE_BY_EAGERNESS[config.turn_eagerness.value],
-            "create_response": True, "interrupt_response": config.interruptions_enabled,
+            "create_response": True, "interrupt_response": False,
         }
         if config.idle_prompt_enabled:
             turn_detection["idle_timeout_ms"] = config.idle_timeout_ms

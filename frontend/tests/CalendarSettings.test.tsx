@@ -23,6 +23,7 @@ const configuration = {
   business_hours: [{ weekday: 0, start_time: "09:00:00", end_time: "12:00:00", is_active: true }],
   updated_at: "2026-07-21T10:00:00Z",
 };
+const services = [{ id: "11111111-1111-4111-8111-111111111111", name: "Erstberatung", description: "", duration_minutes: 45, is_active: true }];
 
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
@@ -36,6 +37,7 @@ function installFetch(options: { overview?: typeof overview; appointmentTypes?: 
     if (url.endsWith("/calendar/configuration/calendars")) return Promise.resolve(json(calendars));
     if (url.endsWith("/calendar/appointment-types") && (init?.method ?? "GET") === "GET") return Promise.resolve(json(options.appointmentTypes ?? []));
     if (url.endsWith("/calendar/appointment-types") && init?.method === "POST") return Promise.resolve(json({ id: "type-1", tenant_id: "tenant-1", ...JSON.parse(String(init.body)), created_at: "now", updated_at: "now" }, 201));
+    if (url.endsWith("/services")) return Promise.resolve(json(services));
     if (url.includes("/calendar/connections/") && url.endsWith("/calendars")) return Promise.resolve(json(calendars));
     return Promise.resolve(json({}));
   });
@@ -99,7 +101,7 @@ describe("Kalenderverwaltung", () => {
     await screen.findByText("Google Kalender");
     await userEvent.click(screen.getByRole("tab", { name: "Terminarten" }));
     expect(screen.getByText("Noch keine Terminart angelegt")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Name"), "Erstberatung");
+    await userEvent.selectOptions(screen.getByLabelText("Leistung"), services[0].id);
     await userEvent.click(screen.getByRole("button", { name: "Terminart anlegen" }));
     await waitFor(() => expect(calls.some((call) => call.url.endsWith("/appointment-types") && call.init?.method === "POST")).toBe(true));
   });

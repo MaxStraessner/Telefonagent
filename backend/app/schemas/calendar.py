@@ -106,29 +106,22 @@ class BookingConfigurationResponse(BookingConfigurationUpdate):
 
 
 class AppointmentTypeWrite(BaseModel):
-    name: str = Field(min_length=1, max_length=150)
-    description: str = Field(default="", max_length=5000)
-    duration_minutes: int = Field(ge=5, le=720)
+    service_id: UUID
     buffer_before_minutes: int | None = Field(default=None, ge=0, le=240)
     buffer_after_minutes: int | None = Field(default=None, ge=0, le=240)
     location_type: Literal["phone", "onsite", "video", "custom"] = "phone"
     location_text: str = Field(default="", max_length=300)
     is_active: bool = True
 
-    @field_validator("name")
-    @classmethod
-    def strip_required_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("Name darf nicht leer sein.")
-        return normalized
-
-
 class AppointmentTypeResponse(AppointmentTypeWrite):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     tenant_id: UUID
+    name: str
+    description: str
+    duration_minutes: int
+    service_name: str
     created_at: datetime
     updated_at: datetime
 
@@ -167,12 +160,13 @@ class CalendarBookingCreate(BaseModel):
     slot_id: str = Field(min_length=20, max_length=4000)
     appointment_type_id: UUID
     customer_name: str = Field(min_length=1, max_length=150)
-    customer_phone: str = Field(min_length=3, max_length=50)
+    customer_phone: str = Field(default="", max_length=50)
     customer_email: str = Field(default="", max_length=320)
     customer_notes: str = Field(default="", max_length=5000)
     idempotency_key: str = Field(min_length=8, max_length=200)
+    service_id: UUID | None = None
 
-    @field_validator("customer_name", "customer_phone", "idempotency_key")
+    @field_validator("customer_name", "idempotency_key")
     @classmethod
     def strip_required_booking_values(cls, value: str) -> str:
         normalized = value.strip()
@@ -193,6 +187,9 @@ class CalendarBookingResponse(BaseModel):
     error_code: str | None = None
     message: str | None = None
     alternative_slots: list[AvailableSlotResponse] = []
+    external_event_id: str | None = None
+    calendar_name: str | None = None
+    service_name: str | None = None
 
 
 class BookingDetailResponse(BaseModel):
@@ -208,3 +205,60 @@ class BookingDetailResponse(BaseModel):
     status: Literal["pending", "confirmed", "failed", "cancelled"]
     source: Literal["voice_agent", "admin_api"]
     created_at: datetime
+
+
+class ExactAvailabilityRequest(BaseModel):
+    service_id: UUID
+    appointment_type_id: UUID
+    requested_start: datetime
+    timezone: str = Field(min_length=1, max_length=100)
+
+
+class ExactAvailabilityResponse(BaseModel):
+    available: bool
+    appointment_start: datetime
+    appointment_end: datetime
+    blocked_start: datetime
+    blocked_end: datetime
+    slot_id: str | None = None
+    reason: str | None = None
+    alternatives: list[AvailableSlotResponse] = []
+
+
+class AgentAppointmentCreate(BaseModel):
+    service_id: UUID
+    appointment_type_id: UUID
+    customer_name: str = Field(min_length=1, max_length=150)
+    customer_phone: str | None = Field(default=None, max_length=50)
+    customer_email: str | None = Field(default=None, max_length=320)
+    start_at: datetime
+    timezone: str = Field(min_length=1, max_length=100)
+    idempotency_key: str = Field(min_length=8, max_length=200)
+    confirmed: bool
+
+
+class CalendarEntryResponse(BaseModel):
+    id: str
+    kind: Literal["platform", "external"]
+    service_name: str
+    customer_name: str
+    start_at: datetime
+    end_at: datetime
+    duration_minutes: int
+    appointment_format: str
+    location: str
+    status: str
+    sync_status: str
+    source: str
+    calendar_provider: str
+    calendar_id: str
+    calendar_name: str
+    external_event_id: str | None
+    buffer_before_minutes: int
+    buffer_after_minutes: int
+    created_at: datetime | None = None
+
+
+class CalendarAgendaResponse(BaseModel):
+    calendar_connected: bool
+    entries: list[CalendarEntryResponse]

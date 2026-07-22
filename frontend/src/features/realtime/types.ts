@@ -2,6 +2,7 @@ import type { ConversationState } from "../conversation/state";
 
 export type TranscriptSpeaker = "user" | "assistant";
 export type TranscriptStatus = "partial" | "completed" | "interrupted";
+export type { PlaybackStatus } from "./playback";
 
 export interface TranscriptEntry {
   id: string;
@@ -41,4 +42,5 @@ export interface RealtimeViewState {
   callId: string | null;
   remainingSeconds: number | null;
   vadSummary: string | null;
+  playbackStatus: import("./playback").PlaybackStatus | null;
 }

@@ -10,7 +10,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.calendar.errors import CalendarError
 from app.calendar.providers import BusyInterval, create_calendar_provider
@@ -140,11 +140,7 @@ def calculate_available_slots(
     effective_end = min(requested_end, maximum_end)
     if effective_end <= effective_start:
         return []
-    existing_before = timedelta(minutes=configuration.buffer_before_minutes)
-    existing_after = timedelta(minutes=configuration.buffer_after_minutes)
-    busy = merge_busy_intervals(
-        [BusyInterval(item.start - existing_before, item.end + existing_after) for item in busy_intervals]
-    )
+    busy = merge_busy_intervals(busy_intervals)
     type_before = timedelta(
         minutes=appointment_type.buffer_before_minutes
         if appointment_type.buffer_before_minutes is not None
@@ -155,7 +151,9 @@ def calculate_available_slots(
         if appointment_type.buffer_after_minutes is not None
         else configuration.buffer_after_minutes
     )
-    duration = timedelta(minutes=appointment_type.duration_minutes)
+    duration = timedelta(
+        minutes=appointment_type.service.duration_minutes if appointment_type.service else appointment_type.duration_minutes
+    )
     limit = min(maximum_results or configuration.maximum_suggestions_per_request, configuration.maximum_suggestions_per_request)
     results: list[tuple[datetime, datetime]] = []
     for window_start, window_end in business_intervals(hours, effective_start, effective_end, zone):
@@ -250,10 +248,12 @@ class AvailabilityService:
                 CalendarAppointmentType.id == appointment_type_id,
                 CalendarAppointmentType.tenant_id == self.tenant_id,
                 CalendarAppointmentType.is_active.is_(True),
-            )
+            ).options(selectinload(CalendarAppointmentType.service))
         )
         if appointment_type is None:
             raise CalendarError("invalid_appointment_type", "Die Terminart ist ungültig oder nicht aktiv.")
+        if not appointment_type.service or not appointment_type.service.is_active:
+            raise CalendarError("invalid_service", "Die zugehörige Leistung ist ungültig oder nicht aktiv.")
         return configuration, hours, appointment_type
 
     async def current_busy_intervals(self, start: datetime, end: datetime) -> list[BusyInterval]:
@@ -294,7 +294,9 @@ class AvailabilityService:
                 )
             )
         )
-        intervals.extend(BusyInterval(aware_utc(item.start_at), aware_utc(item.end_at)) for item in local_bookings)
+        intervals.extend(
+            BusyInterval(aware_utc(item.blocked_start_at), aware_utc(item.blocked_end_at)) for item in local_bookings
+        )
         return merge_busy_intervals(intervals)
 
     async def search(
@@ -342,7 +344,7 @@ class AvailabilityService:
         self, appointment_type_id: UUID, start: datetime, end: datetime, *, now: datetime | None = None
     ) -> bool:
         configuration, hours, appointment_type = self.load_rules(appointment_type_id)
-        if aware_utc(end) - aware_utc(start) != timedelta(minutes=appointment_type.duration_minutes):
+        if aware_utc(end) - aware_utc(start) != timedelta(minutes=appointment_type.service.duration_minutes):
             return False
         busy = await self.current_busy_intervals(
             aware_utc(start) - timedelta(hours=6), aware_utc(end) + timedelta(hours=6)

@@ -1,14 +1,23 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import TenantContext, UserContext, get_tenant_context, get_tenant_repository, get_user_context
+from app.api.dependencies import (
+    TenantContext,
+    UserContext,
+    get_tenant_context,
+    get_tenant_repository,
+    get_user_context,
+    require_agent_admin,
+)
 from app.api.v1.agent import router as agent_router
 from app.api.v1.calendar import router as calendar_router
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
-from app.models import AgentConfiguration
+from app.models import AgentConfiguration, Service
 from app.repositories import TenantRepository
 from app.schemas.api import (
     AppointmentResponse,
@@ -18,6 +27,7 @@ from app.schemas.api import (
     RealtimeAgentConfigResponse,
     RealtimeClientSecretResponse,
     ServiceResponse,
+    ServiceWrite,
     StaffResponse,
     TenantResponse,
 )
@@ -102,6 +112,52 @@ def tenant(context: TenantContext = Depends(get_tenant_context)) -> TenantRespon
 @router.get("/services", response_model=list[ServiceResponse])
 def services(repo: TenantRepository = Depends(get_tenant_repository)) -> list[ServiceResponse]:
     return [ServiceResponse.model_validate(item) for item in repo.list_services()]
+
+
+@router.post("/services", response_model=ServiceResponse, status_code=status.HTTP_201_CREATED)
+def create_service(
+    payload: ServiceWrite,
+    context: TenantContext = Depends(get_tenant_context),
+    _admin: UserContext = Depends(require_agent_admin),
+    db: Session = Depends(get_db),
+) -> ServiceResponse:
+    item = Service(tenant_id=context.id, **payload.model_dump())
+    db.add(item)
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "service_name_conflict", "message": "Eine Leistung mit diesem Namen existiert bereits."},
+        ) from exc
+    db.refresh(item)
+    return ServiceResponse.model_validate(item)
+
+
+@router.put("/services/{service_id}", response_model=ServiceResponse)
+def update_service(
+    service_id: UUID,
+    payload: ServiceWrite,
+    context: TenantContext = Depends(get_tenant_context),
+    _admin: UserContext = Depends(require_agent_admin),
+    db: Session = Depends(get_db),
+) -> ServiceResponse:
+    item = db.scalar(select(Service).where(Service.id == service_id, Service.tenant_id == context.id))
+    if item is None:
+        raise HTTPException(status_code=404, detail={"code": "service_not_found", "message": "Leistung nicht gefunden."})
+    for field, value in payload.model_dump().items():
+        setattr(item, field, value)
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "service_name_conflict", "message": "Eine Leistung mit diesem Namen existiert bereits."},
+        ) from exc
+    db.refresh(item)
+    return ServiceResponse.model_validate(item)
 
 
 @router.get("/staff", response_model=list[StaffResponse])

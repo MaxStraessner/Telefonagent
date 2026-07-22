@@ -12,6 +12,7 @@ from app.calendar.providers.base import (
     OAuthTokens,
     ProviderAccount,
     ProviderCalendar,
+    ProviderEvent,
 )
 from app.calendar.providers.http import ensure_success, parse_provider_datetime, provider_network_error
 
@@ -175,6 +176,7 @@ class MicrosoftCalendarProvider(CalendarProvider):
             "start": {"dateTime": event.start.astimezone(timezone.utc).replace(tzinfo=None).isoformat(), "timeZone": "UTC"},
             "end": {"dateTime": event.end.astimezone(timezone.utc).replace(tzinfo=None).isoformat(), "timeZone": "UTC"},
             "showAs": "busy",
+            "location": {"displayName": event.location},
             "transactionId": event.idempotency_key,
             "singleValueLegacyExtendedProperties": [
                 {
@@ -195,6 +197,43 @@ class MicrosoftCalendarProvider(CalendarProvider):
         if not event_id:
             raise CalendarProviderError("provider_invalid_response", "Microsoft hat keine Ereigniskennung geliefert.")
         return CreatedEvent(event_id, str(payload.get("webLink") or event_id))
+
+    async def list_events(self, access_token: str, calendar_id: str, start: datetime, end: datetime) -> list[ProviderEvent]:
+        url: str | None = f"https://graph.microsoft.com/v1.0/me/calendars/{quote(calendar_id, safe='')}/calendarView"
+        params = {
+            "startDateTime": start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "endDateTime": end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "$select": "id,subject,start,end,location,isCancelled",
+            "$top": "1000",
+        }
+        headers = {"Authorization": f"Bearer {access_token}", "Prefer": 'outlook.timezone="UTC"'}
+        events: list[ProviderEvent] = []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                first = True
+                while url:
+                    response = await client.get(url, params=params if first else None, headers=headers)
+                    first = False
+                    ensure_success(response, "microsoft")
+                    payload = response.json()
+                    for item in payload.get("value", []):
+                        if item.get("isCancelled"):
+                            continue
+                        start_value = (item.get("start") or {}).get("dateTime")
+                        end_value = (item.get("end") or {}).get("dateTime")
+                        if start_value and end_value:
+                            events.append(ProviderEvent(
+                                event_id=str(item.get("id") or ""),
+                                title=str(item.get("subject") or "Belegter Termin"),
+                                start=parse_provider_datetime(start_value),
+                                end=parse_provider_datetime(end_value),
+                                location=str((item.get("location") or {}).get("displayName") or ""),
+                            ))
+                    next_url = payload.get("@odata.nextLink")
+                    url = str(next_url) if next_url else None
+        except httpx.HTTPError as exc:
+            raise provider_network_error("microsoft", exc) from exc
+        return events
 
     async def revoke_connection(self, access_token: str, refresh_token: str | None) -> None:
         # Microsoft exposes no narrow delegated OAuth token-revocation endpoint. Local encrypted
