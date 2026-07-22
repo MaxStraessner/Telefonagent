@@ -836,12 +836,30 @@ async def conversation_check_availability(
         audit.complete(success=False, error_code="invalid_appointment_type")
         raise calendar_http_error(CalendarError("invalid_appointment_type", "Die Terminart ist ungültig."))
     requested_end = aware_utc(payload.requested_start) + timedelta(minutes=appointment_type.service.duration_minutes)
-    timezone_name, slots, refreshed = await AvailabilitySnapshotService(
+    snapshot_service = AvailabilitySnapshotService(
         db, settings, context.id, payload.session_id, context.tenant.timezone
-    ).search(payload.appointment_type_id, payload.requested_start - timedelta(hours=1), requested_end + timedelta(days=7), maximum_results=5)
-    exact = next((slot for slot in slots if aware_utc(slot.start) == aware_utc(payload.requested_start)), None)
-    slots.sort(key=lambda slot: abs((aware_utc(slot.start) - aware_utc(payload.requested_start)).total_seconds()))
+    )
+    configuration, _hours, _configured_type = snapshot_service.availability.load_rules(payload.appointment_type_id)
+    timezone_name, exact_candidates, refreshed = await snapshot_service.search(
+        payload.appointment_type_id,
+        payload.requested_start - timedelta(minutes=configuration.slot_interval_minutes),
+        requested_end + timedelta(minutes=configuration.slot_interval_minutes),
+        maximum_results=10,
+    )
+    exact = next((slot for slot in exact_candidates if aware_utc(slot.start) == aware_utc(payload.requested_start)), None)
     available = exact is not None
+    alternatives = []
+    if not available:
+        timezone_name, alternatives, alternatives_refreshed = await snapshot_service.search(
+            payload.appointment_type_id,
+            payload.requested_start,
+            requested_end + timedelta(days=7),
+            maximum_results=3,
+        )
+        refreshed = refreshed or alternatives_refreshed
+        alternatives.sort(
+            key=lambda slot: abs((aware_utc(slot.start) - aware_utc(payload.requested_start)).total_seconds())
+        )
     orchestrator.context.requested_end = requested_end
     if available:
         orchestrator.context.selected_slot_start = aware_utc(exact.start)
@@ -853,7 +871,7 @@ async def conversation_check_availability(
         available=available, appointment_start=aware_utc(payload.requested_start), appointment_end=requested_end,
         blocked_start=aware_utc(payload.requested_start), blocked_end=requested_end,
         slot_id=exact.slot_id if exact else None, reason=None if available else "slot_unavailable",
-        alternatives=[] if available else slots[:3], source="targeted_refresh" if refreshed else "snapshot",
+        alternatives=[] if available else alternatives[:3], source="targeted_refresh" if refreshed else "snapshot",
         timezone=timezone_name,
     )
 

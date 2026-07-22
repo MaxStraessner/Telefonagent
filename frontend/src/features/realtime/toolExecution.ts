@@ -10,6 +10,26 @@ export interface ToolContinuationState {
   completed: boolean;
 }
 
+export interface NormalizedToolFailure {
+  success: false;
+  error_code: string;
+  message: string;
+}
+
+function normalizeToolFailure(error: unknown): NormalizedToolFailure {
+  if (error && typeof error === "object") {
+    const value = error as { code?: unknown; message?: unknown };
+    return {
+      success: false,
+      error_code: typeof value.code === "string" && value.code ? value.code : "tool_request_failed",
+      message: typeof value.message === "string" && value.message
+        ? value.message
+        : "Die Aktion konnte nicht abgeschlossen werden.",
+    };
+  }
+  return { success: false, error_code: "tool_request_failed", message: "Die Aktion konnte nicht abgeschlossen werden." };
+}
+
 export class RealtimeToolExecutor {
   private readonly pending = new Map<string, Promise<unknown>>();
   private readonly continuation = new Map<string, ToolContinuationState>();
@@ -26,9 +46,9 @@ export class RealtimeToolExecutor {
     this.onRuntimeState(state);
   }
 
-  execute<T>(callId: string, toolName: string, action: () => Promise<T>): Promise<T> {
+  execute<T>(callId: string, toolName: string, action: () => Promise<T>): Promise<T | NormalizedToolFailure> {
     const duplicate = this.pending.get(callId);
-    if (duplicate) return duplicate as Promise<T>;
+    if (duplicate) return duplicate as Promise<T | NormalizedToolFailure>;
     const state: ToolContinuationState = {
       callId, toolName, startedAt: performance.now(), resultSentAt: null,
       continuationStartedAt: null, responseId: null, completed: false,
@@ -36,23 +56,27 @@ export class RealtimeToolExecutor {
     this.continuation.set(callId, state);
     this.setRuntimeState("tool_running");
     this.onEvent("tool_started", JSON.stringify({ sessionId: this.sessionId, toolCallId: callId, toolName }));
-    const execution = action().then((result) => {
+    const finish = (result: T | NormalizedToolFailure, success: boolean) => {
       state.resultSentAt = performance.now();
       state.continuationStartedAt = state.resultSentAt;
       this.setRuntimeState("tool_result_ready");
-      this.onEvent("tool_completed", JSON.stringify({ sessionId: this.sessionId, toolCallId: callId, toolName }));
+      this.onEvent("tool_completed", JSON.stringify({
+        sessionId: this.sessionId, toolCallId: callId, toolName, success,
+        ...(!success && typeof result === "object" && result !== null && "error_code" in result
+          ? { errorCode: result.error_code }
+          : {}),
+      }));
       this.setRuntimeState("continuation_starting");
       this.onEvent("tool_result_sent", JSON.stringify({
         sessionId: this.sessionId, toolCallId: callId, toolName,
-        durationMs: Math.round(state.resultSentAt - state.startedAt), continuationMode: "sdk_automatic",
+        durationMs: Math.round(state.resultSentAt - state.startedAt), continuationMode: "sdk_automatic", success,
       }));
       return result;
-    }).catch((error) => {
-      state.completed = true;
-      this.setRuntimeState("idle");
-      this.onEvent("tool_failed", JSON.stringify({ sessionId: this.sessionId, toolCallId: callId, toolName }));
-      throw error;
-    });
+    };
+    const execution = action().then(
+      (result) => finish(result, true),
+      (error) => finish(normalizeToolFailure(error), false),
+    );
     this.pending.set(callId, execution);
     return execution;
   }
@@ -68,5 +92,11 @@ export class RealtimeToolExecutor {
   completeResponse(responseId: string | null) {
     const state = [...this.continuation.values()].find((item) => item.responseId === responseId);
     if (state) state.completed = true;
+  }
+
+  hasAwaitingContinuation() {
+    return [...this.continuation.values()].some((item) =>
+      item.continuationStartedAt !== null && item.responseId === null && !item.completed
+    );
   }
 }

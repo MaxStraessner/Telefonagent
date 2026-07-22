@@ -71,7 +71,7 @@ const agentConfig = {
   tenant_id: tenant.id, tenant_name: tenant.name, assistant_name: "Lina", language: "de",
   welcome_message: "Guten Tag, hier ist Lina.", instructions: "Sei freundlich. Keine Werkzeuge.", model: "gpt-realtime-2.1", voice: "marin",
   speed: 1, configuration_version: 1, capability_keys: [], tool_names: [],
-  maximum_session_minutes: 10, transcription_enabled: true, raw_event_logging: false,
+  maximum_session_minutes: 10, max_output_tokens: 1024, transcription_enabled: true, raw_event_logging: false,
   vad: { type: "server_vad" as const, threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600, eagerness: null, create_response: true, interrupt_response: true },
 };
 const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", speed: 1, configuration_version: 1, call_session_id: "call-local", tenant_id: tenant.id };
@@ -439,6 +439,54 @@ describe("Realtime browser voice flow", () => {
     expect(completedCalls).toHaveLength(20);
     expect(completedCalls.map(([, responseId]) => responseId)).toEqual(Array.from({ length: 20 }, (_, index) => `r-sequence-${index + 1}`));
     expect(vi.mocked(callbacks.onPlaybackStatus).mock.calls.some(([status]) => status === "interrupted")).toBe(false);
+    client.close();
+  });
+
+  it("diagnostiziert eine unvollständige Antwort und fordert höchstens eine kontrollierte Wiederaufnahme an", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    sdk.requestResponse.mockClear();
+    act(() => {
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-incomplete-1" } });
+      sdk.emit("transport_event", {
+        type: "response.output_item.added", response_id: "r-incomplete-1",
+        item: { type: "function_call", call_id: "tool-partial", name: "check_appointment_availability", status: "in_progress" },
+      });
+      sdk.emit("transport_event", {
+        type: "response.done",
+        response: { id: "r-incomplete-1", status: "incomplete", status_details: { reason: "max_output_tokens" } },
+      });
+    });
+    expect(sdk.requestResponse).toHaveBeenCalledOnce();
+    expect(sdk.requestResponse).toHaveBeenCalledWith(expect.objectContaining({ instructions: expect.stringContaining("Gesprächsrunde") }));
+    expect(microphoneTrack.enabled).toBe(false);
+    expect(vi.mocked(callbacks.onEvent).mock.calls.some(([name, detail]) =>
+      name === "response.done" && detail?.includes('"responseCompletionReason":"incomplete_function_call"')
+    )).toBe(true);
+
+    act(() => {
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-incomplete-2" } });
+      sdk.emit("transport_event", {
+        type: "response.done",
+        response: { id: "r-incomplete-2", status: "incomplete", status_details: { reason: "max_output_tokens" } },
+      });
+    });
+    expect(sdk.requestResponse).toHaveBeenCalledOnce();
+    expect(microphoneTrack.enabled).toBe(false);
+    client.close();
+  });
+
+  it("protokolliert die tatsächlich aktive Sitzungskonfiguration ohne Geheimnis", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    const event = vi.mocked(callbacks.onEvent).mock.calls.find(([name]) => name === "active_agent_configuration");
+    expect(event).toBeDefined();
+    expect(event?.[1]).toContain('"model":"gpt-realtime-2.1"');
+    expect(event?.[1]).toContain('"voice":"marin"');
+    expect(event?.[1]).toContain('"maxOutputTokens":1024');
+    expect(event?.[1]).not.toContain("ek_test");
     client.close();
   });
 

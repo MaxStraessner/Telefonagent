@@ -45,6 +45,7 @@ def agent_config(context: TenantContext, settings: Settings, db: Session) -> Rea
         capability_keys=runtime.capability_keys,
         tool_names=[str(item.get("name", "")) for item in runtime.tools],
         maximum_session_minutes=settings.openai_realtime_max_session_minutes,
+        max_output_tokens=settings.openai_realtime_max_output_tokens,
         transcription_enabled=settings.openai_realtime_transcription_enabled,
         raw_event_logging=settings.openai_realtime_log_raw_events,
         vad=RealtimeVadResponse(**runtime.turn_detection),
@@ -65,7 +66,7 @@ def _upstream_payload(runtime: AgentRuntimeConfig, settings: Settings) -> dict[s
             "output_modalities": ["audio"],
             "tools": runtime.tools,
             "tool_choice": runtime.tool_choice,
-            "max_output_tokens": 256,
+            "max_output_tokens": settings.openai_realtime_max_output_tokens,
             "audio": {
                 "input": {
                     "noise_reduction": {"type": "near_field"},
@@ -148,6 +149,22 @@ async def create_client_secret(
     db.add(call_session)
     db.commit()
     db.refresh(call_session)
+    logger.info(
+        "realtime_session_configuration_activated",
+        extra={
+            "event_name": "realtime_session_configuration_activated",
+            "session_id": str(call_session.id),
+            "tenant_id": str(context.id),
+            "configuration_version": runtime.version,
+            "model": runtime.model,
+            "voice": runtime.voice,
+            "speed": runtime.speed,
+            "language": runtime.bundle.configuration.language,
+            "tool_names": [str(item.get("name", "")) for item in runtime.tools],
+            "prompt_sections": runtime.prompt_sections,
+            "standard_german_instruction_active": "Standarddeutsch" in runtime.prompt,
+        },
+    )
     return RealtimeClientSecretResponse(
         client_secret=value, expires_at=expires_at,
         session_id=session_payload.get("id") if isinstance(session_payload, dict) else None,

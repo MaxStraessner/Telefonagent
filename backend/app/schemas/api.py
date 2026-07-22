@@ -57,6 +57,7 @@ class RealtimeAgentConfigResponse(BaseModel):
     capability_keys: list[str]
     tool_names: list[str]
     maximum_session_minutes: int
+    max_output_tokens: int
     transcription_enabled: bool
     raw_event_logging: bool
     vad: RealtimeVadResponse

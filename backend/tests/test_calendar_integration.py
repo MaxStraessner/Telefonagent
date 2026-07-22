@@ -556,7 +556,7 @@ def test_conversation_orchestration_bootstrap_snapshot_and_final_booking(client,
         "service_id": str(appointment.service_id), "appointment_type_id": str(appointment.id),
         "customer_name": "Max Mustermann", "customer_phone": "+49123456", "customer_email": None,
         "start_at": "2026-08-03T09:00:00+02:00", "timezone": "Europe/Berlin",
-        "confirmation_version": 1, "confirmed": True,
+        "confirmation_version": 1, "confirmation_utterance": "Ja, das passt.", "confirmed": True,
     }
     booked = client.post("/api/v1/calendar/tools/finalize-appointment-booking", json=payload)
     assert booked.status_code == 200, booked.text
@@ -570,6 +570,40 @@ def test_conversation_orchestration_bootstrap_snapshot_and_final_booking(client,
     db.execute(delete(AvailabilitySnapshot).where(AvailabilitySnapshot.call_session_id == call.id))
     db.execute(delete(BookingConversation).where(BookingConversation.call_session_id == call.id))
     db.execute(delete(CalendarBooking).where(CalendarBooking.conversation_session_id == call.id))
+    db.delete(call)
+    db.commit()
+
+
+def test_conversation_booking_rejects_declined_confirmation(client, db, calendar_env):
+    tenant, owner, settings, provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    call = CallSession(tenant_id=tenant.id, channel=CallChannel.browser, status="active")
+    db.add(call)
+    db.commit()
+    assert client.post("/api/v1/calendar/tools/resolve-service", json={
+        "session_id": str(call.id), "tool_call_id": "decline-resolve", "service_name": appointment.name,
+    }).json()["success"] is True
+    assert client.post("/api/v1/calendar/tools/check-appointment-availability/session", json={
+        "session_id": str(call.id), "tool_call_id": "decline-availability",
+        "service_id": str(appointment.service_id), "appointment_type_id": str(appointment.id),
+        "requested_start": "2026-08-03T10:00:00+02:00", "timezone": "Europe/Berlin",
+    }).json()["available"] is True
+    response = client.post("/api/v1/calendar/tools/finalize-appointment-booking", json={
+        "session_id": str(call.id), "tool_call_id": "decline-finalize",
+        "service_id": str(appointment.service_id), "appointment_type_id": str(appointment.id),
+        "customer_name": "Max Mustermann", "customer_phone": "+49123456", "customer_email": None,
+        "start_at": "2026-08-03T10:00:00+02:00", "timezone": "Europe/Berlin",
+        "confirmation_version": 1, "confirmation_utterance": "Nein, bitte nicht eintragen.", "confirmed": True,
+    })
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert response.json()["error_code"] == "booking_declined"
+    assert provider.created_events == []
+    assert db.scalar(select(CalendarBooking).where(CalendarBooking.conversation_session_id == call.id)) is None
+
+    db.execute(delete(ToolExecution).where(ToolExecution.call_session_id == call.id))
+    db.execute(delete(AvailabilitySnapshot).where(AvailabilitySnapshot.call_session_id == call.id))
+    db.execute(delete(BookingConversation).where(BookingConversation.call_session_id == call.id))
     db.delete(call)
     db.commit()
 

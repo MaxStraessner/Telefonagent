@@ -50,7 +50,7 @@ export interface RealtimeAgentConfig {
   tenant_id: string; tenant_name: string; assistant_name: string; language: string;
   welcome_message: string; instructions: string; model: string; voice: string;
   speed: number; configuration_version: number; capability_keys: string[]; tool_names: string[];
-  maximum_session_minutes: number; transcription_enabled: boolean; raw_event_logging: boolean;
+  maximum_session_minutes: number; max_output_tokens: number; transcription_enabled: boolean; raw_event_logging: boolean;
   vad: RealtimeVadConfig;
 }
 export interface RealtimeClientSecret {

@@ -11,6 +11,7 @@ from app.models import BookingState, CalendarAppointmentType, CalendarBookingSta
 from app.schemas.calendar import CalendarBookingCreate, FinalizeAppointmentRequest
 from app.services.availability import SlotSigner, aware_utc
 from app.services.availability_snapshot import AvailabilitySnapshotService
+from app.services.booking_confirmation import BookingConfirmationDecision, classify_booking_confirmation
 from app.services.calendar_booking import BookingServiceResult, CalendarBookingService
 from app.services.conversation_orchestrator import ConversationOrchestrator
 
@@ -53,6 +54,27 @@ class AppointmentBookingOrchestrator:
             return BookingServiceResult(existing)
 
         context = conversation.context
+        confirmation = classify_booking_confirmation(payload.confirmation_utterance)
+        if confirmation != BookingConfirmationDecision.confirmed:
+            context.booking_confirmed_by_customer = False
+            error_by_decision = {
+                BookingConfirmationDecision.rejected: (
+                    "booking_declined", "Die Kundin oder der Kunde hat die Buchung abgelehnt."
+                ),
+                BookingConfirmationDecision.change_requested: (
+                    "booking_change_requested", "Vor der Buchung wurde eine Änderung gewünscht."
+                ),
+                BookingConfirmationDecision.unclear: (
+                    "confirmation_unclear", "Die Zustimmung zur Buchung war nicht eindeutig."
+                ),
+            }
+            if confirmation in {BookingConfirmationDecision.rejected, BookingConfirmationDecision.change_requested} and context.state in {
+                BookingState.slot_available, BookingState.confirmation_required
+            }:
+                conversation.transition(BookingState.date_time_required, error_code=error_by_decision[confirmation][0])
+            self.db.commit()
+            code, message = error_by_decision[confirmation]
+            raise CalendarError(code, message)
         if context.service_id not in {None, payload.service_id} or context.appointment_type_id not in {None, payload.appointment_type_id}:
             raise CalendarError("conversation_context_mismatch", "Die bestätigten Buchungsdaten passen nicht zum Gesprächskontext.")
         if payload.confirmation_version < context.confirmation_version:

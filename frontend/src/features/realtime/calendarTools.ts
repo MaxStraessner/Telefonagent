@@ -5,8 +5,28 @@ import { RealtimeToolExecutor } from "./toolExecution";
 
 type ToolDetails = { toolCall?: { callId?: string } };
 
+type RealtimeRunContext = { context?: { history?: unknown[] } };
+
 function callId(details: ToolDetails | undefined) {
   return details?.toolCall?.callId ?? crypto.randomUUID();
+}
+
+export function latestUserUtterance(runContext: unknown): string {
+  const history = (runContext as RealtimeRunContext | undefined)?.context?.history;
+  if (!Array.isArray(history)) return "";
+  for (const item of [...history].reverse()) {
+    if (!item || typeof item !== "object" || (item as { role?: unknown }).role !== "user") continue;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    const parts = content.flatMap((part) => {
+      if (!part || typeof part !== "object") return [];
+      const value = part as { transcript?: unknown; text?: unknown };
+      const spoken = typeof value.transcript === "string" ? value.transcript : value.text;
+      return typeof spoken === "string" && spoken.trim() ? [spoken.trim()] : [];
+    });
+    if (parts.length) return parts.join(" ");
+  }
+  return "";
 }
 
 const toolError = (_context: unknown, error: unknown) => JSON.stringify({
@@ -74,10 +94,15 @@ export function createCalendarTools(toolNames: string[], executor: RealtimeToolE
       start_at: z.string().datetime({ offset: true }), timezone: z.string().min(1),
       confirmation_version: z.number().int().min(1), confirmed: z.literal(true),
     }),
-    execute: async (input, _context, details) => {
+    execute: async (input, runContext, details) => {
       const id = callId(details as ToolDetails);
       return executor.execute(id, "finalize_appointment_booking", async () => {
-        const result = await api.finalizeAppointmentBooking({ ...input, session_id: executor.sessionId, tool_call_id: id });
+        const result = await api.finalizeAppointmentBooking({
+          ...input,
+          session_id: executor.sessionId,
+          tool_call_id: id,
+          confirmation_utterance: latestUserUtterance(runContext),
+        });
         return result.success && result.status === "confirmed" && result.external_event_id
           ? result
           : { ...result, success: false, error_code: result.error_code ?? "external_confirmation_missing" };

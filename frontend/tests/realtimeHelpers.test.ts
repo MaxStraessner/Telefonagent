@@ -4,6 +4,7 @@ import { normalizedRealtimeEventType, sanitizedRealtimeEventDetail } from "../sr
 import { tickSessionTimer } from "../src/features/realtime/sessionTimer";
 import { mapRealtimeHistory } from "../src/features/realtime/transcript";
 import { derivePlaybackStatus, incompleteResponseWasInterrupted } from "../src/features/realtime/playback";
+import { diagnoseResponseCompletion } from "../src/features/realtime/completionDiagnosis";
 
 describe("Realtime transcript mapping", () => {
   it("führt partielle Einträge anhand der Item-ID ohne Duplikate fort", () => {
@@ -45,6 +46,15 @@ describe("Realtime playback status", () => {
     expect(incompleteResponseWasInterrupted({ status: "incomplete" })).toBe(false);
     expect(incompleteResponseWasInterrupted({ status: "incomplete", status_details: { reason: "turn_detected" } })).toBe(true);
     expect(incompleteResponseWasInterrupted({ status: "completed" })).toBe(false);
+  });
+});
+
+describe("Realtime completion diagnosis", () => {
+  it("unterscheidet Ausgabelimit, unvollständigen Tool Call, Inhaltsfilter und echten Abbruch", () => {
+    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "max_output_tokens" } })).toMatchObject({ reason: "output_token_limit", recoverable: true });
+    expect(diagnoseResponseCompletion({ status: "incomplete" }, true, false)).toMatchObject({ reason: "incomplete_function_call", recoverable: true });
+    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "content_filter" } })).toMatchObject({ reason: "content_filter", recoverable: false });
+    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "turn_detected" } })).toMatchObject({ reason: "interrupted", interruption: true });
   });
 });
 

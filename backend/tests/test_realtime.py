@@ -94,6 +94,7 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
         "find_alternative_slots", "finalize_appointment_booking",
     ]
     assert session["tool_choice"] == "auto"
+    assert session["max_output_tokens"] == 1024
     assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
     assert FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"].startswith("tenant_")
     assert "Salon Haarkunst" not in FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"]

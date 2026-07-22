@@ -319,4 +319,5 @@ class FinalizeAppointmentRequest(ConversationToolRequest):
     start_at: datetime
     timezone: str = Field(min_length=1, max_length=100)
     confirmation_version: int = Field(ge=1)
+    confirmation_utterance: str = Field(min_length=1, max_length=300)
     confirmed: Literal[True]

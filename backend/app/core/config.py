@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_realtime_model: str = "gpt-realtime-2.1"
     openai_realtime_voice: str = "marin"
     openai_realtime_max_session_minutes: int = 10
+    openai_realtime_max_output_tokens: int = 1024
     openai_realtime_transcription_enabled: bool = True
     openai_realtime_log_raw_events: bool = False
     openai_safety_identifier_salt: str = "telefonagent-local-installation"
@@ -91,6 +92,15 @@ class Settings(BaseSettings):
         except (TypeError, ValueError):
             return 10
         return minutes if 1 <= minutes <= 60 else 10
+
+    @field_validator("openai_realtime_max_output_tokens", mode="before")
+    @classmethod
+    def validate_max_output_tokens(cls, value: object) -> int:
+        try:
+            tokens = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 1024
+        return tokens if 256 <= tokens <= 4096 else 1024
 
     @field_validator("openai_realtime_model", mode="before")
     @classmethod

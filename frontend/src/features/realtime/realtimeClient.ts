@@ -4,6 +4,7 @@ import type { RealtimeAgentConfig, RealtimeClientSecret } from "../../types/api"
 import type { ConversationState } from "../conversation/state";
 import { createCalendarTools } from "./calendarTools";
 import { sanitizedRealtimeEventDetail } from "./events";
+import { diagnoseResponseCompletion } from "./completionDiagnosis";
 import { realtimeErrors } from "./errors";
 import { derivePlaybackStatus, incompleteResponseWasInterrupted, type PlaybackStatus } from "./playback";
 import { RealtimeToolExecutor, type ConversationRuntimeState } from "./toolExecution";
@@ -34,6 +35,10 @@ interface ActiveResponse {
   itemTruncated: boolean;
   explicitlyCancelled: boolean;
   failed: boolean;
+  functionCallRequested: boolean;
+  functionCallArgumentsComplete: boolean;
+  toolCallId: string | null;
+  toolName: string | null;
 }
 
 function emptyActiveResponse(responseId: string | null = null): ActiveResponse {
@@ -48,11 +53,15 @@ function emptyActiveResponse(responseId: string | null = null): ActiveResponse {
     itemTruncated: false,
     explicitlyCancelled: false,
     failed: false,
+    functionCallRequested: false,
+    functionCallArgumentsComplete: false,
+    toolCallId: null,
+    toolName: null,
   };
 }
 
-function responseFromEvent(event: TransportEvent): { id?: string; status?: string } | undefined {
-  return (event as { response?: { id?: string; status?: string } }).response;
+function responseFromEvent(event: TransportEvent): Record<string, unknown> | undefined {
+  return (event as { response?: Record<string, unknown> }).response;
 }
 
 function responseIdFromEvent(event: TransportEvent): string | null {
@@ -78,6 +87,8 @@ export class BrowserRealtimeClient {
   private playbackStatus: PlaybackStatus | null = null;
   private toolExecutor: RealtimeToolExecutor | null = null;
   private runtimeState: ConversationRuntimeState = "idle";
+  private incompleteRecoveryAttempts = 0;
+  private incompleteRecoveryPending = false;
 
   constructor(callbacks: RealtimeClientCallbacks) {
     this.callbacks = callbacks;
@@ -116,6 +127,7 @@ export class BrowserRealtimeClient {
       tracingDisabled: true,
       config: {
         outputModalities: ["audio"],
+        providerData: { max_output_tokens: config.max_output_tokens },
         toolChoice: calendarTools.length ? "auto" : "none",
         audio: {
           input: {
@@ -148,6 +160,19 @@ export class BrowserRealtimeClient {
     this.callbacks.onState("connected");
     this.callbacks.onConnected();
     this.emitInternalEvent("session_connected", "application_internal");
+    this.callbacks.onEvent("active_agent_configuration", JSON.stringify({
+      sessionId: secret.call_session_id,
+      configurationVersion: config.configuration_version,
+      model: config.model,
+      voice: config.voice,
+      speed: config.speed,
+      language: config.language,
+      maxOutputTokens: config.max_output_tokens,
+      toolNames: config.tool_names,
+      instructionsLength: config.instructions.length,
+      standardGermanActive: config.instructions.includes("Standarddeutsch"),
+      automaticToolContinuation: "agents_sdk",
+    }));
     transport.requestResponse({ instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${config.welcome_message}` });
   }
 
@@ -160,13 +185,24 @@ export class BrowserRealtimeClient {
       this.callbacks.onState("assistant_thinking");
       this.emitInternalEvent("sdk_agent_generation_started", "openai_sdk");
     };
-    const toolStart = (event: unknown) => {
+    const toolStart = (_context: unknown, _agent: unknown, tool: unknown, details: unknown) => {
       this.setRuntimeState("tool_running");
-      this.callbacks.onEvent("sdk_agent_tool_start", JSON.stringify(event));
+      const name = (tool as { name?: unknown } | null)?.name;
+      const callId = (details as { toolCall?: { callId?: unknown } } | null)?.toolCall?.callId;
+      this.callbacks.onEvent("sdk_agent_tool_start", JSON.stringify({
+        toolName: typeof name === "string" ? name : null,
+        toolCallId: typeof callId === "string" ? callId : null,
+      }));
     };
-    const toolEnd = (event: unknown) => {
+    const toolEnd = (_context: unknown, _agent: unknown, tool: unknown, _result: unknown, details: unknown) => {
       this.setRuntimeState("continuation_starting");
-      this.callbacks.onEvent("sdk_agent_tool_end", JSON.stringify(event));
+      const name = (tool as { name?: unknown } | null)?.name;
+      const callId = (details as { toolCall?: { callId?: unknown } } | null)?.toolCall?.callId;
+      this.callbacks.onEvent("sdk_agent_tool_end", JSON.stringify({
+        toolName: typeof name === "string" ? name : null,
+        toolCallId: typeof callId === "string" ? callId : null,
+        continuationMode: "sdk_automatic",
+      }));
     };
     const sessionError = (event: { error: unknown }) => this.callbacks.onError(event.error);
     const connectionChange = (status: "connecting" | "connected" | "disconnected") => {
@@ -202,12 +238,35 @@ export class BrowserRealtimeClient {
       this.activeResponse = emptyActiveResponse(incomingResponseId);
       this.assistantGenerating = true;
       this.setRuntimeState("generation_running");
+      this.incompleteRecoveryPending = false;
       if (incomingResponseId) this.toolExecutor?.attachContinuationResponse(incomingResponseId);
     } else if (incomingResponseId && !this.activeResponse.responseId) {
       this.activeResponse.responseId = incomingResponseId;
     }
 
     let internalEventName = "realtime_event_observed";
+    const item = (event as { item?: { type?: string; call_id?: string; name?: string; status?: string } }).item;
+    if ((rawEventType === "response.output_item.added" || rawEventType === "response.output_item.done") && item?.type === "function_call") {
+      this.activeResponse.functionCallRequested = true;
+      this.activeResponse.toolCallId = item.call_id ?? this.activeResponse.toolCallId;
+      this.activeResponse.toolName = item.name ?? this.activeResponse.toolName;
+      if (item.status === "completed") this.activeResponse.functionCallArgumentsComplete = true;
+      this.callbacks.onEvent(
+        item.status === "completed" ? "tool_call_generation_completed" : "tool_call_requested",
+        JSON.stringify({
+          responseId: incomingResponseId,
+          toolCallId: this.activeResponse.toolCallId,
+          toolName: this.activeResponse.toolName,
+          complete: item.status === "completed",
+        }),
+      );
+    }
+    if (rawEventType === "response.function_call_arguments.done") {
+      const callEvent = event as { call_id?: string };
+      this.activeResponse.functionCallRequested = true;
+      this.activeResponse.functionCallArgumentsComplete = true;
+      this.activeResponse.toolCallId = callEvent.call_id ?? this.activeResponse.toolCallId;
+    }
     switch (rawEventType) {
       case "output_audio_buffer.started":
         this.activeResponse.bufferStarted = true;
@@ -223,16 +282,57 @@ export class BrowserRealtimeClient {
       case "response.done":
         this.assistantGenerating = false;
         this.activeResponse.responseCompleted = true;
-        this.activeResponse.responseStatus = response?.status ?? null;
+        this.activeResponse.responseStatus = typeof response?.status === "string" ? response.status : null;
         this.activeResponse.explicitlyCancelled = incompleteResponseWasInterrupted(response);
         this.callbacks.onResponseCompleted(response?.status === undefined || response.status === "completed");
         this.toolExecutor?.completeResponse(incomingResponseId);
-        internalEventName = this.activeResponse.explicitlyCancelled ? "assistant_response_interrupted" : "assistant_response_generation_completed";
+        {
+          const diagnosis = diagnoseResponseCompletion(
+            response,
+            this.activeResponse.functionCallRequested,
+            this.activeResponse.functionCallArgumentsComplete,
+          );
+          if (diagnosis.status === "completed") this.incompleteRecoveryAttempts = 0;
+          internalEventName = diagnosis.interruption
+            ? "assistant_response_interrupted"
+            : diagnosis.status === "incomplete"
+              ? "assistant_response_incomplete"
+              : "assistant_response_generation_completed";
+          if (
+            diagnosis.recoverable
+            && this.incompleteRecoveryAttempts < 1
+            && !this.toolExecutor?.hasAwaitingContinuation()
+          ) {
+            this.incompleteRecoveryAttempts += 1;
+            this.incompleteRecoveryPending = true;
+            this.setRuntimeState("continuation_starting");
+            this.callbacks.onEvent("incomplete_response_recovery_requested", JSON.stringify({
+              responseId: incomingResponseId,
+              reason: diagnosis.reason,
+              functionCallRequested: this.activeResponse.functionCallRequested,
+              functionCallArgumentsComplete: this.activeResponse.functionCallArgumentsComplete,
+            }));
+            try {
+              this.transport?.requestResponse({
+                instructions: "Setze dieselbe Gesprächsrunde jetzt kurz auf Deutsch fort. Falls ein Werkzeugaufruf unvollständig war, erzeuge ihn vollständig. Sonst beende die angefangene Antwort, ohne Gesagtes unnötig zu wiederholen.",
+              });
+            } catch (error) {
+              this.incompleteRecoveryPending = false;
+              this.callbacks.onError(error);
+            }
+          }
+        }
         break;
       case "output_audio_buffer.stopped":
         this.activeResponse.playbackStopped = true;
         this.setAssistantSpeaking(false);
-        this.setRuntimeState("idle");
+        this.setRuntimeState(
+          this.assistantGenerating
+            ? "generation_running"
+            : this.incompleteRecoveryPending || this.toolExecutor?.hasAwaitingContinuation()
+              ? "continuation_starting"
+              : "idle",
+        );
         internalEventName = "assistant_playback_completed";
         break;
       case "output_audio_buffer.cleared":
@@ -280,6 +380,21 @@ export class BrowserRealtimeClient {
       eventId: (event as { event_id?: string }).event_id ?? null,
       responseId: this.activeResponse.responseId,
       responseStatus: this.activeResponse.responseStatus,
+      responseStatusDetails: response ? sanitizedRealtimeEventDetail({
+        status_details: response.status_details,
+        incomplete_details: response.incomplete_details,
+      }) : undefined,
+      responseCompletionReason: rawEventType === "response.done"
+        ? diagnoseResponseCompletion(
+          response,
+          this.activeResponse.functionCallRequested,
+          this.activeResponse.functionCallArgumentsComplete,
+        ).reason
+        : undefined,
+      functionCallRequested: this.activeResponse.functionCallRequested,
+      functionCallArgumentsComplete: this.activeResponse.functionCallArgumentsComplete,
+      toolCallId: this.activeResponse.toolCallId,
+      toolName: this.activeResponse.toolName,
       eventSource: "openai_data_channel",
       assistantSpeakingBefore: beforeSpeaking,
       assistantSpeakingAfter: this.assistantSpeaking,

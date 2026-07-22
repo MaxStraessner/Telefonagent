@@ -18,9 +18,14 @@ describe("RealtimeToolExecutor continuation", () => {
     const executor = new RealtimeToolExecutor("session-1", events, states);
     const result = executor.execute("call-1", toolName, action);
     if (success) await expect(result).resolves.toEqual({ success: true });
-    else await expect(result).rejects.toThrow("controlled");
+    else await expect(result).resolves.toEqual({
+      success: false,
+      error_code: "tool_request_failed",
+      message: "controlled",
+    });
     expect(action).toHaveBeenCalledOnce();
-    expect(events.mock.calls.filter(([name]) => name === "tool_result_sent")).toHaveLength(success ? 1 : 0);
+    expect(events.mock.calls.filter(([name]) => name === "tool_result_sent")).toHaveLength(1);
+    expect(states).not.toHaveBeenLastCalledWith("idle");
   });
 
   it("dedupliziert dieselbe Tool-Call-ID und ordnet genau eine SDK-Fortsetzungsantwort zu", async () => {
@@ -34,5 +39,19 @@ describe("RealtimeToolExecutor continuation", () => {
     executor.attachContinuationResponse("response-2");
     expect(action).toHaveBeenCalledOnce();
     expect(events.mock.calls.filter(([name]) => name === "tool_continuation_response_created")).toHaveLength(1);
+  });
+
+  it("bleibt während eines langsamen Werkzeugs aktiv und wechselt danach zur Fortsetzung", async () => {
+    let finish: ((value: { success: true }) => void) | undefined;
+    const action = vi.fn(() => new Promise<{ success: true }>((resolve) => { finish = resolve; }));
+    const states = vi.fn();
+    const executor = new RealtimeToolExecutor("session-1", vi.fn(), states);
+    const result = executor.execute("slow-call", "check_appointment_availability", action);
+    expect(states).toHaveBeenLastCalledWith("tool_running");
+    finish?.({ success: true });
+    await expect(result).resolves.toEqual({ success: true });
+    expect(states.mock.calls.map(([state]) => state)).toEqual([
+      "tool_running", "tool_result_ready", "continuation_starting",
+    ]);
   });
 });
