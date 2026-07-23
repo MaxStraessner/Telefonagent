@@ -15,5 +15,6 @@ export const realtimeErrors = {
   connectionLost: () => new RealtimeClientError("realtime_connection_lost", "realtime connection disconnected"),
   clientSecretExpired: () => new RealtimeClientError("realtime_client_secret_expired", "ephemeral client secret expired"),
   configurationMismatch: () => new RealtimeClientError("realtime_configuration_mismatch", "realtime configuration mismatch"),
+  continuationFailed: () => new RealtimeClientError("realtime_continuation_failed", "realtime tool continuation failed"),
   microphoneEnded: () => new RealtimeClientError("microphone_access_ended", "microphone track ended"),
 };

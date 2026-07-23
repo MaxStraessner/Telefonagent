@@ -3,13 +3,18 @@ import type { TransportEvent } from "@openai/agents/realtime";
 import { api } from "../../api/client";
 import type { RealtimeClientSecret, RuntimeManifest } from "../../types/api";
 import type { ConversationState } from "../conversation/state";
-import { manifestTurnDetection, normalizeAppliedConfiguration } from "./appliedConfiguration";
+import {
+  digestRuntimeValue,
+  manifestTurnDetection,
+  normalizeAppliedConfiguration,
+} from "./appliedConfiguration";
 import { createCalendarTools } from "./calendarTools";
 import { sanitizedRealtimeEventDetail } from "./events";
 import { diagnoseResponseCompletion } from "./completionDiagnosis";
 import { realtimeErrors } from "./errors";
 import { derivePlaybackStatus, incompleteResponseWasInterrupted, type PlaybackStatus } from "./playback";
-import { RealtimeToolExecutor, type ConversationRuntimeState } from "./toolExecution";
+import { RealtimeToolExecutor } from "./toolExecution";
+import { TurnCoordinator, type TurnState } from "./turnCoordinator";
 
 export const CONNECTION_TIMEOUT_MS = 15_000;
 export const CONFIGURATION_ACK_TIMEOUT_MS = 8_000;
@@ -89,9 +94,8 @@ export class BrowserRealtimeClient {
   private activeResponse = emptyActiveResponse();
   private playbackStatus: PlaybackStatus | null = null;
   private toolExecutor: RealtimeToolExecutor | null = null;
-  private runtimeState: ConversationRuntimeState = "idle";
-  private incompleteRecoveryAttempts = 0;
-  private incompleteRecoveryPending = false;
+  private turnState: TurnState = "idle";
+  private coordinator: TurnCoordinator | null = null;
   private configurationUpdated: ((event: TransportEvent) => void) | null = null;
   private interruptionsEnabled = false;
 
@@ -122,10 +126,19 @@ export class BrowserRealtimeClient {
     audioElement.addEventListener("error", this.handleAudioError);
 
     const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement });
+    this.coordinator = new TurnCoordinator(manifest.recovery, {
+      requestResponse: () => transport.requestResponse(),
+      onState: (state) => this.setTurnState(state),
+      onEvent: (type, detail) => this.callbacks.onEvent(type, JSON.stringify(detail)),
+      onFailure: () => this.callbacks.onError(realtimeErrors.continuationFailed()),
+    });
     this.toolExecutor = new RealtimeToolExecutor(
       secret.call_session_id,
       this.callbacks.onEvent,
-      (state) => this.setRuntimeState(state),
+      (callId) => this.coordinator?.toolStarted(callId),
+      async (callId, result) => {
+        this.coordinator?.toolResultReady(callId, await digestRuntimeValue(result));
+      },
     );
     const calendarTools = createCalendarTools(manifest.tools, this.toolExecutor);
     const agent = new RealtimeAgent({
@@ -222,6 +235,7 @@ export class BrowserRealtimeClient {
       automaticToolContinuation: "agents_sdk",
     }));
     this.setMicrophoneEnabled(!this.manuallyMuted);
+    this.coordinator.responseRequested();
     transport.requestResponse({
       instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${manifest.welcome_message}`,
     });
@@ -232,23 +246,23 @@ export class BrowserRealtimeClient {
     const transportEvent = (event: TransportEvent) => this.handleTransportEvent(event);
     const agentStart = () => {
       this.assistantGenerating = true;
-      this.setRuntimeState("generation_running");
+      if (this.coordinator?.state === "idle") this.coordinator.responseRequested();
       this.callbacks.onState("assistant_thinking");
       this.emitInternalEvent("sdk_agent_generation_started", "openai_sdk");
     };
     const toolStart = (_context: unknown, _agent: unknown, tool: unknown, details: unknown) => {
-      this.setRuntimeState("tool_running");
       const name = (tool as { name?: unknown } | null)?.name;
       const callId = (details as { toolCall?: { callId?: unknown } } | null)?.toolCall?.callId;
+      if (typeof callId === "string") this.coordinator?.toolStarted(callId);
       this.callbacks.onEvent("sdk_agent_tool_start", JSON.stringify({
         toolName: typeof name === "string" ? name : null,
         toolCallId: typeof callId === "string" ? callId : null,
       }));
     };
     const toolEnd = (_context: unknown, _agent: unknown, tool: unknown, _result: unknown, details: unknown) => {
-      this.setRuntimeState("continuation_starting");
       const name = (tool as { name?: unknown } | null)?.name;
       const callId = (details as { toolCall?: { callId?: unknown } } | null)?.toolCall?.callId;
+      if (typeof callId === "string") this.coordinator?.agentToolEnd(callId);
       this.callbacks.onEvent("sdk_agent_tool_end", JSON.stringify({
         toolName: typeof name === "string" ? name : null,
         toolCallId: typeof callId === "string" ? callId : null,
@@ -289,8 +303,7 @@ export class BrowserRealtimeClient {
     if (rawEventType === "response.created") {
       this.activeResponse = emptyActiveResponse(incomingResponseId);
       this.assistantGenerating = true;
-      this.setRuntimeState("generation_running");
-      this.incompleteRecoveryPending = false;
+      this.coordinator?.responseCreated(incomingResponseId);
       if (incomingResponseId) this.toolExecutor?.attachContinuationResponse(incomingResponseId);
     } else if (incomingResponseId && !this.activeResponse.responseId) {
       this.activeResponse.responseId = incomingResponseId;
@@ -324,7 +337,7 @@ export class BrowserRealtimeClient {
         this.activeResponse.bufferStarted = true;
         this.activeResponse.playbackStopped = false;
         this.setAssistantSpeaking(true);
-        this.setRuntimeState("playback_running");
+        this.coordinator?.audioStarted(incomingResponseId);
         internalEventName = "assistant_playback_started";
         break;
       case "response.output_audio.done":
@@ -344,57 +357,36 @@ export class BrowserRealtimeClient {
             this.activeResponse.functionCallRequested,
             this.activeResponse.functionCallArgumentsComplete,
           );
-          if (diagnosis.status === "completed") this.incompleteRecoveryAttempts = 0;
           internalEventName = diagnosis.interruption
             ? "assistant_response_interrupted"
             : diagnosis.status === "incomplete"
               ? "assistant_response_incomplete"
               : "assistant_response_generation_completed";
-          if (
-            diagnosis.recoverable
-            && this.incompleteRecoveryAttempts < 1
-            && !this.toolExecutor?.hasAwaitingContinuation()
-          ) {
-            this.incompleteRecoveryAttempts += 1;
-            this.incompleteRecoveryPending = true;
-            this.setRuntimeState("continuation_starting");
-            this.callbacks.onEvent("incomplete_response_recovery_requested", JSON.stringify({
-              responseId: incomingResponseId,
-              reason: diagnosis.reason,
-              functionCallRequested: this.activeResponse.functionCallRequested,
-              functionCallArgumentsComplete: this.activeResponse.functionCallArgumentsComplete,
-            }));
-            try {
-              this.transport?.requestResponse({
-                instructions: "Setze dieselbe Gesprächsrunde jetzt kurz auf Deutsch fort. Falls ein Werkzeugaufruf unvollständig war, erzeuge ihn vollständig. Sonst beende die angefangene Antwort, ohne Gesagtes unnötig zu wiederholen.",
-              });
-            } catch (error) {
-              this.incompleteRecoveryPending = false;
-              this.callbacks.onError(error);
-            }
-          }
+          this.coordinator?.responseDone({
+            responseId: incomingResponseId,
+            status: diagnosis.status,
+            reason: diagnosis.reason,
+            recoverable: diagnosis.recoverable,
+            interrupted: diagnosis.interruption,
+            functionCallRequested: this.activeResponse.functionCallRequested,
+          });
         }
         break;
       case "output_audio_buffer.stopped":
         this.activeResponse.playbackStopped = true;
         this.setAssistantSpeaking(false);
-        this.setRuntimeState(
-          this.assistantGenerating
-            ? "generation_running"
-            : this.incompleteRecoveryPending || this.toolExecutor?.hasAwaitingContinuation()
-              ? "continuation_starting"
-              : "idle",
-        );
+        this.coordinator?.audioStopped(incomingResponseId);
         internalEventName = "assistant_playback_completed";
         break;
       case "output_audio_buffer.cleared":
         this.activeResponse.bufferCleared = true;
         this.setAssistantSpeaking(false);
-        this.setRuntimeState("idle");
+        this.coordinator?.audioInterrupted("output_audio_buffer_cleared");
         internalEventName = "assistant_playback_interrupted";
         break;
       case "conversation.item.truncated":
         this.activeResponse.itemTruncated = true;
+        this.coordinator?.audioInterrupted("conversation_item_truncated");
         internalEventName = "assistant_item_truncated";
         break;
       case "input_audio_buffer.speech_started":
@@ -408,6 +400,14 @@ export class BrowserRealtimeClient {
         break;
       case "error":
         this.activeResponse.failed = true;
+        this.coordinator?.responseDone({
+          responseId: incomingResponseId,
+          status: "failed",
+          reason: "realtime_error",
+          recoverable: false,
+          interrupted: false,
+          functionCallRequested: this.activeResponse.functionCallRequested,
+        });
         internalEventName = "realtime_error_received";
         break;
     }
@@ -505,7 +505,7 @@ export class BrowserRealtimeClient {
   mute(muted: boolean) {
     this.manuallyMuted = muted;
     this.session?.mute(muted);
-    this.setMicrophoneEnabled(!muted && this.runtimeState === "idle");
+    this.updateMicrophone();
     this.callbacks.onState(muted ? "muted" : (this.assistantSpeaking ? "assistant_speaking" : "connected"));
     this.emitInternalEvent(muted ? "microphone_muted" : "microphone_unmuted", "ui");
   }
@@ -530,16 +530,42 @@ export class BrowserRealtimeClient {
   private setAssistantSpeaking(speaking: boolean) {
     if (this.closed || this.assistantSpeaking === speaking) return;
     this.assistantSpeaking = speaking;
-    this.setMicrophoneEnabled(!speaking && !this.manuallyMuted && this.runtimeState === "idle");
+    this.updateMicrophone();
     this.callbacks.onState(speaking ? "assistant_speaking" : (this.manuallyMuted ? "muted" : "connected"));
   }
 
-  private setRuntimeState(state: ConversationRuntimeState) {
+  private setTurnState(state: TurnState) {
     if (this.closed) return;
-    const before = this.runtimeState;
-    this.runtimeState = state;
-    this.setMicrophoneEnabled(state === "idle" && !this.manuallyMuted && !this.assistantSpeaking);
-    if (before !== state) this.callbacks.onEvent("conversation_runtime_state_changed", JSON.stringify({ before, after: state }));
+    const before = this.turnState;
+    this.turnState = state;
+    this.updateMicrophone();
+    if (before !== state) {
+      this.callbacks.onEvent(
+        "conversation_runtime_state_changed",
+        JSON.stringify({ before, after: state }),
+      );
+    }
+  }
+
+  private updateMicrophone() {
+    const alwaysLocked = [
+      "tool_running",
+      "tool_output_submitted",
+      "continuation_pending",
+      "failed",
+    ].includes(this.turnState);
+    const responseAllowsInterruption = this.interruptionsEnabled && [
+      "response_active",
+      "continuation_active",
+      "playback_active",
+    ].includes(this.turnState);
+    const conversationReady = ["idle", "completed", "interrupted"].includes(this.turnState);
+    this.setMicrophoneEnabled(
+      !this.closed
+      && !this.manuallyMuted
+      && !alwaysLocked
+      && (conversationReady || responseAllowsInterruption),
+    );
   }
 
   close() {
@@ -550,7 +576,9 @@ export class BrowserRealtimeClient {
     this.connected = false;
     this.assistantSpeaking = false;
     this.assistantGenerating = false;
-    this.runtimeState = "idle";
+    this.coordinator?.dispose();
+    this.coordinator = null;
+    this.turnState = "idle";
     this.setMicrophoneEnabled(false);
     this.listenerDisposers.splice(0).forEach((dispose) => {
       try { dispose(); } catch { /* one faulty SDK listener must not block the remaining cleanup */ }

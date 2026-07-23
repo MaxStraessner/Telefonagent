@@ -36,6 +36,7 @@ function readableRealtimeError(error: unknown): ReadableError {
       realtime_client_secret_expired: "Das kurzlebige Verbindungs-Token ist abgelaufen. Bitte starte das Testgespräch erneut.",
       realtime_configuration_ack_timeout: "OpenAI hat die aktive Sitzungskonfiguration nicht rechtzeitig bestätigt. Bitte starte das Testgespräch erneut.",
       realtime_configuration_mismatch: "Die Realtime-Konfiguration hat sich während des Starts geändert. Bitte versuche es erneut.",
+      realtime_continuation_failed: "Nach der Kalenderprüfung konnte das Gespräch nicht zuverlässig fortgesetzt werden. Die Sitzung wurde sicher beendet; bitte starte sie erneut.",
       realtime_connection_lost: "Die WebRTC-Sprachverbindung wurde unterbrochen. Bitte prüfe dein Netzwerk und starte erneut.",
       realtime_connection_timeout: "Der Aufbau der Sprachverbindung hat zu lange gedauert. Bitte versuche es erneut.",
     };

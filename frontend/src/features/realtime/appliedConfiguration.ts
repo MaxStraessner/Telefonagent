@@ -30,6 +30,18 @@ async function sha256(value: unknown): Promise<string | undefined> {
     .join("");
 }
 
+export async function digestRuntimeValue(value: unknown): Promise<string> {
+  const digest = await sha256(value);
+  if (digest) return digest;
+  const canonical = JSON.stringify(canonicalize(value));
+  let fallback = 2166136261;
+  for (let index = 0; index < canonical.length; index += 1) {
+    fallback ^= canonical.charCodeAt(index);
+    fallback = Math.imul(fallback, 16777619);
+  }
+  return `local-${(fallback >>> 0).toString(16).padStart(8, "0")}`;
+}
+
 function toolDefinitions(value: unknown): unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
 }

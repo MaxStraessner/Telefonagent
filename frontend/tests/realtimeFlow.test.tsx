@@ -134,7 +134,7 @@ const runtimeManifest = {
   max_output_tokens: agentConfig.max_output_tokens,
   transcription_enabled: agentConfig.transcription_enabled,
   raw_event_logging: agentConfig.raw_event_logging,
-  vad: agentConfig.vad,
+  vad: { ...agentConfig.vad, interrupt_response: false },
   recovery: {
     continuation_ack_timeout_ms: 4_000,
     recovery_response_timeout_ms: 8_000,
@@ -339,6 +339,38 @@ describe("Realtime browser voice flow", () => {
     expect(screen.getByText("Vollständig wiedergegeben")).toBeInTheDocument();
   });
 
+  it("lässt bei aktivierten Unterbrechungen das Mikrofon während Antwort und Playback offen", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    const interruptibleManifest = {
+      ...runtimeManifest,
+      vad: { ...runtimeManifest.vad, interrupt_response: true },
+    };
+    await client.connect(
+      interruptibleManifest,
+      clientSecret,
+      { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream,
+      document.createElement("audio"),
+    );
+    expect(microphoneTrack.enabled).toBe(true);
+    act(() => {
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-interruptible" } });
+      sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: "r-interruptible" });
+    });
+    expect(microphoneTrack.enabled).toBe(true);
+    client.interrupt();
+    expect(sdk.interrupt).toHaveBeenCalled();
+    act(() => sdk.emit(
+      "agent_tool_start",
+      {},
+      {},
+      { name: "check_appointment_availability" },
+      { toolCall: { callId: "call-lock-mic" } },
+    ));
+    expect(microphoneTrack.enabled).toBe(false);
+    client.close();
+  });
+
   it("markiert nur eine nachgewiesene Pufferlöschung und Stornierung als unterbrochen", async () => {
     render(<App />);
     await screen.findByText("Gespräch mit Lina");
@@ -538,7 +570,7 @@ describe("Realtime browser voice flow", () => {
       });
     });
     expect(sdk.requestResponse).toHaveBeenCalledOnce();
-    expect(sdk.requestResponse).toHaveBeenCalledWith(expect.objectContaining({ instructions: expect.stringContaining("Gesprächsrunde") }));
+    expect(sdk.requestResponse).toHaveBeenCalledWith();
     expect(microphoneTrack.enabled).toBe(false);
     expect(vi.mocked(callbacks.onEvent).mock.calls.some(([name, detail]) =>
       name === "response.done" && detail?.includes('"responseCompletionReason":"incomplete_function_call"')
