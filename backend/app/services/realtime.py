@@ -11,7 +11,14 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import TenantContext
 from app.core.config import Settings
 from app.models import CallChannel, CallSession
-from app.schemas.api import RealtimeAgentConfigResponse, RealtimeClientSecretResponse, RealtimeVadResponse
+from app.schemas.api import (
+    AppliedRealtimeConfiguration,
+    AppliedRealtimeConfigurationRequest,
+    RealtimeAgentConfigResponse,
+    RealtimeClientSecretResponse,
+    RealtimeSessionBootstrapResponse,
+    RuntimeConfigurationDiffResponse,
+)
 from app.services.agent_runtime import AgentRuntimeConfig, build_runtime_config
 
 logger = logging.getLogger(__name__)
@@ -30,50 +37,51 @@ def build_safety_identifier(context: TenantContext, settings: Settings) -> str:
 
 def agent_config(context: TenantContext, settings: Settings, db: Session) -> RealtimeAgentConfigResponse:
     runtime = build_runtime_config(db, context, settings, test_mode=True)
-    config = runtime.bundle.configuration
+    manifest = runtime.manifest
     return RealtimeAgentConfigResponse(
-        tenant_id=context.id,
-        tenant_name=config.company_name,
-        assistant_name=config.assistant_name,
-        language=config.language,
-        welcome_message=runtime.greeting,
-        instructions=runtime.prompt,
-        model=runtime.model,
-        voice=runtime.voice,
-        speed=runtime.speed,
-        configuration_version=runtime.version,
-        capability_keys=runtime.capability_keys,
-        tool_names=[str(item.get("name", "")) for item in runtime.tools],
-        maximum_session_minutes=settings.openai_realtime_max_session_minutes,
-        max_output_tokens=settings.openai_realtime_max_output_tokens,
-        transcription_enabled=settings.openai_realtime_transcription_enabled,
-        raw_event_logging=settings.openai_realtime_log_raw_events,
-        vad=RealtimeVadResponse(**runtime.turn_detection),
+        tenant_id=manifest.tenant_id,
+        tenant_name=runtime.bundle.configuration.company_name,
+        assistant_name=manifest.assistant_name,
+        language=manifest.language,
+        welcome_message=manifest.welcome_message,
+        instructions=manifest.instructions,
+        model=manifest.model,
+        voice=manifest.voice,
+        speed=manifest.speed,
+        configuration_version=manifest.configuration_version,
+        capability_keys=manifest.capability_keys,
+        tool_names=manifest.tool_names,
+        maximum_session_minutes=manifest.maximum_session_minutes,
+        max_output_tokens=manifest.max_output_tokens,
+        transcription_enabled=manifest.transcription_enabled,
+        raw_event_logging=manifest.raw_event_logging,
+        vad=manifest.vad,
     )
 
 
 def _upstream_payload(runtime: AgentRuntimeConfig, settings: Settings) -> dict[str, object]:
-    config = runtime.bundle.configuration
+    manifest = runtime.manifest
     transcription: dict[str, str] | None = None
-    if settings.openai_realtime_transcription_enabled:
-        transcription = {"model": "gpt-4o-mini-transcribe", "language": config.language}
+    if manifest.transcription_enabled:
+        transcription = {"model": "gpt-4o-mini-transcribe", "language": manifest.language}
     return {
         "expires_after": {"anchor": "created_at", "seconds": CLIENT_SECRET_TTL_SECONDS},
         "session": {
             "type": "realtime",
-            "model": runtime.model,
-            "instructions": runtime.prompt,
+            "model": manifest.model,
+            "instructions": manifest.instructions,
             "output_modalities": ["audio"],
-            "tools": runtime.tools,
+            "tools": manifest.tools,
             "tool_choice": runtime.tool_choice,
-            "max_output_tokens": settings.openai_realtime_max_output_tokens,
+            "parallel_tool_calls": False,
+            "max_output_tokens": manifest.max_output_tokens,
             "audio": {
                 "input": {
                     "noise_reduction": {"type": "near_field"},
                     "transcription": transcription,
-                    "turn_detection": runtime.turn_detection,
+                    "turn_detection": manifest.vad.model_dump(exclude_none=True),
                 },
-                "output": {"voice": runtime.voice, "speed": runtime.speed},
+                "output": {"voice": manifest.voice, "speed": manifest.speed},
             },
         },
     }
@@ -98,15 +106,16 @@ def _provider_error(response: httpx.Response) -> HTTPException:
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"code": code, "message": message})
 
 
-async def create_client_secret(
-    context: TenantContext, settings: Settings, db: Session,
-) -> RealtimeClientSecretResponse:
+async def _request_client_secret(
+    context: TenantContext,
+    settings: Settings,
+    runtime: AgentRuntimeConfig,
+) -> tuple[str, int, str | None]:
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": "realtime_not_configured", "message": "Der OpenAI Realtime-Zugang ist serverseitig noch nicht konfiguriert."},
         )
-    runtime = build_runtime_config(db, context, settings, test_mode=True)
     headers = {
         "Authorization": f"Bearer {settings.openai_api_key}",
         "Content-Type": "application/json",
@@ -142,9 +151,42 @@ async def create_client_secret(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"code": "realtime_provider_invalid_response", "message": "Der Realtime-Anbieter hat eine ungültige Antwort geliefert."},
         ) from exc
+    return (
+        value,
+        expires_at,
+        session_payload.get("id") if isinstance(session_payload, dict) else None,
+    )
+
+
+def expected_applied_configuration(runtime: AgentRuntimeConfig) -> AppliedRealtimeConfiguration:
+    manifest = runtime.manifest
+    return AppliedRealtimeConfiguration(
+        model=manifest.model,
+        voice=manifest.voice,
+        speed=manifest.speed,
+        language=manifest.language,
+        prompt_digest=manifest.prompt_digest,
+        tool_names=manifest.tool_names,
+        tools_digest=manifest.tools_digest,
+        vad=manifest.vad.model_dump(exclude_none=True),
+    )
+
+
+def _record_call_session(
+    db: Session,
+    context: TenantContext,
+    runtime: AgentRuntimeConfig,
+) -> CallSession:
+    expected = expected_applied_configuration(runtime)
     call_session = CallSession(
-        tenant_id=context.id, channel=CallChannel.browser, status="active",
-        started_at=datetime.now(timezone.utc), configuration_version=runtime.version,
+        tenant_id=context.id,
+        channel=CallChannel.browser,
+        status="active",
+        started_at=datetime.now(timezone.utc),
+        configuration_version=runtime.version,
+        runtime_manifest_digest=runtime.manifest.digest,
+        runtime_manifest_snapshot=expected.model_dump(mode="json"),
+        configuration_status="pending",
     )
     db.add(call_session)
     db.commit()
@@ -165,10 +207,117 @@ async def create_client_secret(
             "standard_german_instruction_active": "Standarddeutsch" in runtime.prompt,
         },
     )
-    return RealtimeClientSecretResponse(
-        client_secret=value, expires_at=expires_at,
-        session_id=session_payload.get("id") if isinstance(session_payload, dict) else None,
-        model=runtime.model, voice=runtime.voice, speed=runtime.speed,
-        configuration_version=runtime.version, call_session_id=call_session.id,
+    return call_session
+
+
+async def create_session_bootstrap(
+    context: TenantContext,
+    settings: Settings,
+    db: Session,
+) -> RealtimeSessionBootstrapResponse:
+    runtime = build_runtime_config(db, context, settings, test_mode=True)
+    value, expires_at, provider_session_id = await _request_client_secret(context, settings, runtime)
+    call_session = _record_call_session(db, context, runtime)
+    secret = RealtimeClientSecretResponse(
+        client_secret=value,
+        expires_at=expires_at,
+        session_id=provider_session_id,
+        model=runtime.model,
+        voice=runtime.voice,
+        speed=runtime.speed,
+        configuration_version=runtime.version,
+        call_session_id=call_session.id,
         tenant_id=context.id,
+    )
+    return RealtimeSessionBootstrapResponse(secret=secret, manifest=runtime.manifest)
+
+
+async def create_client_secret(
+    context: TenantContext, settings: Settings, db: Session,
+) -> RealtimeClientSecretResponse:
+    return (await create_session_bootstrap(context, settings, db)).secret
+
+
+def _configuration_diff(
+    expected: dict[str, Any],
+    applied: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    differences: dict[str, dict[str, Any]] = {}
+    unobserved: list[str] = []
+    for field, expected_value in expected.items():
+        if field not in applied or applied[field] is None:
+            unobserved.append(field)
+            continue
+        actual_value = applied[field]
+        if field == "tool_names":
+            expected_value = sorted(expected_value)
+            actual_value = sorted(actual_value)
+        if expected_value != actual_value:
+            differences[field] = {"expected": expected_value, "actual": actual_value}
+    return differences, unobserved
+
+
+def apply_session_configuration(
+    db: Session,
+    context: TenantContext,
+    session_id,
+    payload: AppliedRealtimeConfigurationRequest,
+) -> RuntimeConfigurationDiffResponse:
+    call_session = db.get(CallSession, session_id)
+    if call_session is None or call_session.tenant_id != context.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "realtime_session_not_found", "message": "Die Realtime-Sitzung wurde nicht gefunden."},
+        )
+    expected = call_session.runtime_manifest_snapshot or {}
+    applied = payload.applied.model_dump(mode="json", exclude_none=True)
+    differences, unobserved = _configuration_diff(expected, applied)
+    if payload.manifest_digest != call_session.runtime_manifest_digest:
+        differences["manifest_digest"] = {
+            "expected": call_session.runtime_manifest_digest,
+            "actual": payload.manifest_digest,
+        }
+    call_session.applied_configuration = applied
+    call_session.configuration_diff = differences
+    call_session.configuration_status = "mismatch" if differences else "applied"
+    db.commit()
+    return RuntimeConfigurationDiffResponse(
+        session_id=call_session.id,
+        status=call_session.configuration_status,
+        manifest_digest=call_session.runtime_manifest_digest or payload.manifest_digest,
+        expected=AppliedRealtimeConfiguration.model_validate(expected),
+        applied=payload.applied,
+        differences=differences,
+        unobserved=unobserved,
+    )
+
+
+def session_configuration_diff(
+    db: Session,
+    context: TenantContext,
+    session_id,
+) -> RuntimeConfigurationDiffResponse:
+    call_session = db.get(CallSession, session_id)
+    if call_session is None or call_session.tenant_id != context.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "realtime_session_not_found", "message": "Die Realtime-Sitzung wurde nicht gefunden."},
+        )
+    expected = AppliedRealtimeConfiguration.model_validate(call_session.runtime_manifest_snapshot or {})
+    applied = (
+        AppliedRealtimeConfiguration.model_validate(call_session.applied_configuration)
+        if call_session.applied_configuration
+        else None
+    )
+    return RuntimeConfigurationDiffResponse(
+        session_id=call_session.id,
+        status=call_session.configuration_status,
+        manifest_digest=call_session.runtime_manifest_digest or "",
+        expected=expected,
+        applied=applied,
+        differences=call_session.configuration_diff or {},
+        unobserved=[] if applied is None else [
+            key for key, value in expected.model_dump().items()
+            if value is not None and getattr(applied, key) is None
+        ],
     )

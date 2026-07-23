@@ -11,6 +11,7 @@ export const realtimeErrors = {
   audioElementUnavailable: () => new RealtimeClientError("audio_element_unavailable", "audio element unavailable"),
   audioPlaybackBlocked: () => new RealtimeClientError("audio_playback_blocked", "audio playback blocked"),
   connectionTimeout: () => new RealtimeClientError("realtime_connection_timeout", "realtime connection timed out"),
+  configurationAckTimeout: () => new RealtimeClientError("realtime_configuration_ack_timeout", "realtime configuration acknowledgement timed out"),
   connectionLost: () => new RealtimeClientError("realtime_connection_lost", "realtime connection disconnected"),
   clientSecretExpired: () => new RealtimeClientError("realtime_client_secret_expired", "ephemeral client secret expired"),
   configurationMismatch: () => new RealtimeClientError("realtime_configuration_mismatch", "realtime configuration mismatch"),

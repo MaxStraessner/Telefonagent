@@ -5,12 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const sdk = vi.hoisted(() => ({
   handlers: new Map<string, Array<(...args: unknown[]) => void>>(),
   transportHandlers: new Map<string, Array<(...args: unknown[]) => void>>(),
-  connect: vi.fn<() => Promise<void>>(),
+  connect: vi.fn<(...args: unknown[]) => Promise<void>>(),
   close: vi.fn(),
   transportClose: vi.fn(),
   mute: vi.fn(),
   interrupt: vi.fn(),
   requestResponse: vi.fn(),
+  sessionOptions: null as unknown,
+  emitSessionUpdated: true,
+  appliedStatus: "applied" as "applied" | "mismatch",
   sessionOff: vi.fn(),
   transportOff: vi.fn(),
   emit(type: string, ...args: unknown[]) {
@@ -41,7 +44,9 @@ vi.mock("@openai/agents/realtime", () => {
     close = sdk.transportClose;
   }
   class RealtimeSession {
-    constructor(_agent: unknown, _options: unknown) {}
+    constructor(_agent: unknown, options: unknown) {
+      sdk.sessionOptions = options;
+    }
     on(type: string, handler: (...args: unknown[]) => void) {
       sdk.handlers.set(type, [...(sdk.handlers.get(type) ?? []), handler]);
     }
@@ -49,7 +54,33 @@ vi.mock("@openai/agents/realtime", () => {
       sdk.handlers.set(type, (sdk.handlers.get(type) ?? []).filter((candidate) => candidate !== handler));
       sdk.sessionOff(type, handler);
     }
-    connect = sdk.connect;
+    connect = async (...args: unknown[]) => {
+      await sdk.connect(...args);
+      const options = sdk.sessionOptions as {
+        model?: string;
+        config?: {
+          audio?: {
+            input?: { transcription?: unknown; turnDetection?: unknown };
+            output?: unknown;
+          };
+        };
+      };
+      if (sdk.emitSessionUpdated) {
+        sdk.emit("transport_event", {
+          type: "session.updated",
+          session: {
+            model: options.model,
+            audio: {
+              input: {
+                transcription: options.config?.audio?.input?.transcription,
+                turn_detection: options.config?.audio?.input?.turnDetection,
+              },
+              output: options.config?.audio?.output,
+            },
+          },
+        });
+      }
+    };
     close = sdk.close;
     mute = sdk.mute;
     interrupt = sdk.interrupt;
@@ -58,7 +89,12 @@ vi.mock("@openai/agents/realtime", () => {
 });
 
 import { App } from "../src/App";
-import { BrowserRealtimeClient, CONNECTION_TIMEOUT_MS, type RealtimeClientCallbacks } from "../src/features/realtime/realtimeClient";
+import {
+  BrowserRealtimeClient,
+  CONFIGURATION_ACK_TIMEOUT_MS,
+  CONNECTION_TIMEOUT_MS,
+  type RealtimeClientCallbacks,
+} from "../src/features/realtime/realtimeClient";
 
 const tenant = {
   id: "11111111-1111-1111-1111-111111111111", slug: "salon-haarkunst-test", name: "Salon Haarkunst Test",
@@ -75,6 +111,37 @@ const agentConfig = {
   vad: { type: "server_vad" as const, threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600, eagerness: null, create_response: true, interrupt_response: true },
 };
 const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", speed: 1, configuration_version: 1, call_session_id: "call-local", tenant_id: tenant.id };
+const runtimeManifest = {
+  schema_version: "1",
+  digest: "a".repeat(64),
+  tenant_id: tenant.id,
+  timezone: "Europe/Berlin",
+  assistant_name: agentConfig.assistant_name,
+  language: agentConfig.language,
+  welcome_message: agentConfig.welcome_message,
+  instructions: agentConfig.instructions,
+  prompt_digest: "b".repeat(64),
+  model: agentConfig.model,
+  voice: agentConfig.voice,
+  speed: agentConfig.speed,
+  configuration_version: agentConfig.configuration_version,
+  source_digests: {},
+  capability_keys: [],
+  tools: [],
+  tool_names: [],
+  tools_digest: "c".repeat(64),
+  maximum_session_minutes: agentConfig.maximum_session_minutes,
+  max_output_tokens: agentConfig.max_output_tokens,
+  transcription_enabled: agentConfig.transcription_enabled,
+  raw_event_logging: agentConfig.raw_event_logging,
+  vad: agentConfig.vad,
+  recovery: {
+    continuation_ack_timeout_ms: 4_000,
+    recovery_response_timeout_ms: 8_000,
+    maximum_attempts_per_turn: 1,
+  },
+  setting_targets: {},
+};
 
 function clientCallbacks(): RealtimeClientCallbacks {
   return {
@@ -100,10 +167,20 @@ function mockBackend() {
     if (url.endsWith("/tenant")) body = tenant;
     else if (url.endsWith("/services") || url.endsWith("/staff") || url.endsWith("/appointments")) body = [];
     else if (url.endsWith("/platform/status")) body = platformStatus;
-    else if (url.endsWith("/realtime/agent-config")) body = agentConfig;
-    else if (url.endsWith("/realtime/client-secret")) {
+    else if (url.endsWith("/realtime/session-bootstrap")) {
       expect(init?.method).toBe("POST");
-      body = clientSecret;
+      body = { secret: clientSecret, manifest: runtimeManifest };
+    } else if (url.endsWith("/applied-configuration")) {
+      expect(init?.method).toBe("POST");
+      body = {
+        session_id: clientSecret.call_session_id,
+        status: sdk.appliedStatus,
+        manifest_digest: runtimeManifest.digest,
+        expected: {},
+        applied: {},
+        differences: {},
+        unobserved: ["prompt_digest", "tools_digest", "tool_names"],
+      };
     }
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
   }));
@@ -118,6 +195,8 @@ beforeEach(() => {
   sdk.mute.mockReset();
   sdk.interrupt.mockReset();
   sdk.requestResponse.mockReset();
+  sdk.emitSessionUpdated = true;
+  sdk.appliedStatus = "applied";
   sdk.sessionOff.mockReset();
   sdk.transportOff.mockReset();
   trackStop = vi.fn();
@@ -382,7 +461,7 @@ describe("Realtime browser voice flow", () => {
   it("erzeugt aus response.output_audio.done kein künstliches Buffer-Stopped-Ereignis", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
-    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
     vi.mocked(callbacks.onEvent).mockClear();
     act(() => {
       sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: "r-no-fake" });
@@ -398,7 +477,7 @@ describe("Realtime browser voice flow", () => {
   it("ignoriert SDK-audio_stopped und verarbeitet ein echtes Buffer-Stopped genau einmal", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
-    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
     act(() => {
       sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: "r-once" });
       sdk.emit("transport_event", { type: "response.done", response: { id: "r-once", status: "completed" } });
@@ -421,7 +500,7 @@ describe("Realtime browser voice flow", () => {
   it("schließt zwanzig aufeinanderfolgende Antworten erst nach dem jeweiligen echten Buffer-Stopp ab", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
-    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
     vi.mocked(callbacks.onPlaybackStatus).mockClear();
     for (let index = 1; index <= 20; index += 1) {
       const responseId = `r-sequence-${index}`;
@@ -445,7 +524,7 @@ describe("Realtime browser voice flow", () => {
   it("diagnostiziert eine unvollständige Antwort und fordert höchstens eine kontrollierte Wiederaufnahme an", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
-    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
     sdk.requestResponse.mockClear();
     act(() => {
       sdk.emit("transport_event", { type: "response.created", response: { id: "r-incomplete-1" } });
@@ -480,7 +559,7 @@ describe("Realtime browser voice flow", () => {
   it("protokolliert die tatsächlich aktive Sitzungskonfiguration ohne Geheimnis", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
-    await client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
     const event = vi.mocked(callbacks.onEvent).mock.calls.find(([name]) => name === "active_agent_configuration");
     expect(event).toBeDefined();
     expect(event?.[1]).toContain('"model":"gpt-realtime-2.1"');
@@ -496,17 +575,55 @@ describe("Realtime browser voice flow", () => {
     const callbacks = clientCallbacks();
     const audio = document.createElement("audio");
     const client = new BrowserRealtimeClient(callbacks);
-    const connecting = client.connect(agentConfig, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, audio);
+    const connecting = client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, audio);
     const rejection = expect(connecting).rejects.toMatchObject({ code: "realtime_connection_timeout" });
     await vi.advanceTimersByTimeAsync(CONNECTION_TIMEOUT_MS);
     await rejection;
     client.close();
   });
 
+  it("hält das Mikrofon gesperrt und bricht ab, wenn session.updated ausbleibt", async () => {
+    vi.useFakeTimers();
+    sdk.emitSessionUpdated = false;
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    const connecting = client.connect(
+      runtimeManifest,
+      clientSecret,
+      { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream,
+      document.createElement("audio"),
+    );
+    const rejection = expect(connecting).rejects.toMatchObject({
+      code: "realtime_configuration_ack_timeout",
+    });
+    expect(microphoneTrack.enabled).toBe(false);
+    await vi.advanceTimersByTimeAsync(CONFIGURATION_ACK_TIMEOUT_MS);
+    await rejection;
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(callbacks.onConnected).not.toHaveBeenCalled();
+    client.close();
+  });
+
+  it("startet bei einer kritischen Konfigurationsabweichung weder Begrüßung noch Mikrofon", async () => {
+    sdk.appliedStatus = "mismatch";
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await expect(client.connect(
+      runtimeManifest,
+      clientSecret,
+      { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream,
+      document.createElement("audio"),
+    )).rejects.toMatchObject({ code: "realtime_configuration_mismatch" });
+    expect(microphoneTrack.enabled).toBe(false);
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(callbacks.onConnected).not.toHaveBeenCalled();
+    client.close();
+  });
+
   it("zeigt einen strukturierten Backendfehler ohne neuen Verbindungsversuch", async () => {
     const originalFetch = fetch as ReturnType<typeof vi.fn>;
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
-      if (String(input).endsWith("/realtime/client-secret")) {
+      if (String(input).endsWith("/realtime/session-bootstrap")) {
         return Promise.resolve(new Response(JSON.stringify({ error: { code: "realtime_provider_rejected", message: "Der Anbieter hat die Realtime-Konfiguration abgelehnt." } }), { status: 502, headers: { "Content-Type": "application/json" } }));
       }
       return originalFetch(input, init);

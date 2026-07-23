@@ -104,10 +104,11 @@ def test_prompt_has_fixed_sections_active_knowledge_and_injection_defense(client
     assert len(prompt) < 25_000
 
 
-def test_server_vad_eagerness_idle_timeout_and_prompt_mappings_are_effective(client, db):
+def test_server_vad_uses_saved_silence_duration_and_prompt_mappings_are_effective(client, db):
     tenant = db.scalar(select(Tenant).where(Tenant.slug == "salon-haarkunst-test"))
     config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant.id))
     config.turn_eagerness = TurnEagerness.low
+    config.silence_duration_ms = 725
     config.idle_prompt_enabled = True
     config.idle_timeout_ms = 15000
     config.speech_speed = 0.85
@@ -115,7 +116,7 @@ def test_server_vad_eagerness_idle_timeout_and_prompt_mappings_are_effective(cli
     config.pronunciation_style = "regional"
     config.regional_accent = "westphalian"
     runtime = build_runtime_config(db, TenantContext(id=tenant.id, tenant=tenant), configured_settings(), test_mode=True)
-    assert runtime.turn_detection["silence_duration_ms"] == 900
+    assert runtime.turn_detection["silence_duration_ms"] == 725
     assert runtime.turn_detection["idle_timeout_ms"] == 15000
     assert "etwas langsamer" in runtime.prompt
     assert "einem kurzen Satz" in runtime.prompt

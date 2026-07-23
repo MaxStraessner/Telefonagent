@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import httpx
 import pytest
 from sqlalchemy import func, select
@@ -67,7 +69,7 @@ def test_agent_config_is_tenant_scoped_and_exposes_no_key(client):
     assert payload["assistant_name"] == "Lina"
     assert payload["model"] == "gpt-realtime-2.1"
     assert payload["voice"] == "marin"
-    assert payload["vad"]["interrupt_response"] is False
+    assert payload["vad"]["interrupt_response"] is True
     assert "server-only-test-key" not in response.text
     assert "finalize_appointment_booking erst nach dieser ausdrücklichen Bestätigung" in payload["instructions"]
     assert "keine politische, medizinische, juristische, finanzielle oder private Beratung" in payload["instructions"]
@@ -94,12 +96,99 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
         "find_alternative_slots", "finalize_appointment_booking",
     ]
     assert session["tool_choice"] == "auto"
+    assert session["parallel_tool_calls"] is False
     assert session["max_output_tokens"] == 1024
     assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
     assert FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"].startswith("tenant_")
     assert "Salon Haarkunst" not in FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"]
     db.expire_all()
     assert db.scalar(select(func.count(CallSession.id))) == before + 1
+
+
+def test_session_bootstrap_returns_one_digest_bound_runtime_manifest(monkeypatch, client, db):
+    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+
+    response = client.post("/api/v1/realtime/session-bootstrap")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    manifest = payload["manifest"]
+    secret = payload["secret"]
+    assert len(manifest["digest"]) == 64
+    assert len(manifest["prompt_digest"]) == 64
+    assert len(manifest["tools_digest"]) == 64
+    assert manifest["timezone"] == "Europe/Berlin"
+    assert manifest["vad"]["silence_duration_ms"] == 600
+    assert manifest["vad"]["interrupt_response"] is True
+    assert manifest["recovery"] == {
+        "continuation_ack_timeout_ms": 4000,
+        "recovery_response_timeout_ms": 8000,
+        "maximum_attempts_per_turn": 1,
+    }
+    assert manifest["setting_targets"]["simple_mode"] == "ui_only"
+    assert manifest["setting_targets"]["silence_duration_ms"] == "session"
+    assert manifest["tool_names"] == [item["name"] for item in manifest["tools"]]
+    call_session = db.get(CallSession, UUID(secret["call_session_id"]))
+    db.refresh(call_session)
+    assert call_session.runtime_manifest_digest == manifest["digest"]
+    assert call_session.runtime_manifest_snapshot["prompt_digest"] == manifest["prompt_digest"]
+    assert "instructions" not in call_session.runtime_manifest_snapshot
+
+
+def test_applied_configuration_is_compared_without_storing_prompt(monkeypatch, client):
+    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+    bootstrap = client.post("/api/v1/realtime/session-bootstrap").json()
+    manifest = bootstrap["manifest"]
+    session_id = bootstrap["secret"]["call_session_id"]
+    applied = {
+        "model": manifest["model"],
+        "voice": manifest["voice"],
+        "speed": manifest["speed"],
+        "language": manifest["language"],
+        "prompt_digest": manifest["prompt_digest"],
+        "tool_names": manifest["tool_names"],
+        "tools_digest": manifest["tools_digest"],
+        "vad": {key: value for key, value in manifest["vad"].items() if value is not None},
+    }
+
+    response = client.post(
+        f"/api/v1/realtime/sessions/{session_id}/applied-configuration",
+        json={"manifest_digest": manifest["digest"], "applied": applied},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "applied"
+    assert response.json()["differences"] == {}
+    assert response.json()["unobserved"] == []
+    diagnostic = client.get(f"/api/v1/realtime/sessions/{session_id}/runtime-diff").json()
+    assert diagnostic["status"] == "applied"
+    assert "instructions" not in diagnostic["expected"]
+
+
+def test_applied_configuration_reports_critical_drift(monkeypatch, client):
+    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+    bootstrap = client.post("/api/v1/realtime/session-bootstrap").json()
+    manifest = bootstrap["manifest"]
+    session_id = bootstrap["secret"]["call_session_id"]
+
+    response = client.post(
+        f"/api/v1/realtime/sessions/{session_id}/applied-configuration",
+        json={
+            "manifest_digest": manifest["digest"],
+            "applied": {"model": manifest["model"], "voice": "cedar"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "mismatch"
+    assert response.json()["differences"]["voice"] == {
+        "expected": manifest["voice"],
+        "actual": "cedar",
+    }
+    assert "prompt_digest" in response.json()["unobserved"]
 
 
 def test_missing_api_key_returns_controlled_error(client):

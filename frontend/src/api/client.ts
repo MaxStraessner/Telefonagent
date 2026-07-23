@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, AppliedRealtimeConfiguration, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeConfigurationDiff, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -38,6 +38,16 @@ export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   realtimeAgentConfig: (signal?: AbortSignal) => request<RealtimeAgentConfig>("/realtime/agent-config", { signal }),
   realtimeClientSecret: (signal?: AbortSignal) => request<RealtimeClientSecret>("/realtime/client-secret", { signal, method: "POST" }),
+  realtimeSessionBootstrap: (signal?: AbortSignal) => request<RealtimeSessionBootstrap>("/realtime/session-bootstrap", { signal, method: "POST" }),
+  reportAppliedRealtimeConfiguration: (
+    sessionId: string,
+    manifestDigest: string,
+    applied: AppliedRealtimeConfiguration,
+  ) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/applied-configuration`, {
+    method: "POST",
+    body: { manifest_digest: manifestDigest, applied },
+  }),
+  realtimeRuntimeDiff: (sessionId: string, signal?: AbortSignal) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/runtime-diff`, { signal }),
   agentConfiguration: (signal?: AbortSignal) => request<AgentConfiguration>("/agent/config", { signal }),
   saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...value, expected_version: value.version } }),
   agentKnowledge: (signal?: AbortSignal) => request<AgentKnowledge>("/agent/knowledge", { signal }),

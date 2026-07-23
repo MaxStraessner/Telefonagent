@@ -1,7 +1,9 @@
 import { OpenAIRealtimeWebRTC, RealtimeAgent, RealtimeSession } from "@openai/agents/realtime";
 import type { TransportEvent } from "@openai/agents/realtime";
-import type { RealtimeAgentConfig, RealtimeClientSecret } from "../../types/api";
+import { api } from "../../api/client";
+import type { RealtimeClientSecret, RuntimeManifest } from "../../types/api";
 import type { ConversationState } from "../conversation/state";
+import { manifestTurnDetection, normalizeAppliedConfiguration } from "./appliedConfiguration";
 import { createCalendarTools } from "./calendarTools";
 import { sanitizedRealtimeEventDetail } from "./events";
 import { diagnoseResponseCompletion } from "./completionDiagnosis";
@@ -10,6 +12,7 @@ import { derivePlaybackStatus, incompleteResponseWasInterrupted, type PlaybackSt
 import { RealtimeToolExecutor, type ConversationRuntimeState } from "./toolExecution";
 
 export const CONNECTION_TIMEOUT_MS = 15_000;
+export const CONFIGURATION_ACK_TIMEOUT_MS = 8_000;
 
 export interface RealtimeClientCallbacks {
   onState: (state: ConversationState) => void;
@@ -89,20 +92,29 @@ export class BrowserRealtimeClient {
   private runtimeState: ConversationRuntimeState = "idle";
   private incompleteRecoveryAttempts = 0;
   private incompleteRecoveryPending = false;
+  private configurationUpdated: ((event: TransportEvent) => void) | null = null;
+  private interruptionsEnabled = false;
 
   constructor(callbacks: RealtimeClientCallbacks) {
     this.callbacks = callbacks;
   }
 
-  async connect(config: RealtimeAgentConfig, secret: RealtimeClientSecret, stream: MediaStream, audioElement: HTMLAudioElement) {
+  async connect(
+    manifest: RuntimeManifest,
+    secret: RealtimeClientSecret,
+    stream: MediaStream,
+    audioElement: HTMLAudioElement,
+  ) {
     if (secret.expires_at * 1000 <= Date.now() + 5_000) throw realtimeErrors.clientSecretExpired();
     this.closed = false;
     this.connected = false;
     this.stream = stream;
     this.microphoneTracks = stream.getAudioTracks?.() ?? stream.getTracks();
+    this.setMicrophoneEnabled(false);
     this.microphoneTracks.forEach((track) => track.addEventListener?.("ended", this.handleMicrophoneEnded));
     this.audioElement = audioElement;
-    this.rawEvents = config.raw_event_logging;
+    this.rawEvents = manifest.raw_event_logging;
+    this.interruptionsEnabled = manifest.vad.interrupt_response;
     audioElement.autoplay = true;
     audioElement.preload = "auto";
     audioElement.addEventListener("playing", this.handleAudioPlaying);
@@ -115,38 +127,49 @@ export class BrowserRealtimeClient {
       this.callbacks.onEvent,
       (state) => this.setRuntimeState(state),
     );
-    const calendarTools = createCalendarTools(config.tool_names, this.toolExecutor);
-    const agent = new RealtimeAgent({ name: config.assistant_name, instructions: config.instructions, voice: config.voice, tools: calendarTools });
-    const turnDetection = config.vad.type === "semantic_vad"
-      ? { type: "semantic_vad" as const, eagerness: config.vad.eagerness ?? "medium", createResponse: config.vad.create_response, interruptResponse: false }
-      : { type: "server_vad" as const, threshold: config.vad.threshold ?? 0.5, prefixPaddingMs: config.vad.prefix_padding_ms ?? 300, silenceDurationMs: config.vad.silence_duration_ms ?? 600, createResponse: config.vad.create_response, interruptResponse: false };
+    const calendarTools = createCalendarTools(manifest.tools, this.toolExecutor);
+    const agent = new RealtimeAgent({
+      name: manifest.assistant_name,
+      instructions: manifest.instructions,
+      voice: manifest.voice,
+      tools: calendarTools,
+    });
+    const turnDetection = manifestTurnDetection(manifest);
     const session = new RealtimeSession(agent, {
       transport,
-      model: config.model,
+      model: manifest.model,
       historyStoreAudio: false,
       tracingDisabled: true,
       config: {
         outputModalities: ["audio"],
-        providerData: { max_output_tokens: config.max_output_tokens },
+        providerData: {
+          max_output_tokens: manifest.max_output_tokens,
+          parallel_tool_calls: false,
+        },
         toolChoice: calendarTools.length ? "auto" : "none",
         audio: {
           input: {
             noiseReduction: { type: "near_field" },
-            transcription: config.transcription_enabled ? { model: "gpt-4o-mini-transcribe", language: config.language } : null,
+            transcription: manifest.transcription_enabled
+              ? { model: "gpt-4o-mini-transcribe", language: manifest.language }
+              : null,
             turnDetection,
           },
-          output: { voice: config.voice, speed: config.speed },
+          output: { voice: manifest.voice, speed: manifest.speed },
         },
       },
     });
     this.transport = transport;
     this.session = session;
     this.bindEvents(session, transport);
+    const configurationUpdated = new Promise<TransportEvent>((resolve) => {
+      this.configurationUpdated = resolve;
+    });
 
     let timeoutId: number | undefined;
     try {
       await Promise.race([
-        session.connect({ apiKey: secret.client_secret, model: config.model }),
+        session.connect({ apiKey: secret.client_secret, model: manifest.model }),
         new Promise<never>((_, reject) => {
           timeoutId = window.setTimeout(() => reject(realtimeErrors.connectionTimeout()), CONNECTION_TIMEOUT_MS);
         }),
@@ -155,6 +178,30 @@ export class BrowserRealtimeClient {
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     }
     if (this.closed) return;
+    let configurationTimeoutId: number | undefined;
+    let configurationEvent: TransportEvent;
+    try {
+      configurationEvent = await Promise.race([
+        configurationUpdated,
+        new Promise<never>((_, reject) => {
+          configurationTimeoutId = window.setTimeout(
+            () => reject(realtimeErrors.configurationAckTimeout()),
+            CONFIGURATION_ACK_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      this.configurationUpdated = null;
+      if (configurationTimeoutId !== undefined) window.clearTimeout(configurationTimeoutId);
+    }
+    if (this.closed) return;
+    const applied = await normalizeAppliedConfiguration(configurationEvent);
+    const diff = await api.reportAppliedRealtimeConfiguration(
+      secret.call_session_id,
+      manifest.digest,
+      applied,
+    );
+    if (diff.status === "mismatch") throw realtimeErrors.configurationMismatch();
     this.connected = true;
     this.callbacks.onCallId(secret.call_session_id ?? transport.callId ?? secret.session_id);
     this.callbacks.onState("connected");
@@ -162,18 +209,22 @@ export class BrowserRealtimeClient {
     this.emitInternalEvent("session_connected", "application_internal");
     this.callbacks.onEvent("active_agent_configuration", JSON.stringify({
       sessionId: secret.call_session_id,
-      configurationVersion: config.configuration_version,
-      model: config.model,
-      voice: config.voice,
-      speed: config.speed,
-      language: config.language,
-      maxOutputTokens: config.max_output_tokens,
-      toolNames: config.tool_names,
-      instructionsLength: config.instructions.length,
-      standardGermanActive: config.instructions.includes("Standarddeutsch"),
+      manifestDigest: manifest.digest,
+      configurationVersion: manifest.configuration_version,
+      model: manifest.model,
+      voice: manifest.voice,
+      speed: manifest.speed,
+      language: manifest.language,
+      maxOutputTokens: manifest.max_output_tokens,
+      toolNames: manifest.tool_names,
+      instructionsLength: manifest.instructions.length,
+      standardGermanActive: manifest.instructions.includes("Standarddeutsch"),
       automaticToolContinuation: "agents_sdk",
     }));
-    transport.requestResponse({ instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${config.welcome_message}` });
+    this.setMicrophoneEnabled(!this.manuallyMuted);
+    transport.requestResponse({
+      instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${manifest.welcome_message}`,
+    });
   }
 
   private bindEvents(session: RealtimeSession, transport: OpenAIRealtimeWebRTC) {
@@ -230,6 +281,7 @@ export class BrowserRealtimeClient {
 
   private handleTransportEvent(event: TransportEvent) {
     const rawEventType = typeof event?.type === "string" ? event.type : "transport.event";
+    if (rawEventType === "session.updated") this.configurationUpdated?.(event);
     const beforeSpeaking = this.assistantSpeaking;
     const beforeMicrophone = this.microphoneEnabled();
     const incomingResponseId = responseIdFromEvent(event);
@@ -459,7 +511,12 @@ export class BrowserRealtimeClient {
   }
 
   interrupt() {
-    this.emitInternalEvent("assistant_interrupt_disabled", "ui");
+    if (!this.interruptionsEnabled) {
+      this.emitInternalEvent("assistant_interrupt_disabled", "ui");
+      return;
+    }
+    this.session?.interrupt();
+    this.emitInternalEvent("assistant_interrupt_requested", "ui");
   }
 
   private microphoneEnabled() {
@@ -488,6 +545,8 @@ export class BrowserRealtimeClient {
   close() {
     if (!this.closed) this.emitInternalEvent("session_disconnected", "application_internal");
     this.closed = true;
+    this.configurationUpdated?.({ type: "session.updated" } as TransportEvent);
+    this.configurationUpdated = null;
     this.connected = false;
     this.assistantSpeaking = false;
     this.assistantGenerating = false;

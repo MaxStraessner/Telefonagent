@@ -57,6 +57,49 @@ export interface RealtimeClientSecret {
   client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
   speed: number; configuration_version: number; call_session_id: string; tenant_id: string;
 }
+export interface RuntimeToolDefinition {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required: string[];
+    additionalProperties: false;
+  };
+}
+export interface RuntimeRecoveryPolicy {
+  continuation_ack_timeout_ms: number;
+  recovery_response_timeout_ms: number;
+  maximum_attempts_per_turn: number;
+}
+export interface RuntimeManifest {
+  schema_version: string; digest: string; tenant_id: string; timezone: string;
+  assistant_name: string; language: string; welcome_message: string;
+  instructions: string; prompt_digest: string; model: string; voice: string;
+  speed: number; configuration_version: number; source_digests: Record<string, string>;
+  capability_keys: string[]; tools: RuntimeToolDefinition[]; tool_names: string[];
+  tools_digest: string; maximum_session_minutes: number; max_output_tokens: number;
+  transcription_enabled: boolean; raw_event_logging: boolean; vad: RealtimeVadConfig;
+  recovery: RuntimeRecoveryPolicy;
+  setting_targets: Record<string, "prompt" | "session" | "tools" | "ui_only">;
+}
+export interface RealtimeSessionBootstrap {
+  secret: RealtimeClientSecret;
+  manifest: RuntimeManifest;
+}
+export interface AppliedRealtimeConfiguration {
+  model?: string; voice?: string; speed?: number; language?: string;
+  prompt_digest?: string; tool_names?: string[]; tools_digest?: string;
+  vad?: Record<string, unknown>;
+}
+export interface RuntimeConfigurationDiff {
+  session_id: string; status: "pending" | "applied" | "mismatch";
+  manifest_digest: string; expected: AppliedRealtimeConfiguration;
+  applied: AppliedRealtimeConfiguration | null;
+  differences: Record<string, { expected: unknown; actual: unknown }>;
+  unobserved: string[];
+}
 export interface Health { status: string; database: string; }
 export interface PlatformData {
   tenant: Tenant; services: Service[]; staff: StaffMember[]; appointments: Appointment[];

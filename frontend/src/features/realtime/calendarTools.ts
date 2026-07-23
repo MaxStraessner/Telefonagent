@@ -1,14 +1,42 @@
 import { tool } from "@openai/agents/realtime";
-import { z } from "zod";
 import { api } from "../../api/client";
+import type { RuntimeToolDefinition } from "../../types/api";
 import { RealtimeToolExecutor } from "./toolExecution";
 
 type ToolDetails = { toolCall?: { callId?: string } };
-
 type RealtimeRunContext = { context?: { history?: unknown[] } };
+type JsonInput = Record<string, unknown>;
 
 function callId(details: ToolDetails | undefined) {
   return details?.toolCall?.callId ?? crypto.randomUUID();
+}
+
+function objectInput(input: unknown): JsonInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Der Werkzeugaufruf enthält keine gültigen Argumente.");
+  }
+  return input as JsonInput;
+}
+
+function requiredString(input: JsonInput, key: string): string {
+  const value = input[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Das Werkzeugargument ${key} fehlt.`);
+  }
+  return value;
+}
+
+function optionalString(input: JsonInput, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function requiredNumber(input: JsonInput, key: string): number {
+  const value = input[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Das Werkzeugargument ${key} fehlt.`);
+  }
+  return value;
 }
 
 export function latestUserUtterance(runContext: unknown): string {
@@ -35,86 +63,89 @@ const toolError = (_context: unknown, error: unknown) => JSON.stringify({
   message: error instanceof Error ? error.message : "Die Aktion konnte nicht abgeschlossen werden.",
 });
 
-export function createCalendarTools(toolNames: string[], executor: RealtimeToolExecutor) {
-  const enabled = new Set(toolNames);
-  const listBookableServices = tool({
-    name: "list_bookable_services",
-    description: "Lädt ausschließlich aktive Leistungen und Terminarten. Erfinde keine Leistung.",
-    parameters: z.object({}),
-    execute: async (_input, _context, details) => {
-      const id = callId(details as ToolDetails);
-      return executor.execute(id, "list_bookable_services", () => api.listBookableServices(executor.sessionId, id));
-    },
-    errorFunction: toolError,
-  });
-  const resolveService = tool({
-    name: "resolve_service",
-    description: "Löst den gesprochenen Leistungsnamen gegen den serverseitigen Katalog auf.",
-    parameters: z.object({ service_name: z.string().min(1) }),
-    execute: async (input, _context, details) => {
-      const id = callId(details as ToolDetails);
-      return executor.execute(id, "resolve_service", () => api.resolveService({ ...input, session_id: executor.sessionId, tool_call_id: id }));
-    },
-    errorFunction: toolError,
-  });
-  const checkAvailability = tool({
-    name: "check_appointment_availability",
-    description: "Prüft eine konkrete Startzeit vorläufig gegen den Sitzungssnapshot. Verfügbarkeit nie selbst schätzen.",
-    parameters: z.object({
-      service_id: z.string().uuid(), appointment_type_id: z.string().uuid(),
-      requested_start: z.string().datetime({ offset: true }), timezone: z.string().min(1),
-    }),
-    execute: async (input, _context, details) => {
-      const id = callId(details as ToolDetails);
-      return executor.execute(id, "check_appointment_availability", () => api.checkAppointmentAvailability({ ...input, session_id: executor.sessionId, tool_call_id: id }));
-    },
-    errorFunction: toolError,
-  });
-  const findAlternatives = tool({
-    name: "find_alternative_slots",
-    description: "Findet serverseitig freie Alternativen aus dem aktuellen Sitzungssnapshot.",
-    parameters: z.object({
-      service_id: z.string().uuid(), appointment_type_id: z.string().uuid(),
-      search_start: z.string().datetime({ offset: true }), search_days: z.number().int().min(1).max(30).default(7),
-      preferred_day: z.string().optional(), preferred_time_of_day: z.enum(["morning", "afternoon", "evening"]).optional(),
-      maximum_results: z.number().int().min(1).max(10).default(3),
-    }),
-    execute: async (input, _context, details) => {
-      const id = callId(details as ToolDetails);
-      return executor.execute(id, "find_alternative_slots", () => api.findAlternativeSlots({ ...input, session_id: executor.sessionId, tool_call_id: id }));
-    },
-    errorFunction: toolError,
-  });
-  const finalizeBooking = tool({
-    name: "finalize_appointment_booking",
-    description: "Führt nach ausdrücklicher Bestätigung die exakte Endprüfung und echte Kalenderbuchung aus.",
-    parameters: z.object({
-      service_id: z.string().uuid(), appointment_type_id: z.string().uuid(), customer_name: z.string().min(1),
-      customer_phone: z.string().nullable(), customer_email: z.string().nullable(),
-      start_at: z.string().datetime({ offset: true }), timezone: z.string().min(1),
-      confirmation_version: z.number().int().min(1), confirmed: z.literal(true),
-    }),
+async function executeCalendarTool(
+  definition: RuntimeToolDefinition,
+  inputValue: unknown,
+  runContext: unknown,
+  executor: RealtimeToolExecutor,
+  id: string,
+) {
+  const input = objectInput(inputValue);
+  switch (definition.name) {
+    case "list_bookable_services":
+      return api.listBookableServices(executor.sessionId, id);
+    case "resolve_service":
+      return api.resolveService({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        service_name: requiredString(input, "service_name"),
+      });
+    case "check_appointment_availability":
+      return api.checkAppointmentAvailability({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        service_id: requiredString(input, "service_id"),
+        appointment_type_id: requiredString(input, "appointment_type_id"),
+        requested_start: requiredString(input, "requested_start"),
+        timezone: requiredString(input, "timezone"),
+      });
+    case "find_alternative_slots":
+      return api.findAlternativeSlots({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        service_id: requiredString(input, "service_id"),
+        appointment_type_id: requiredString(input, "appointment_type_id"),
+        search_start: requiredString(input, "search_start"),
+        search_days: requiredNumber(input, "search_days"),
+        preferred_day: optionalString(input, "preferred_day"),
+        preferred_time_of_day: optionalString(input, "preferred_time_of_day") as
+          | "morning"
+          | "afternoon"
+          | "evening"
+          | undefined,
+        maximum_results: requiredNumber(input, "maximum_results"),
+      });
+    case "finalize_appointment_booking": {
+      const result = await api.finalizeAppointmentBooking({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        service_id: requiredString(input, "service_id"),
+        appointment_type_id: requiredString(input, "appointment_type_id"),
+        customer_name: requiredString(input, "customer_name"),
+        customer_phone: optionalString(input, "customer_phone") ?? null,
+        customer_email: optionalString(input, "customer_email") ?? null,
+        start_at: requiredString(input, "start_at"),
+        timezone: requiredString(input, "timezone"),
+        confirmation_version: requiredNumber(input, "confirmation_version"),
+        confirmation_utterance: latestUserUtterance(runContext),
+        confirmed: true,
+      });
+      return result.success && result.status === "confirmed" && result.external_event_id
+        ? result
+        : { ...result, success: false, error_code: result.error_code ?? "external_confirmation_missing" };
+    }
+    default:
+      throw new Error(`Das Werkzeug ${definition.name} wird vom Client nicht unterstützt.`);
+  }
+}
+
+export function createCalendarTools(
+  definitions: RuntimeToolDefinition[],
+  executor: RealtimeToolExecutor,
+) {
+  return definitions.map((definition) => tool({
+    name: definition.name,
+    description: definition.description,
+    parameters: definition.parameters,
+    strict: true,
     execute: async (input, runContext, details) => {
       const id = callId(details as ToolDetails);
-      return executor.execute(id, "finalize_appointment_booking", async () => {
-        const result = await api.finalizeAppointmentBooking({
-          ...input,
-          session_id: executor.sessionId,
-          tool_call_id: id,
-          confirmation_utterance: latestUserUtterance(runContext),
-        });
-        return result.success && result.status === "confirmed" && result.external_event_id
-          ? result
-          : { ...result, success: false, error_code: result.error_code ?? "external_confirmation_missing" };
-      });
+      return executor.execute(
+        id,
+        definition.name,
+        () => executeCalendarTool(definition, input, runContext, executor, id),
+      );
     },
     errorFunction: toolError,
-  });
-  return [
-    enabled.has("list_bookable_services") ? listBookableServices : null,
-    enabled.has("resolve_service") ? resolveService : null,
-    enabled.has("check_appointment_availability") ? checkAvailability : null,
-    enabled.has("find_alternative_slots") ? findAlternatives : null,
-    enabled.has("finalize_appointment_booking") ? finalizeBooking : null,
-  ].filter((value) => value !== null);
+  }));
 }
