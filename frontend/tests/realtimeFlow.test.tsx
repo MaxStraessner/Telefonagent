@@ -614,6 +614,70 @@ describe("Realtime browser voice flow", () => {
     client.close();
   });
 
+  it("verarbeitet die echte SDK-Folgeabfolge mit Tool-Ergebnis und genau einer Folgeantwort", async () => {
+    vi.useFakeTimers();
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    sdk.requestResponse.mockClear();
+    vi.mocked(callbacks.onError).mockClear();
+
+    act(() => {
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-tool" } });
+      sdk.emit("transport_event", {
+        type: "response.output_item.done", response_id: "r-tool",
+        item: { type: "function_call", call_id: "call-calendar", name: "check_appointment_availability", status: "completed" },
+      });
+      sdk.emit("transport_event", {
+        type: "response.done", response: { id: "r-tool", status: "completed" },
+      });
+    });
+
+    // This is the order used by @openai/agents-realtime: tool execution ends
+    // after function_call_output and the SDK queues response.create itself.
+    act(() => {
+      sdk.emit("agent_tool_start", {}, {}, { name: "check_appointment_availability" }, { toolCall: { callId: "call-calendar" } });
+      sdk.emit("agent_tool_end", {}, {}, { name: "check_appointment_availability" }, "{\"success\":true}", { toolCall: { callId: "call-calendar" } });
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-tool-continuation" } });
+      sdk.emit("transport_event", { type: "response.done", response: { id: "r-tool-continuation", status: "completed" } });
+    });
+
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(callbacks.onError).not.toHaveBeenCalled();
+    expect(vi.mocked(callbacks.onEvent).mock.calls.some(([name, detail]) =>
+      name === "turn_continuation_created" && detail?.includes("r-tool-continuation")
+    )).toBe(true);
+    client.close();
+  });
+
+  it("klassifiziert einen Providerfehler während der Tool-Fortsetzung und loggt keine Rohdaten", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    act(() => {
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-provider-tool" } });
+      sdk.emit("transport_event", {
+        type: "response.output_item.done", response_id: "r-provider-tool",
+        item: { type: "function_call", call_id: "call-provider", name: "check_appointment_availability", status: "completed" },
+      });
+      sdk.emit("agent_tool_start", {}, {}, { name: "check_appointment_availability" }, { toolCall: { callId: "call-provider" } });
+      sdk.emit("agent_tool_end", {}, {}, { name: "check_appointment_availability" }, "result", { toolCall: { callId: "call-provider" } });
+      sdk.emit("transport_event", {
+        type: "error", response_id: "r-provider-tool",
+        error: { type: "invalid_request_error", code: "test_provider_error", param: "response.create", message: "sensitive provider detail" },
+      });
+    });
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      code: "realtime_continuation_failed",
+      details: expect.objectContaining({ reason: "provider_error_during_turn" }),
+    }));
+    const providerEvent = vi.mocked(callbacks.onEvent).mock.calls.find(([name]) => name === "realtime_provider_error");
+    expect(providerEvent?.[1]).toContain("test_provider_error");
+    expect(providerEvent?.[1]).not.toContain("sensitive provider detail");
+    client.close();
+  });
+
   it("hält das Mikrofon gesperrt und bricht ab, wenn session.updated ausbleibt", async () => {
     vi.useFakeTimers();
     sdk.emitSessionUpdated = false;

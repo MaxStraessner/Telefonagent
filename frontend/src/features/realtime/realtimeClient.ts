@@ -70,12 +70,29 @@ function emptyActiveResponse(responseId: string | null = null): ActiveResponse {
 }
 
 function responseFromEvent(event: TransportEvent): Record<string, unknown> | undefined {
-  return (event as { response?: Record<string, unknown> }).response;
+  const response = (event as { response?: unknown }).response;
+  return response && typeof response === "object" ? response as Record<string, unknown> : undefined;
 }
 
 function responseIdFromEvent(event: TransportEvent): string | null {
-  const value = event as { response_id?: string; response?: { id?: string } };
-  return value.response?.id ?? value.response_id ?? null;
+  const value = event as {
+    response_id?: unknown;
+    responseId?: unknown;
+    response?: { id?: unknown };
+  };
+  const candidates = [value.response?.id, value.response_id, value.responseId];
+  return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0) ?? null;
+}
+
+function providerErrorDetails(event: TransportEvent): Readonly<Record<string, unknown>> {
+  const error = (event as { error?: unknown }).error;
+  if (!error || typeof error !== "object") return { providerError: "unknown" };
+  const value = error as { type?: unknown; code?: unknown; param?: unknown };
+  return {
+    providerErrorType: typeof value.type === "string" ? value.type : null,
+    providerErrorCode: typeof value.code === "string" ? value.code : null,
+    providerErrorParam: typeof value.param === "string" ? value.param : null,
+  };
 }
 
 interface PendingConfigurationAck {
@@ -148,7 +165,14 @@ export class BrowserRealtimeClient {
       requestResponse: () => transport.requestResponse(),
       onState: (state) => this.setTurnState(state),
       onEvent: (type, detail) => this.callbacks.onEvent(type, JSON.stringify(detail)),
-      onFailure: () => this.callbacks.onError(realtimeErrors.continuationFailed()),
+      onFailure: (reason, record) => this.callbacks.onError(realtimeErrors.continuationFailed({
+        reason,
+        turnId: record.turnId,
+        toolCallId: record.toolCallId,
+        originatingResponseId: record.originatingResponseId,
+        continuationResponseId: record.continuationResponseId,
+        recoveryAttempts: record.recoveryAttempts,
+      })),
     });
     this.toolExecutor = new RealtimeToolExecutor(
       secret.call_session_id,
@@ -479,10 +503,15 @@ export class BrowserRealtimeClient {
         break;
       case "error":
         this.activeResponse.failed = true;
+        this.callbacks.onEvent("realtime_provider_error", JSON.stringify({
+          responseId: incomingResponseId,
+          ...providerErrorDetails(event),
+          turnState: this.turnState,
+        }));
         this.coordinator?.responseDone({
           responseId: incomingResponseId,
           status: "failed",
-          reason: "realtime_error",
+          reason: "provider_error_during_turn",
           recoverable: false,
           interrupted: false,
           functionCallRequested: this.activeResponse.functionCallRequested,

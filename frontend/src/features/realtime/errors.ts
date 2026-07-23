@@ -1,5 +1,9 @@
 export class RealtimeClientError extends Error {
-  constructor(public readonly code: string, message: string) {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly details?: Readonly<Record<string, unknown>>,
+  ) {
     super(message);
     this.name = "RealtimeClientError";
   }
@@ -15,6 +19,7 @@ export const realtimeErrors = {
   connectionLost: () => new RealtimeClientError("realtime_connection_lost", "realtime connection disconnected"),
   clientSecretExpired: () => new RealtimeClientError("realtime_client_secret_expired", "ephemeral client secret expired"),
   configurationMismatch: () => new RealtimeClientError("realtime_configuration_mismatch", "realtime configuration mismatch"),
-  continuationFailed: () => new RealtimeClientError("realtime_continuation_failed", "realtime tool continuation failed"),
+  continuationFailed: (details?: Readonly<Record<string, unknown>>) =>
+    new RealtimeClientError("realtime_continuation_failed", "realtime tool continuation failed", details),
   microphoneEnded: () => new RealtimeClientError("microphone_access_ended", "microphone track ended"),
 };

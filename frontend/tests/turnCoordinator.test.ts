@@ -113,8 +113,55 @@ describe("TurnCoordinator", () => {
     await vi.advanceTimersByTimeAsync(12_000);
     expect(requestResponse).toHaveBeenCalledOnce();
     expect(failures).toHaveBeenCalledOnce();
-    expect(failures).toHaveBeenCalledWith("recovery_response_missing");
+    expect(failures).toHaveBeenCalledWith("recovery_response_missing", expect.anything());
     expect(coordinator.state).toBe("failed");
+  });
+
+  it("bricht bei einer Folgeantwort ohne Response-ID fail closed ab", () => {
+    const { coordinator, failures, requestResponse } = fixture();
+    coordinator.responseRequested();
+    coordinator.responseCreated("response-original");
+    coordinator.toolStarted("call-1");
+    coordinator.agentToolEnd("call-1");
+    coordinator.responseCreated(null);
+    expect(failures).toHaveBeenCalledWith("continuation_response_id_missing", expect.anything());
+    expect(requestResponse).not.toHaveBeenCalled();
+    expect(coordinator.state).toBe("failed");
+  });
+
+  it("ignoriert einen doppelten agent_tool_end während der Übergabe", async () => {
+    const { coordinator, requestResponse, failures } = fixture();
+    coordinator.responseRequested();
+    coordinator.responseCreated("response-original");
+    coordinator.toolStarted("call-1");
+    coordinator.agentToolEnd("call-1");
+    coordinator.agentToolEnd("call-1");
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(requestResponse).toHaveBeenCalledOnce();
+    expect(failures).not.toHaveBeenCalled();
+  });
+
+  it("meldet einen Providerfehler als terminalen Turn-Grund", () => {
+    const { coordinator, failures, events } = fixture();
+    coordinator.responseRequested();
+    coordinator.responseCreated("response-original");
+    coordinator.toolStarted("call-1");
+    coordinator.agentToolEnd("call-1");
+    coordinator.responseDone({
+      responseId: "response-original",
+      status: "failed",
+      reason: "provider_error_during_turn",
+      recoverable: false,
+      interrupted: false,
+      functionCallRequested: true,
+    });
+    expect(failures).toHaveBeenCalledWith("provider_error_during_turn", expect.objectContaining({
+      originatingResponseId: "response-original",
+      toolCallId: "call-1",
+    }));
+    expect(events.mock.calls.some(([name, detail]) =>
+      name === "turn_failed" && detail.reason === "provider_error_during_turn"
+    )).toBe(true);
   });
 
   it("verwendet dasselbe Recovery-Budget für ein späteres incomplete", () => {
@@ -180,7 +227,7 @@ describe("TurnCoordinator", () => {
     coordinator.responseCreated("response-1");
     coordinator.responseCreated("response-2");
     expect(coordinator.state).toBe("failed");
-    expect(failures).toHaveBeenCalledWith("concurrent_response_created");
+    expect(failures).toHaveBeenCalledWith("concurrent_response_created", expect.anything());
   });
 
   it("weist parallele unterschiedliche Tool-Calls zurück", () => {
@@ -190,7 +237,7 @@ describe("TurnCoordinator", () => {
     coordinator.toolStarted("call-1");
     coordinator.toolStarted("call-2");
     expect(coordinator.state).toBe("failed");
-    expect(failures).toHaveBeenCalledWith("parallel_tool_call_detected");
+    expect(failures).toHaveBeenCalledWith("parallel_tool_call_detected", expect.anything());
   });
 
   it("ignoriert doppelte Start- und Endereignisse derselben Tool-Call-ID", async () => {

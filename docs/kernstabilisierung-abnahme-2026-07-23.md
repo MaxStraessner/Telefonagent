@@ -165,3 +165,42 @@ automatisierten Browsers stehen; er wurde kontrolliert beendet. Deshalb sind
 Ack-/Generation-Nachweis im echten Browser und der menschliche Hoertest noch
 offen, waehrend Fake-Transport, Fake-Kalenderprovider und der vollstaendige
 automatisierte Pfad bestanden sind.
+
+## Fix: `realtime_continuation_failed`
+
+Der Fehler trat nach einer Kalenderprüfung auf, wenn die automatische SDK-
+Fortsetzung nicht als passende zweite Response erkannt wurde oder der Provider
+für diese Fortsetzung ein Fehlerereignis lieferte. Beide Fälle wurden zuvor in
+der Oberfläche identisch als `realtime_continuation_failed` dargestellt. Der
+sichtbare Code ist weiterhin absichtlich sicher und enthält keine Provider-
+Rohdaten; die interne Diagnose unterscheidet jetzt die terminalen Gründe.
+
+Die installierte SDK-Sequenz 0.13.5 ist:
+
+`function_call_output` → SDK-Response-Sequencer → `response.created` →
+`response.done`; `agent_tool_end` wird nach dem automatischen Request emittiert.
+Der Coordinator akzeptiert deshalb auch eine bereits vorher eingetroffene
+Folge-Response, wartet erst nach `agent_tool_end` auf den Ack und verwendet bei
+fehlendem Ack höchstens einen weiteren Request über denselben SDK-Sequencer.
+
+Umgesetzt wurden:
+
+- Response-IDs werden aus den bekannten SDK-/Providerformen typgesichert
+  gelesen; eine Folge-Response ohne ID beendet die Runde fail closed.
+- Doppelte `agent_tool_end`-Events während der Übergabe starten keinen zweiten
+  Recovery-Timer.
+- Alte oder fremde `response.done`-Events bleiben durch die bestehende
+  Response-ID-Prüfung wirkungslos.
+- Providerfehler werden als redigiertes `realtime_provider_error`-Ereignis mit
+  Typ, Code, Parameter, Response-ID und Turn-Zustand erfasst.
+- Der terminale `turn_failed`-Eintrag enthält Turn-ID, Tool-Call-ID,
+  ursprüngliche und Folge-Response-ID, Recovery-Anzahl und Fehlergrund. Es
+  werden keine Tokens, Transkripte oder Kalenderinhalte aufgenommen.
+
+Die neuen Tests bilden eine erfolgreiche automatische Kalender-Fortsetzung,
+fehlende und doppelte Ereignisse, genau einen Recovery-Versuch, Providerfehler,
+verspätete Responses und kontrollierten Cleanup ab. Die Frontend-Abnahme
+umfasst nun 95 Tests in 9 Testdateien; alle bestehen. Verbleibende Grenze ist
+der echte Browser-Mikrofontest: Der automatisierte Browser kann den nativen
+Berechtigungsdialog nicht selbst bestätigen. Der echte Kalender-Schreibpfad
+bleibt weiterhin ausgeschlossen.

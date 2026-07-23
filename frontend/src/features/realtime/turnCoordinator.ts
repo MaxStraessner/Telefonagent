@@ -42,7 +42,7 @@ interface TurnCoordinatorCallbacks {
   requestResponse: () => void;
   onState: (state: TurnState, record: Readonly<TurnRecord>) => void;
   onEvent: (type: string, detail: Record<string, unknown>) => void;
-  onFailure: (reason: string) => void;
+  onFailure: (reason: string, record: Readonly<TurnRecord>) => void;
 }
 
 let turnSequence = 0;
@@ -96,7 +96,15 @@ export class TurnCoordinator {
   }
 
   responseCreated(responseId: string | null) {
-    if (this.disposed || !responseId) return;
+    if (this.disposed) return;
+    if (!responseId) {
+      if (this.stateValue === "continuation_pending") {
+        this.fail("continuation_response_id_missing");
+      } else {
+        this.emit("turn_response_created_missing_id_ignored", {});
+      }
+      return;
+    }
     if (this.stateValue === "failed") {
       this.emit("turn_late_response_created_ignored", { responseId });
       return;
@@ -168,7 +176,7 @@ export class TurnCoordinator {
 
   agentToolEnd(callId: string) {
     if (this.disposed || this.recordValue.toolCallId !== callId) return;
-    if (["continuation_pending", "continuation_active", "playback_active"].includes(this.stateValue)) {
+    if (["tool_output_submitted", "continuation_pending", "continuation_active", "playback_active"].includes(this.stateValue)) {
       this.emit("turn_duplicate_tool_end_ignored", { callId });
       return;
     }
@@ -300,7 +308,8 @@ export class TurnCoordinator {
     this.clearRecoveryTimers();
     this.recordValue.terminalReason = reason;
     this.transition("failed");
-    this.callbacks.onFailure(reason);
+    this.emit("turn_failed", { reason, terminalReason: reason });
+    this.callbacks.onFailure(reason, this.recordValue);
   }
 
   private transition(state: TurnState) {
