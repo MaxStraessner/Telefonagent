@@ -7,6 +7,7 @@ import {
   digestRuntimeValue,
   manifestTurnDetection,
   normalizeAppliedConfiguration,
+  ToolProjectionError,
 } from "./appliedConfiguration";
 import { createCalendarTools } from "./calendarTools";
 import { sanitizedRealtimeEventDetail } from "./events";
@@ -77,6 +78,13 @@ function responseIdFromEvent(event: TransportEvent): string | null {
   return value.response?.id ?? value.response_id ?? null;
 }
 
+interface PendingConfigurationAck {
+  connectionGenerationId: string;
+  revision: string;
+  resolve: (event: TransportEvent) => void;
+  reject: (error: unknown) => void;
+}
+
 export class BrowserRealtimeClient {
   private session: RealtimeSession | null = null;
   private transport: OpenAIRealtimeWebRTC | null = null;
@@ -96,7 +104,10 @@ export class BrowserRealtimeClient {
   private toolExecutor: RealtimeToolExecutor | null = null;
   private turnState: TurnState = "idle";
   private coordinator: TurnCoordinator | null = null;
-  private configurationUpdated: ((event: TransportEvent) => void) | null = null;
+  private connectionGenerationId: string | null = null;
+  private connectionRevision: string | null = null;
+  private pendingConfigurationAck: PendingConfigurationAck | null = null;
+  private configurationApplied = false;
   private interruptionsEnabled = false;
 
   constructor(callbacks: RealtimeClientCallbacks) {
@@ -110,6 +121,13 @@ export class BrowserRealtimeClient {
     audioElement: HTMLAudioElement,
   ) {
     if (secret.expires_at * 1000 <= Date.now() + 5_000) throw realtimeErrors.clientSecretExpired();
+    if (this.session || this.transport || this.stream) this.close();
+    const runtimeManifest = structuredClone(manifest);
+    const connectionGenerationId = crypto.randomUUID();
+    const revision = `${runtimeManifest.configuration_version}:${runtimeManifest.digest}`;
+    this.connectionGenerationId = connectionGenerationId;
+    this.connectionRevision = revision;
+    this.configurationApplied = false;
     this.closed = false;
     this.connected = false;
     this.stream = stream;
@@ -117,8 +135,8 @@ export class BrowserRealtimeClient {
     this.setMicrophoneEnabled(false);
     this.microphoneTracks.forEach((track) => track.addEventListener?.("ended", this.handleMicrophoneEnded));
     this.audioElement = audioElement;
-    this.rawEvents = manifest.raw_event_logging;
-    this.interruptionsEnabled = manifest.vad.interrupt_response;
+    this.rawEvents = runtimeManifest.raw_event_logging;
+    this.interruptionsEnabled = runtimeManifest.vad.interrupt_response;
     audioElement.autoplay = true;
     audioElement.preload = "auto";
     audioElement.addEventListener("playing", this.handleAudioPlaying);
@@ -126,7 +144,7 @@ export class BrowserRealtimeClient {
     audioElement.addEventListener("error", this.handleAudioError);
 
     const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement });
-    this.coordinator = new TurnCoordinator(manifest.recovery, {
+    this.coordinator = new TurnCoordinator(runtimeManifest.recovery, {
       requestResponse: () => transport.requestResponse(),
       onState: (state) => this.setTurnState(state),
       onEvent: (type, detail) => this.callbacks.onEvent(type, JSON.stringify(detail)),
@@ -140,23 +158,23 @@ export class BrowserRealtimeClient {
         this.coordinator?.toolResultReady(callId, await digestRuntimeValue(result));
       },
     );
-    const calendarTools = createCalendarTools(manifest.tools, this.toolExecutor);
+    const calendarTools = createCalendarTools(runtimeManifest.tools, this.toolExecutor);
     const agent = new RealtimeAgent({
-      name: manifest.assistant_name,
-      instructions: manifest.instructions,
-      voice: manifest.voice,
+      name: runtimeManifest.assistant_name,
+      instructions: runtimeManifest.instructions,
+      voice: runtimeManifest.voice,
       tools: calendarTools,
     });
-    const turnDetection = manifestTurnDetection(manifest);
+    const turnDetection = manifestTurnDetection(runtimeManifest);
     const session = new RealtimeSession(agent, {
       transport,
-      model: manifest.model,
+      model: runtimeManifest.model,
       historyStoreAudio: false,
       tracingDisabled: true,
       config: {
         outputModalities: ["audio"],
         providerData: {
-          max_output_tokens: manifest.max_output_tokens,
+          max_output_tokens: runtimeManifest.max_output_tokens,
           parallel_tool_calls: false,
         },
         toolChoice: calendarTools.length ? "auto" : "none",
@@ -164,25 +182,31 @@ export class BrowserRealtimeClient {
           input: {
             noiseReduction: { type: "near_field" },
             transcription: manifest.transcription_enabled
-              ? { model: "gpt-4o-mini-transcribe", language: manifest.language }
+              ? { model: "gpt-4o-mini-transcribe", language: runtimeManifest.language }
               : null,
             turnDetection,
           },
-          output: { voice: manifest.voice, speed: manifest.speed },
+          output: { voice: runtimeManifest.voice, speed: runtimeManifest.speed },
         },
       },
     });
     this.transport = transport;
     this.session = session;
-    this.bindEvents(session, transport);
-    const configurationUpdated = new Promise<TransportEvent>((resolve) => {
-      this.configurationUpdated = resolve;
+    this.bindEvents(session, transport, connectionGenerationId);
+    const configurationUpdated = new Promise<TransportEvent>((resolve, reject) => {
+      this.pendingConfigurationAck = {
+        connectionGenerationId,
+        revision,
+        resolve,
+        reject,
+      };
     });
+    configurationUpdated.catch(() => undefined);
 
     let timeoutId: number | undefined;
     try {
       await Promise.race([
-        session.connect({ apiKey: secret.client_secret, model: manifest.model }),
+        session.connect({ apiKey: secret.client_secret, model: runtimeManifest.model }),
         new Promise<never>((_, reject) => {
           timeoutId = window.setTimeout(() => reject(realtimeErrors.connectionTimeout()), CONNECTION_TIMEOUT_MS);
         }),
@@ -190,7 +214,7 @@ export class BrowserRealtimeClient {
     } finally {
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     }
-    if (this.closed) return;
+    if (!this.isCurrentConnection(connectionGenerationId)) return;
     let configurationTimeoutId: number | undefined;
     let configurationEvent: TransportEvent;
     try {
@@ -204,53 +228,94 @@ export class BrowserRealtimeClient {
         }),
       ]);
     } finally {
-      this.configurationUpdated = null;
+      if (this.pendingConfigurationAck?.connectionGenerationId === connectionGenerationId) {
+        this.pendingConfigurationAck = null;
+      }
       if (configurationTimeoutId !== undefined) window.clearTimeout(configurationTimeoutId);
     }
-    if (this.closed) return;
-    const applied = await normalizeAppliedConfiguration(configurationEvent);
+    if (!this.isCurrentConnection(connectionGenerationId)) return;
+    let normalized: Awaited<ReturnType<typeof normalizeAppliedConfiguration>>;
+    try {
+      normalized = await normalizeAppliedConfiguration(configurationEvent, runtimeManifest);
+    } catch (error) {
+      this.callbacks.onEvent("realtime_configuration_projection_failed", JSON.stringify({
+        connectionGenerationId,
+        revision,
+        manifestDigest: runtimeManifest.digest,
+        reason: error instanceof Error ? error.message : "unknown_projection_error",
+        failClosed: true,
+        projectionError: error instanceof ToolProjectionError,
+      }));
+      throw realtimeErrors.configurationMismatch();
+    }
     const diff = await api.reportAppliedRealtimeConfiguration(
       secret.call_session_id,
-      manifest.digest,
-      applied,
+      runtimeManifest.digest,
+      normalized.applied,
     );
+    if (!this.isCurrentConnection(connectionGenerationId)) return;
+    this.callbacks.onEvent("realtime_configuration_acknowledged", JSON.stringify({
+      connectionGenerationId,
+      revision,
+      manifestDigest: runtimeManifest.digest,
+      canonicalToolsDigest: normalized.diagnostics.canonical_tools_digest,
+      outboundWireToolsDigest: normalized.diagnostics.outbound_wire_tools_digest,
+      acknowledgedToolsDigest: normalized.diagnostics.acknowledged_tools_digest,
+      transformationStage: normalized.diagnostics.transformation_stage,
+      result: diff.status,
+    }));
     if (diff.status === "mismatch") throw realtimeErrors.configurationMismatch();
+    this.configurationApplied = true;
     this.connected = true;
     this.callbacks.onCallId(secret.call_session_id ?? transport.callId ?? secret.session_id);
     this.callbacks.onState("connected");
     this.callbacks.onConnected();
     this.emitInternalEvent("session_connected", "application_internal");
     this.callbacks.onEvent("active_agent_configuration", JSON.stringify({
+      connectionGenerationId,
+      revision,
       sessionId: secret.call_session_id,
-      manifestDigest: manifest.digest,
-      configurationVersion: manifest.configuration_version,
-      model: manifest.model,
-      voice: manifest.voice,
-      speed: manifest.speed,
-      language: manifest.language,
-      maxOutputTokens: manifest.max_output_tokens,
-      toolNames: manifest.tool_names,
-      instructionsLength: manifest.instructions.length,
-      standardGermanActive: manifest.instructions.includes("Standarddeutsch"),
+      manifestDigest: runtimeManifest.digest,
+      configurationVersion: runtimeManifest.configuration_version,
+      model: runtimeManifest.model,
+      voice: runtimeManifest.voice,
+      speed: runtimeManifest.speed,
+      language: runtimeManifest.language,
+      maxOutputTokens: runtimeManifest.max_output_tokens,
+      toolNames: runtimeManifest.tool_names,
+      instructionsLength: runtimeManifest.instructions.length,
+      standardGermanActive: runtimeManifest.instructions.includes("Standarddeutsch"),
       automaticToolContinuation: "agents_sdk",
     }));
     this.setMicrophoneEnabled(!this.manuallyMuted);
     this.coordinator.responseRequested();
     transport.requestResponse({
-      instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${manifest.welcome_message}`,
+      instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${runtimeManifest.welcome_message}`,
     });
   }
 
-  private bindEvents(session: RealtimeSession, transport: OpenAIRealtimeWebRTC) {
-    const historyUpdated = (history: Parameters<RealtimeClientCallbacks["onHistory"]>[0]) => this.callbacks.onHistory(history);
-    const transportEvent = (event: TransportEvent) => this.handleTransportEvent(event);
+  private isCurrentConnection(connectionGenerationId: string) {
+    return !this.closed && this.connectionGenerationId === connectionGenerationId;
+  }
+
+  private isReadyConnection(connectionGenerationId: string) {
+    return this.isCurrentConnection(connectionGenerationId) && this.configurationApplied;
+  }
+
+  private bindEvents(session: RealtimeSession, transport: OpenAIRealtimeWebRTC, connectionGenerationId: string) {
+    const historyUpdated = (history: Parameters<RealtimeClientCallbacks["onHistory"]>[0]) => {
+      if (this.isReadyConnection(connectionGenerationId)) this.callbacks.onHistory(history);
+    };
+    const transportEvent = (event: TransportEvent) => this.handleTransportEvent(event, connectionGenerationId);
     const agentStart = () => {
+      if (!this.isReadyConnection(connectionGenerationId)) return;
       this.assistantGenerating = true;
       if (this.coordinator?.state === "idle") this.coordinator.responseRequested();
       this.callbacks.onState("assistant_thinking");
       this.emitInternalEvent("sdk_agent_generation_started", "openai_sdk");
     };
     const toolStart = (_context: unknown, _agent: unknown, tool: unknown, details: unknown) => {
+      if (!this.isReadyConnection(connectionGenerationId)) return;
       const name = (tool as { name?: unknown } | null)?.name;
       const callId = (details as { toolCall?: { callId?: unknown } } | null)?.toolCall?.callId;
       if (typeof callId === "string") this.coordinator?.toolStarted(callId);
@@ -260,6 +325,7 @@ export class BrowserRealtimeClient {
       }));
     };
     const toolEnd = (_context: unknown, _agent: unknown, tool: unknown, _result: unknown, details: unknown) => {
+      if (!this.isReadyConnection(connectionGenerationId)) return;
       const name = (tool as { name?: unknown } | null)?.name;
       const callId = (details as { toolCall?: { callId?: unknown } } | null)?.toolCall?.callId;
       if (typeof callId === "string") this.coordinator?.agentToolEnd(callId);
@@ -269,8 +335,11 @@ export class BrowserRealtimeClient {
         continuationMode: "sdk_automatic",
       }));
     };
-    const sessionError = (event: { error: unknown }) => this.callbacks.onError(event.error);
+    const sessionError = (event: { error: unknown }) => {
+      if (this.isCurrentConnection(connectionGenerationId)) this.callbacks.onError(event.error);
+    };
     const connectionChange = (status: "connecting" | "connected" | "disconnected") => {
+      if (!this.isCurrentConnection(connectionGenerationId)) return;
       this.emitInternalEvent(`transport_${status}`, "openai_sdk");
       if (status === "disconnected" && this.connected && !this.closed) this.callbacks.onError(realtimeErrors.connectionLost());
     };
@@ -293,9 +362,19 @@ export class BrowserRealtimeClient {
     );
   }
 
-  private handleTransportEvent(event: TransportEvent) {
+  private handleTransportEvent(event: TransportEvent, connectionGenerationId: string) {
+    if (!this.isCurrentConnection(connectionGenerationId)) return;
     const rawEventType = typeof event?.type === "string" ? event.type : "transport.event";
-    if (rawEventType === "session.updated") this.configurationUpdated?.(event);
+    if (rawEventType === "session.updated") {
+      const session = (event as { session?: unknown }).session;
+      const pending = this.pendingConfigurationAck;
+      if (pending && pending.connectionGenerationId === connectionGenerationId && session && typeof session === "object") {
+        this.pendingConfigurationAck = null;
+        pending.resolve(event);
+      }
+      return;
+    }
+    if (!this.configurationApplied) return;
     const beforeSpeaking = this.assistantSpeaking;
     const beforeMicrophone = this.microphoneEnabled();
     const incomingResponseId = responseIdFromEvent(event);
@@ -571,8 +650,12 @@ export class BrowserRealtimeClient {
   close() {
     if (!this.closed) this.emitInternalEvent("session_disconnected", "application_internal");
     this.closed = true;
-    this.configurationUpdated?.({ type: "session.updated" } as TransportEvent);
-    this.configurationUpdated = null;
+    this.connectionGenerationId = null;
+    this.connectionRevision = null;
+    this.configurationApplied = false;
+    const pendingConfigurationAck = this.pendingConfigurationAck;
+    this.pendingConfigurationAck = null;
+    pendingConfigurationAck?.reject(realtimeErrors.connectionLost());
     this.connected = false;
     this.assistantSpeaking = false;
     this.assistantGenerating = false;

@@ -37,13 +37,14 @@ Die Umsetzung umfasst:
 | `c32fb92` | Deutsche Datumsauflösung und kanonische Zeitzone |
 | `67e222a` | Buchungszustand und kontextbezogene Zustimmung |
 | `7f33014` | abschließende Ruff-Normalisierung vorhandener Migrationen |
+| `11c6b3b` | fail-closed Toolprojektionen, Digeststufen und Connection-Generationen |
 
 ## Automatisierte Abnahme
 
 | Prüfung | Ergebnis |
 | --- | --- |
-| Backendtests | 139 bestanden |
-| Frontendtests | 85 bestanden in 8 Testdateien |
+| Backendtests | 143 bestanden |
+| Frontendtests | 90 bestanden in 9 Testdateien |
 | TypeScript- und Vite-Produktionsbuild | bestanden |
 | ESLint mit null erlaubten Warnungen | bestanden |
 | Ruff | bestanden |
@@ -53,6 +54,8 @@ Die Umsetzung umfasst:
 | PostgreSQL-Migration | `0009 (head)` |
 | Backend-Healthcheck | `healthy`, Datenbank verbunden |
 | Containerlogs | keine Anwendungsfehler beim Start oder bei der Prüfung |
+| `npm ci` und Agents-Paketbaum | reproduzierbar; alle Agents-Pakete `0.13.5`, `@openai/agents-core` dedupliziert |
+| Read-only Smoke-Tool | `list_bookable_services` erfolgreich, 2 Leistungen gelesen, kein Finalize-Aufruf |
 
 Der Vite-Build meldet weiterhin einen nicht blockierenden Hinweis auf ein
 JavaScript-Bundle über 500 kB. Code-Splitting bleibt eine spätere
@@ -74,13 +77,13 @@ Read-only geprüft wurden:
 - Testgesprächsseite und kontrollierter Session-Cleanup.
 
 Bei der ersten manuellen Realtime-Prüfung wurde eine echte SDK-Kompatibilitäts-
-abweichung im Tool-Digest sichtbar: `@openai/agents` 0.13.5 sendet die
-Tooldefinitionen mit `strict: true`, während die Backenddefinition dieses Feld
-zunächst nicht im Manifest enthielt. Der Fehler wurde anschließend in
-`capabilities.py` korrigiert. Das Feld bleibt im Manifest und in den
-Frontend-Tools enthalten; für den OpenAI-Client-Secret-Aufruf wird es als
-SDK-internes Feld aus der Provider-Payload entfernt. Ein neuer Bootstrap mit
-SDK-normalisierten Werten liefert danach `status=applied` ohne Abweichungen.
+abweichung im Tool-Digest sichtbar: `@openai/agents` 0.13.5 transformiert die
+Parameter im Strict-Modus vor dem Wire-Versand. Der vollständige Root Cause,
+die drei Digeststufen und die fail-closed Regeln sind im Abschnitt
+„Nachtraeglicher Fix“ dokumentiert. `strict: true` bleibt Bestandteil des
+kanonischen Vertrags und wird nur lokal validiert; die übertragbare Wire-
+Projektion enthält es nicht. Unbekannte Transformationen werden nicht
+normalisiert.
 
 Ein OpenAI-API-Key ist konfiguriert. Der automatisierte Browser blieb jedoch am
 nativen Mikrofon-Berechtigungsdialog stehen. Die begonnene lokale Testsitzung
@@ -113,3 +116,52 @@ ist mit dem Fake-Kalenderprovider abgedeckt.
 - Reconciliation-Outbox, Worker und administrative Retry-Funktionen;
 - umfassende Abhängigkeitsaktualisierungen;
 - Deployment und echte Kalenderbuchungen.
+
+## Nachtraeglicher Fix: fail-closed Toolprojektionen und Connection-Generationen
+
+Die Ursache des urspruenglichen `realtime_configuration_mismatch` war die
+SDK-Projektion von `@openai/agents` 0.13.5: optionale Schemafelder werden im
+Strict-Modus als `anyOf: [urspruengliches Schema, {type: null}]` modelliert,
+Objektschemata erhalten eine vollstaendige `required`-Liste und
+`additionalProperties: false`; `default: null` wird entfernt. Das Backend hatte
+zuvor den unveraenderten Vertrag gehasht.
+
+Der Fix fuehrt drei getrennte Projektionen:
+
+- `canonical_tools_digest`: vollstaendiger lokaler Vertrag mit `strict: true`;
+  jedes Tool ohne `strict` oder mit `strict: false` bricht den Start ab.
+- `outbound_wire_tools_digest`: exakt `type`, `name`, `description` und
+  `parameters`; bekannte Strict-Schema-Transformationen werden angewendet.
+  `strict`, `deferLoading`, Guardrails, Timeoutwerte, `providerData` und weitere
+  explizit bekannte SDK-interne Felder werden nicht uebertragen.
+- `acknowledged_tools_digest`: dieselben vier Wire-Felder aus `session.updated`.
+  `strict` wird dort nicht erwartet. Unbekannte Providerfelder oder unbekannte
+  Schemaaenderungen bleiben fail closed.
+
+Verglichen wird nur `outbound_wire_tools_digest` gegen
+`acknowledged_tools_digest`; der kanonische Digest wird zusaetzlich lokal auf
+`strict: true` geprueft. Die Werkzeugreihenfolge wird nicht eigenmaechtig
+sortiert, weil dafuer keine belegte SDK-Transformation vorliegt.
+
+Jeder Verbindungsaufbau bindet einen unveraenderlichen Manifest-Snapshot an eine
+lokale Revision und `connectionGenerationId`. Ein ausstehender initialer Ack
+gehoert genau zu dieser Generation. Das erste passende `session.updated` wird
+semantisch geprueft und erst danach als lokale Revision `applied` markiert;
+Ereignisse geschlossener oder aelterer Verbindungen koennen keine Begruessung,
+Mikrofonfreigabe oder Agentenoperation ausloesen. Providerseitige
+Revisionskennungen werden nicht behauptet. Interne Diagnosen enthalten die drei
+Digests, Revisions- und Generationenzuordnung sowie die Transformationsstufe,
+ohne Token oder Rohtranskripte.
+
+Die direkte Dependency `@openai/agents` ist exakt auf `0.13.5` gepinnt. Der
+nachgewiesene Baum enthaelt `@openai/agents`, `@openai/agents-core`,
+`@openai/agents-openai` und `@openai/agents-realtime` jeweils in `0.13.5`,
+ohne gemischte oder doppelte Versionen.
+
+Der API-basierte Read-only-Smoke-Test hat Healthcheck, Datenbankverbindung,
+Runtime-Manifest und `list_bookable_services` mit zwei gelesenen Leistungen
+nachgewiesen. Der echte WebRTC-Smoke-Test blieb am nativen Mikrofon-Dialog des
+automatisierten Browsers stehen; er wurde kontrolliert beendet. Deshalb sind
+Ack-/Generation-Nachweis im echten Browser und der menschliche Hoertest noch
+offen, waehrend Fake-Transport, Fake-Kalenderprovider und der vollstaendige
+automatisierte Pfad bestanden sind.

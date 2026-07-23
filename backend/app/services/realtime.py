@@ -20,6 +20,7 @@ from app.schemas.api import (
     RuntimeConfigurationDiffResponse,
 )
 from app.services.agent_runtime import AgentRuntimeConfig, build_runtime_config
+from app.services.tool_projections import outbound_wire_tools, outbound_wire_tools_digest
 
 logger = logging.getLogger(__name__)
 OPENAI_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
@@ -61,10 +62,7 @@ def agent_config(context: TenantContext, settings: Settings, db: Session) -> Rea
 
 def _upstream_payload(runtime: AgentRuntimeConfig, settings: Settings) -> dict[str, object]:
     manifest = runtime.manifest
-    provider_tools = [
-        {key: value for key, value in tool_definition.items() if key != "strict"}
-        for tool_definition in manifest.tools
-    ]
+    provider_tools = outbound_wire_tools(runtime.tools)
     transcription: dict[str, str] | None = None
     if manifest.transcription_enabled:
         transcription = {"model": "gpt-4o-mini-transcribe", "language": manifest.language}
@@ -171,7 +169,7 @@ def expected_applied_configuration(runtime: AgentRuntimeConfig) -> AppliedRealti
         language=manifest.language,
         prompt_digest=manifest.prompt_digest,
         tool_names=manifest.tool_names,
-        tools_digest=manifest.tools_digest,
+        tools_digest=outbound_wire_tools_digest(runtime.tools),
         vad=manifest.vad.model_dump(exclude_none=True),
     )
 
@@ -182,6 +180,7 @@ def _record_call_session(
     runtime: AgentRuntimeConfig,
 ) -> CallSession:
     expected = expected_applied_configuration(runtime)
+    outbound_digest = outbound_wire_tools_digest(runtime.tools)
     call_session = CallSession(
         tenant_id=context.id,
         channel=CallChannel.browser,
@@ -189,7 +188,11 @@ def _record_call_session(
         started_at=datetime.now(timezone.utc),
         configuration_version=runtime.version,
         runtime_manifest_digest=runtime.manifest.digest,
-        runtime_manifest_snapshot=expected.model_dump(mode="json"),
+        runtime_manifest_snapshot={
+            **expected.model_dump(mode="json"),
+            "canonical_tools_digest": runtime.manifest.tools_digest,
+            "outbound_wire_tools_digest": outbound_digest,
+        },
         configuration_status="pending",
     )
     db.add(call_session)
@@ -207,6 +210,10 @@ def _record_call_session(
             "speed": runtime.speed,
             "language": runtime.bundle.configuration.language,
             "tool_names": [str(item.get("name", "")) for item in runtime.tools],
+            "canonical_tools_digest": runtime.manifest.tools_digest,
+            "outbound_wire_tools_digest": outbound_digest,
+            "acknowledged_tools_digest": None,
+            "tool_projection_stage": "bootstrap",
             "prompt_sections": runtime.prompt_sections,
             "standard_german_instruction_active": "Standarddeutsch" in runtime.prompt,
         },
@@ -275,7 +282,12 @@ def apply_session_configuration(
         )
     expected = call_session.runtime_manifest_snapshot or {}
     applied = payload.applied.model_dump(mode="json", exclude_none=True)
-    differences, unobserved = _configuration_diff(expected, applied)
+    comparison_expected = {
+        key: value
+        for key, value in expected.items()
+        if key not in {"canonical_tools_digest", "outbound_wire_tools_digest"}
+    }
+    differences, unobserved = _configuration_diff(comparison_expected, applied)
     if payload.manifest_digest != call_session.runtime_manifest_digest:
         differences["manifest_digest"] = {
             "expected": call_session.runtime_manifest_digest,
@@ -285,6 +297,20 @@ def apply_session_configuration(
     call_session.configuration_diff = differences
     call_session.configuration_status = "mismatch" if differences else "applied"
     db.commit()
+    logger.info(
+        "realtime_session_configuration_acknowledged",
+        extra={
+            "event_name": "realtime_session_configuration_acknowledged",
+            "session_id": str(call_session.id),
+            "configuration_version": call_session.configuration_version,
+            "canonical_tools_digest": expected.get("canonical_tools_digest"),
+            "outbound_wire_tools_digest": expected.get("outbound_wire_tools_digest"),
+            "acknowledged_tools_digest": applied.get("tools_digest"),
+            "tool_projection_stage": "acknowledged",
+            "ack_status": call_session.configuration_status,
+            "difference_keys": sorted(differences),
+        },
+    )
     return RuntimeConfigurationDiffResponse(
         session_id=call_session.id,
         status=call_session.configuration_status,

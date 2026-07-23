@@ -1,6 +1,24 @@
-import type { AppliedRealtimeConfiguration, RuntimeManifest } from "../../types/api";
+import type { AppliedRealtimeConfiguration, RuntimeManifest, RuntimeToolDefinition } from "../../types/api";
 
 type JsonObject = Record<string, unknown>;
+const CANONICAL_TOOL_KEYS = new Set([
+  "type", "name", "description", "parameters", "strict", "deferLoading", "providerData",
+  "needsApproval", "timeoutMs", "timeoutBehavior", "inputGuardrails", "outputGuardrails",
+]);
+
+export interface ToolProjectionDiagnostics {
+  canonical_tools_digest: string;
+  outbound_wire_tools_digest: string;
+  acknowledged_tools_digest: string;
+  transformation_stage: "wire_projection" | "acknowledged_projection";
+}
+
+export class ToolProjectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolProjectionError";
+  }
+}
 
 function objectValue(value: unknown): JsonObject | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -42,16 +60,105 @@ export async function digestRuntimeValue(value: unknown): Promise<string> {
   return `local-${(fallback >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-function toolDefinitions(value: unknown): unknown[] | undefined {
-  return Array.isArray(value) ? value : undefined;
+function schemaAllowsNull(schema: unknown): boolean {
+  const value = objectValue(schema);
+  if (!value) return false;
+  if (value.type === "null") return true;
+  if (Array.isArray(value.type) && value.type.includes("null")) return true;
+  return ["anyOf", "oneOf", "allOf"].some((key) => {
+    const entries = value[key];
+    return Array.isArray(entries) && entries.some(schemaAllowsNull);
+  });
 }
 
-function toolNames(tools: unknown[] | undefined): string[] | undefined {
-  if (!tools) return undefined;
-  return tools.flatMap((entry) => {
-    const name = objectValue(entry)?.name;
-    return typeof name === "string" ? [name] : [];
+function wrapNullable(schema: unknown): unknown {
+  if (!objectValue(schema) || schemaAllowsNull(schema)) return schema;
+  const wrapped: JsonObject = {};
+  if (typeof objectValue(schema)?.description === "string") wrapped.description = objectValue(schema)?.description;
+  wrapped.anyOf = [schema, { type: "null" }];
+  return wrapped;
+}
+
+/** Mirrors Agents 0.13.5 strictToolSchema.ts for plain JSON schemas. */
+export function strictSchemaProjection(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(strictSchemaProjection);
+  const source = objectValue(schema);
+  if (!source) return schema;
+  const record: JsonObject = structuredClone(source);
+  if (record.type === "object" && objectValue(record.properties)) {
+    const properties = objectValue(record.properties) ?? {};
+    const originalRequired = new Set(
+      Array.isArray(record.required) ? record.required.filter((item): item is string => typeof item === "string") : [],
+    );
+    const normalizedProperties: JsonObject = {};
+    Object.entries(properties).forEach(([key, value]) => {
+      const normalized = strictSchemaProjection(value);
+      normalizedProperties[key] = originalRequired.has(key) ? normalized : wrapNullable(normalized);
+    });
+    record.properties = normalizedProperties;
+    record.required = Object.keys(normalizedProperties);
+    record.additionalProperties = false;
+  }
+  (["$defs", "definitions"] as const).forEach((key) => {
+    const nested = objectValue(record[key]);
+    if (nested) record[key] = Object.fromEntries(Object.entries(nested).map(([name, value]) => [name, strictSchemaProjection(value)]));
   });
+  (["anyOf", "allOf", "oneOf"] as const).forEach((key) => {
+    if (Array.isArray(record[key])) record[key] = record[key].map(strictSchemaProjection);
+  });
+  if (Array.isArray(record.items)) record.items = record.items.map(strictSchemaProjection);
+  else if (objectValue(record.items)) record.items = strictSchemaProjection(record.items);
+  if (record.default === null) delete record.default;
+  return record;
+}
+
+export function validateCanonicalTools(tools: RuntimeToolDefinition[]): RuntimeToolDefinition[] {
+  if (!Array.isArray(tools)) throw new ToolProjectionError("Der kanonische Toolvertrag ist keine Liste.");
+  return tools.map((toolDefinition, index) => {
+    const unknown = Object.keys(toolDefinition).filter(
+      (key) => !CANONICAL_TOOL_KEYS.has(key),
+    );
+    if (unknown.length) throw new ToolProjectionError(`Unbekannte kanonische Toolfelder: ${unknown.join(", ")}.`);
+    if (toolDefinition.type !== "function" || !toolDefinition.name || toolDefinition.strict !== true) {
+      throw new ToolProjectionError(`Tool ${toolDefinition.name ?? index} muss strict=true verwenden.`);
+    }
+    if (!toolDefinition.description || !objectValue(toolDefinition.parameters)) {
+      throw new ToolProjectionError(`Tool ${toolDefinition.name} enthält kein gültiges Schema.`);
+    }
+    return toolDefinition;
+  });
+}
+
+export function outboundWireTools(tools: RuntimeToolDefinition[]): JsonObject[] {
+  return validateCanonicalTools(tools).map((toolDefinition) => ({
+      type: toolDefinition.type,
+      name: toolDefinition.name,
+      description: toolDefinition.description,
+      parameters: strictSchemaProjection(toolDefinition.parameters),
+    }));
+}
+
+export function normalizeAcknowledgedWireTools(value: unknown): JsonObject[] {
+  if (!Array.isArray(value)) throw new ToolProjectionError("session.updated enthält keine Toolliste.");
+  return value.map((entry, index) => {
+    const tool = objectValue(entry);
+    if (!tool) throw new ToolProjectionError(`Bestätigtes Tool ${index} ist kein Objekt.`);
+    const unknown = Object.keys(tool).filter((key) => !["type", "name", "description", "parameters", "strict"].includes(key));
+    if (unknown.length) throw new ToolProjectionError(`Unbekannte Provider-Toolfelder: ${unknown.join(", ")}.`);
+    if (tool.type !== "function" || typeof tool.name !== "string" || typeof tool.description !== "string" || !objectValue(tool.parameters)) {
+      throw new ToolProjectionError(`Bestätigtes Tool ${index} enthält kein gültiges Wire-Schema.`);
+    }
+    return {
+      type: tool.type,
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    };
+  });
+}
+
+function sessionValue(event: unknown): JsonObject {
+  return objectValue(objectValue(event)?.session) ?? {};
 }
 
 function normalizedVad(value: unknown): Record<string, unknown> | undefined {
@@ -82,24 +189,46 @@ function normalizedVad(value: unknown): Record<string, unknown> | undefined {
 
 export async function normalizeAppliedConfiguration(
   event: unknown,
-): Promise<AppliedRealtimeConfiguration> {
-  const session = objectValue(objectValue(event)?.session) ?? {};
+  manifest: RuntimeManifest,
+): Promise<{ applied: AppliedRealtimeConfiguration; diagnostics: ToolProjectionDiagnostics }> {
+  const session = sessionValue(event);
   const audio = objectValue(session.audio) ?? {};
   const input = objectValue(audio.input) ?? {};
   const output = objectValue(audio.output) ?? {};
   const transcription = objectValue(input.transcription);
+  const canonicalTools = validateCanonicalTools(manifest.tools);
+  const outboundTools = outboundWireTools(canonicalTools);
+  const canonicalDigest = await digestRuntimeValue(canonicalTools);
+  if (canonicalDigest !== manifest.tools_digest) {
+    throw new ToolProjectionError("Der lokale kanonische Tool-Digest stimmt nicht mit dem Manifest überein.");
+  }
+  const outboundDigest = await digestRuntimeValue(outboundTools);
+  const rawTools = session.tools;
+  if (!Array.isArray(rawTools) && canonicalTools.length > 0) {
+    throw new ToolProjectionError("session.updated bestätigt keine aktivierten Tools.");
+  }
+  const acknowledgedTools = normalizeAcknowledgedWireTools(Array.isArray(rawTools) ? rawTools : []);
+  const acknowledgedDigest = await digestRuntimeValue(acknowledgedTools);
   const instructions = session.instructions;
-  const tools = toolDefinitions(session.tools);
-  return Object.fromEntries(Object.entries({
+  const applied = Object.fromEntries(Object.entries({
     model: typeof session.model === "string" ? session.model : undefined,
     voice: typeof output.voice === "string" ? output.voice : undefined,
     speed: typeof output.speed === "number" ? output.speed : undefined,
     language: typeof transcription?.language === "string" ? transcription.language : undefined,
     prompt_digest: typeof instructions === "string" ? await sha256(instructions) : undefined,
-    tool_names: toolNames(tools),
-    tools_digest: tools ? await sha256(tools) : undefined,
+    tool_names: acknowledgedTools.map((tool) => String(tool.name)),
+    tools_digest: acknowledgedDigest,
     vad: normalizedVad(firstDefined(input.turn_detection, input.turnDetection)),
   }).filter(([, value]) => value !== undefined)) as AppliedRealtimeConfiguration;
+  return {
+    applied,
+    diagnostics: {
+      canonical_tools_digest: canonicalDigest,
+      outbound_wire_tools_digest: outboundDigest,
+      acknowledged_tools_digest: acknowledgedDigest,
+      transformation_stage: "acknowledged_projection",
+    },
+  };
 }
 
 export function manifestTurnDetection(manifest: RuntimeManifest) {
@@ -113,11 +242,7 @@ export function manifestTurnDetection(manifest: RuntimeManifest) {
       interruptResponse: vad.interrupt_response,
     };
   }
-  if (
-    vad.threshold === null
-    || vad.prefix_padding_ms === null
-    || vad.silence_duration_ms === null
-  ) {
+  if (vad.threshold === null || vad.prefix_padding_ms === null || vad.silence_duration_ms === null) {
     throw new Error("Server VAD ist unvollständig konfiguriert.");
   }
   return {

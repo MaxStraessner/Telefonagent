@@ -129,7 +129,7 @@ const runtimeManifest = {
   capability_keys: [],
   tools: [],
   tool_names: [],
-  tools_digest: "c".repeat(64),
+  tools_digest: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
   maximum_session_minutes: agentConfig.maximum_session_minutes,
   max_output_tokens: agentConfig.max_output_tokens,
   transcription_enabled: agentConfig.transcription_enabled,
@@ -633,6 +633,43 @@ describe("Realtime browser voice flow", () => {
     await rejection;
     expect(sdk.requestResponse).not.toHaveBeenCalled();
     expect(callbacks.onConnected).not.toHaveBeenCalled();
+    client.close();
+  });
+
+  it("ordnet Acks der Connection Generation zu und ignoriert verspätete Acks geschlossener Verbindungen", async () => {
+    sdk.emitSessionUpdated = false;
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    const stream = { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream;
+    const firstConnection = client.connect(runtimeManifest, clientSecret, stream, document.createElement("audio"));
+    const staleTransportEvent = sdk.handlers.get("transport_event")?.[0];
+    expect(staleTransportEvent).toBeDefined();
+    client.close();
+    await expect(firstConnection).resolves.toBeUndefined();
+
+    const secondConnection = client.connect(runtimeManifest, clientSecret, stream, document.createElement("audio"));
+    const currentTransportEvent = sdk.handlers.get("transport_event")?.[0];
+    expect(currentTransportEvent).toBeDefined();
+    const acknowledgement = {
+      type: "session.updated",
+      session: {
+        model: runtimeManifest.model,
+        audio: {
+          input: {
+            transcription: { model: "gpt-4o-mini-transcribe", language: runtimeManifest.language },
+            turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600, create_response: true, interrupt_response: false },
+          },
+          output: { voice: runtimeManifest.voice, speed: runtimeManifest.speed },
+        },
+      },
+    };
+    act(() => staleTransportEvent?.(acknowledgement));
+    expect(callbacks.onConnected).not.toHaveBeenCalled();
+    expect(microphoneTrack.enabled).toBe(false);
+    act(() => currentTransportEvent?.(acknowledgement));
+    await secondConnection;
+    expect(callbacks.onConnected).toHaveBeenCalledOnce();
+    expect(microphoneTrack.enabled).toBe(false);
     client.close();
   });
 

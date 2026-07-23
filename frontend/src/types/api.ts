@@ -57,16 +57,19 @@ export interface RealtimeClientSecret {
   client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
   speed: number; configuration_version: number; call_session_id: string; tenant_id: string;
 }
+export interface RuntimeJsonObjectSchema {
+  type: "object";
+  properties: Record<string, Record<string, unknown>>;
+  required: string[];
+  additionalProperties: false;
+  [key: string]: unknown;
+}
 export interface RuntimeToolDefinition {
   type: "function";
+  strict: true;
   name: string;
   description: string;
-  parameters: {
-    type: "object";
-    properties: Record<string, unknown>;
-    required: string[];
-    additionalProperties: false;
-  };
+  parameters: RuntimeJsonObjectSchema;
 }
 export interface RuntimeRecoveryPolicy {
   continuation_ack_timeout_ms: number;

@@ -8,6 +8,7 @@ from app.core.config import Settings, get_settings
 from app.main import app
 from app.models import CallSession
 from app.services.realtime import build_safety_identifier
+from app.services.tool_projections import outbound_wire_tools_digest
 
 
 class FakeAsyncClient:
@@ -151,7 +152,7 @@ def test_applied_configuration_is_compared_without_storing_prompt(monkeypatch, c
         "language": manifest["language"],
         "prompt_digest": manifest["prompt_digest"],
         "tool_names": manifest["tool_names"],
-        "tools_digest": manifest["tools_digest"],
+        "tools_digest": outbound_wire_tools_digest(manifest["tools"]),
         "vad": {key: value for key, value in manifest["vad"].items() if value is not None},
     }
 

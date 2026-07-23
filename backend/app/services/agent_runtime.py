@@ -17,6 +17,7 @@ from app.schemas.api import RuntimeManifestResponse, RuntimeRecoveryPolicy
 from app.services.agent_configuration import AgentBundle, is_open_now, load_agent_bundle
 from app.services.capabilities import active_capabilities, realtime_tools
 from app.services.prompt_compiler import SECTION_NAMES, compile_agent_prompt
+from app.services.tool_projections import ToolProjectionError, canonical_tools_digest
 
 RUNTIME_MANIFEST_SCHEMA_VERSION = "1"
 RECOVERY_POLICY = RuntimeRecoveryPolicy(
@@ -195,6 +196,16 @@ def build_runtime_config(
             turn_detection["idle_timeout_ms"] = config.idle_timeout_ms
     capabilities = active_capabilities(bundle)
     tools = realtime_tools(bundle)
+    try:
+        tools_digest = canonical_tools_digest(tools)
+    except ToolProjectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "invalid_realtime_tool_contract",
+                "message": "Der kanonische Realtime-Toolvertrag ist ungültig konfiguriert.",
+            },
+        ) from exc
     prompt = compile_agent_prompt(bundle, greeting)
     booking = db.scalar(
         select(BookingConfiguration).where(BookingConfiguration.tenant_id == context.id)
@@ -218,7 +229,7 @@ def build_runtime_config(
         "capability_keys": [item.key for item in capabilities],
         "tools": tools,
         "tool_names": tool_names,
-        "tools_digest": _digest(tools),
+        "tools_digest": tools_digest,
         "maximum_session_minutes": settings.openai_realtime_max_session_minutes,
         "max_output_tokens": settings.openai_realtime_max_output_tokens,
         "transcription_enabled": settings.openai_realtime_transcription_enabled,
