@@ -61,6 +61,10 @@ def agent_config(context: TenantContext, settings: Settings, db: Session) -> Rea
 
 def _upstream_payload(runtime: AgentRuntimeConfig, settings: Settings) -> dict[str, object]:
     manifest = runtime.manifest
+    provider_tools = [
+        {key: value for key, value in tool_definition.items() if key != "strict"}
+        for tool_definition in manifest.tools
+    ]
     transcription: dict[str, str] | None = None
     if manifest.transcription_enabled:
         transcription = {"model": "gpt-4o-mini-transcribe", "language": manifest.language}
@@ -71,7 +75,7 @@ def _upstream_payload(runtime: AgentRuntimeConfig, settings: Settings) -> dict[s
             "model": manifest.model,
             "instructions": manifest.instructions,
             "output_modalities": ["audio"],
-            "tools": manifest.tools,
+            "tools": provider_tools,
             "tool_choice": runtime.tool_choice,
             "parallel_tool_calls": False,
             "max_output_tokens": manifest.max_output_tokens,

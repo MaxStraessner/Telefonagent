@@ -36,12 +36,14 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
     return [
         {
             "type": "function",
+            "strict": True,
             "name": "list_bookable_services",
             "description": "Lädt nur aktive Leistungen und deren aktive Terminarten. Keine Leistungen erfinden.",
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
         {
             "type": "function",
+            "strict": True,
             "name": "resolve_service",
             "description": "Löst eine genannte Leistung eindeutig gegen den aktiven Katalog auf.",
             "parameters": {
@@ -53,6 +55,7 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
             "name": "resolve_booking_datetime",
             "description": (
                 "Löst eine natürliche deutsche Datums- und Zeitangabe in der "
@@ -72,6 +75,7 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
             "name": "check_appointment_availability",
             "description": "Prüft eine konkrete Startzeit serverseitig gegen lokale und externe Kalenderdaten.",
             "parameters": {
@@ -85,6 +89,7 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
             "name": "find_alternative_slots",
             "description": "Findet freie Alternativtermine serverseitig aus dem Sitzungssnapshot.",
             "parameters": {
@@ -99,6 +104,7 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
             "name": "select_booking_slot",
             "description": "Wählt ausschließlich eine zuvor angebotene signierte Slot-ID aus.",
             "parameters": {
@@ -110,6 +116,7 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
             "name": "prepare_appointment_confirmation",
             "description": (
                 "Prüft den ausgewählten Slot erneut, speichert Kundendaten serverseitig "
@@ -128,6 +135,7 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
             "name": "finalize_appointment_booking",
             "description": (
                 "Bucht erst nach ausdrücklicher Kundenbestätigung. Nur success=true, status=confirmed und "

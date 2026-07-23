@@ -73,6 +73,15 @@ Read-only geprüft wurden:
   abgeleiteter Zeitzone `Europe/Berlin`;
 - Testgesprächsseite und kontrollierter Session-Cleanup.
 
+Bei der ersten manuellen Realtime-Prüfung wurde eine echte SDK-Kompatibilitäts-
+abweichung im Tool-Digest sichtbar: `@openai/agents` 0.13.5 sendet die
+Tooldefinitionen mit `strict: true`, während die Backenddefinition dieses Feld
+zunächst nicht im Manifest enthielt. Der Fehler wurde anschließend in
+`capabilities.py` korrigiert. Das Feld bleibt im Manifest und in den
+Frontend-Tools enthalten; für den OpenAI-Client-Secret-Aufruf wird es als
+SDK-internes Feld aus der Provider-Payload entfernt. Ein neuer Bootstrap mit
+SDK-normalisierten Werten liefert danach `status=applied` ohne Abweichungen.
+
 Ein OpenAI-API-Key ist konfiguriert. Der automatisierte Browser blieb jedoch am
 nativen Mikrofon-Berechtigungsdialog stehen. Die begonnene lokale Testsitzung
 wurde deshalb kontrolliert beendet. Ein echter WebRTC-Sprachdialog,
@@ -104,4 +113,3 @@ ist mit dem Fake-Kalenderprovider abgedeckt.
 - Reconciliation-Outbox, Worker und administrative Retry-Funktionen;
 - umfassende Abhängigkeitsaktualisierungen;
 - Deployment und echte Kalenderbuchungen.
-
