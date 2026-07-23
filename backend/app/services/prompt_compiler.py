@@ -132,6 +132,8 @@ def compile_agent_prompt(bundle: AgentBundle, greeting: str) -> str:
         _section(SECTION_NAMES[13], ([
             "Ermittle zuerst die gewünschte Leistung und frage danach den gewünschten Tag und die Uhrzeit ab.",
             "Rufe list_bookable_services und danach resolve_service auf, statt Leistungen oder Terminarten zu erfinden.",
+            "Rufe für jede natürliche deutsche Datums- oder Zeitangabe resolve_booking_datetime auf. Erfinde kein Jahr, keinen ISO-Zeitpunkt und keine Zeitzone.",
+            "Verwende ausschließlich Europe/Berlin aus dem Werkzeugergebnis. Nenne das Jahr nur, wenn das Werkzeug es in speech zur Eindeutigkeit ausgibt.",
             "Rufe check_appointment_availability auf und verwende ausschließlich das vorläufige serverseitige Ergebnis.",
             "Wenn ein Zeitpunkt belegt ist, rufe find_alternative_slots auf und biete nur dessen Ergebnisse an.",
             "Berechne freie Zeiten niemals selbst und gib niemals Titel, Teilnehmer, Beschreibungen oder andere Inhalte bestehender Kalendereinträge preis.",

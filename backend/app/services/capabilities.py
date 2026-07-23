@@ -53,6 +53,25 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "name": "resolve_booking_datetime",
+            "description": (
+                "Löst eine natürliche deutsche Datums- und Zeitangabe in der "
+                "Unternehmenszeitzone auf. Keine Zeitzone und keinen ISO-Zeitpunkt erfinden."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "Natürliche deutsche Angabe, zum Beispiel morgen um 14 Uhr.",
+                    }
+                },
+                "required": ["expression"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
             "name": "check_appointment_availability",
             "description": "Prüft eine konkrete Startzeit serverseitig gegen lokale und externe Kalenderdaten.",
             "parameters": {

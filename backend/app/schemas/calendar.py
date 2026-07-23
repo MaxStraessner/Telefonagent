@@ -288,6 +288,28 @@ class ResolveServiceRequest(ConversationToolRequest):
     service_name: str = Field(min_length=1, max_length=150)
 
 
+class ResolveBookingDateTimeRequest(ConversationToolRequest):
+    expression: str = Field(min_length=1, max_length=200)
+
+
+class ResolveBookingDateTimeResponse(BaseModel):
+    status: Literal[
+        "concrete",
+        "search_window",
+        "clarification_required",
+        "past",
+        "out_of_horizon",
+        "invalid",
+    ]
+    timezone: str
+    start: datetime | None = None
+    end: datetime | None = None
+    speech: str | None = None
+    reason: str | None = None
+    explicit_year: bool
+    resolution_version: int
+
+
 class SnapshotAvailabilityRequest(ConversationToolRequest):
     service_id: UUID
     appointment_type_id: UUID

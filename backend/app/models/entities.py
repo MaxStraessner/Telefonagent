@@ -115,6 +115,7 @@ class BookingState(str, enum.Enum):
     service_required = "service_required"
     service_selected = "service_selected"
     date_time_required = "date_time_required"
+    date_time_resolving = "date_time_resolving"
     availability_checking = "availability_checking"
     slot_available = "slot_available"
     slot_unavailable = "slot_unavailable"
@@ -568,6 +569,9 @@ class BookingConversation(Base, TimestampMixin):
     )
     requested_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     requested_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    datetime_resolution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    datetime_resolution_version: Mapped[int] = mapped_column(Integer, default=0)
+    datetime_explicit_year: Mapped[bool] = mapped_column(Boolean, default=False)
     selected_slot_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     selected_slot_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     timezone: Mapped[str] = mapped_column(String(100), default="Europe/Berlin")

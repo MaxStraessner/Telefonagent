@@ -78,6 +78,16 @@ export const api = {
   bootstrapBookingConversation: (session_id: string) => request<{ success: boolean; state: string; snapshot_status: "ready" | "unavailable"; error_code: string | null }>("/calendar/conversation/bootstrap", { method: "POST", body: { session_id } }),
   listBookableServices: (session_id: string, tool_call_id: string) => request<{ success: boolean; services: Array<{ service_id: string; name: string; description: string; duration_minutes: number; appointment_types: Array<{ appointment_type_id: string; appointment_format: string; location: string; buffer_before_minutes: number; buffer_after_minutes: number }> }> }>("/calendar/tools/list-bookable-services", { method: "POST", body: { session_id, tool_call_id } }),
   resolveService: (value: { session_id: string; tool_call_id: string; service_name: string }) => request<Record<string, unknown>>("/calendar/tools/resolve-service", { method: "POST", body: value }),
+  resolveBookingDatetime: (value: { session_id: string; tool_call_id: string; expression: string }) => request<{
+    status: "concrete" | "search_window" | "clarification_required" | "past" | "out_of_horizon" | "invalid";
+    timezone: string;
+    start: string | null;
+    end: string | null;
+    speech: string | null;
+    reason: string | null;
+    explicit_year: boolean;
+    resolution_version: number;
+  }>("/calendar/tools/resolve-booking-datetime", { method: "POST", body: value }),
   checkAppointmentAvailability: (value: { session_id: string; tool_call_id: string; service_id: string; appointment_type_id: string; requested_start: string; timezone: string }) => request<{ available: boolean; appointment_start: string; appointment_end: string; blocked_start: string; blocked_end: string; slot_id: string | null; reason: string | null; alternatives: Array<{ start: string; end: string }>; source: "snapshot" | "targeted_refresh"; preliminary: boolean }>("/calendar/tools/check-appointment-availability/session", { method: "POST", body: value }),
   findAlternativeSlots: (value: { session_id: string; tool_call_id: string; service_id: string; appointment_type_id: string; search_start: string; search_days: number; preferred_day?: string; preferred_time_of_day?: "morning" | "afternoon" | "evening"; maximum_results: number }) => request<{ success: boolean; timezone: string; slots: Array<{ slot_id: string; start: string; end: string; spoken_date: string; spoken_time: string }> }>("/calendar/tools/find-alternative-slots", { method: "POST", body: value }),
   finalizeAppointmentBooking: (value: { session_id: string; tool_call_id: string; service_id: string; appointment_type_id: string; customer_name: string; customer_phone: string | null; customer_email: string | null; start_at: string; timezone: string; confirmation_version: number; confirmation_utterance: string; confirmed: true }) => request<CalendarBookingResult>("/calendar/tools/finalize-appointment-booking", { method: "POST", body: value }),

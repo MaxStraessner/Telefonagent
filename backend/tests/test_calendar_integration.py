@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, time, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import delete, select
@@ -523,6 +524,56 @@ def test_new_agent_tools_validate_service_snapshot_and_confirmation(client, db, 
     repeated = client.post("/api/v1/calendar/tools/create-appointment", json=payload)
     assert repeated.json()["booking_id"] == booked.json()["booking_id"]
     assert len(provider.created_events) == 1
+
+
+def test_booking_datetime_is_resolved_in_tenant_timezone_and_stored_without_raw_text(
+    client,
+    db,
+    calendar_env,
+):
+    tenant, owner, settings, _provider = calendar_env
+    _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
+    call = CallSession(tenant_id=tenant.id, channel=CallChannel.browser, status="active")
+    db.add(call)
+    db.commit()
+    resolved_service = client.post(
+        "/api/v1/calendar/tools/resolve-service",
+        json={
+            "session_id": str(call.id),
+            "tool_call_id": "resolve-date-service",
+            "service_name": appointment.name,
+        },
+    )
+    assert resolved_service.status_code == 200, resolved_service.text
+
+    response = client.post(
+        "/api/v1/calendar/tools/resolve-booking-datetime",
+        json={
+            "session_id": str(call.id),
+            "tool_call_id": "resolve-date-1",
+            "expression": "morgen um 14 Uhr",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    expected_date = datetime.now(ZoneInfo("Europe/Berlin")).date() + timedelta(days=1)
+    assert body["status"] == "concrete"
+    assert body["timezone"] == "Europe/Berlin"
+    assert datetime.fromisoformat(body["start"]).date() == expected_date
+    assert "2026" not in body["speech"]
+    conversation = db.scalar(
+        select(BookingConversation).where(BookingConversation.call_session_id == call.id)
+    )
+    assert conversation.datetime_resolution_status == "concrete"
+    assert conversation.datetime_resolution_version == 1
+    assert conversation.requested_start is not None
+    assert not hasattr(conversation, "datetime_expression")
+
+    db.execute(delete(ToolExecution).where(ToolExecution.call_session_id == call.id))
+    db.delete(conversation)
+    db.delete(call)
+    db.commit()
 
 
 def test_conversation_orchestration_bootstrap_snapshot_and_final_booking(client, db, calendar_env):

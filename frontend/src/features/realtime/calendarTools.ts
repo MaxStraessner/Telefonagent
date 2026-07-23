@@ -80,6 +80,12 @@ async function executeCalendarTool(
         tool_call_id: id,
         service_name: requiredString(input, "service_name"),
       });
+    case "resolve_booking_datetime":
+      return api.resolveBookingDatetime({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        expression: requiredString(input, "expression"),
+      });
     case "check_appointment_availability":
       return api.checkAppointmentAvailability({
         session_id: executor.sessionId,

@@ -12,8 +12,9 @@ ALLOWED_TRANSITIONS: dict[BookingState, set[BookingState]] = {
     BookingState.catalog_loading: {BookingState.ready, BookingState.service_required},
     BookingState.ready: {BookingState.service_required, BookingState.service_selected},
     BookingState.service_required: {BookingState.service_selected},
-    BookingState.service_selected: {BookingState.date_time_required},
-    BookingState.date_time_required: {BookingState.availability_checking},
+    BookingState.service_selected: {BookingState.date_time_required, BookingState.date_time_resolving},
+    BookingState.date_time_required: {BookingState.date_time_resolving},
+    BookingState.date_time_resolving: {BookingState.availability_checking},
     BookingState.availability_checking: {BookingState.slot_available, BookingState.slot_unavailable},
     BookingState.slot_available: {BookingState.customer_data_required, BookingState.date_time_required},
     BookingState.slot_unavailable: {BookingState.date_time_required, BookingState.availability_checking},
@@ -96,7 +97,7 @@ class ConversationOrchestrator:
         self.context.service_id = service_id
         self.context.service_name = service_name
         self.context.appointment_type_id = appointment_type_id
-        self.transition(BookingState.date_time_required)
+        self.transition(BookingState.date_time_resolving)
 
     def bootstrap_started(self) -> None:
         self.session.bootstrap_status = "running"

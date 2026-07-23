@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from urllib.parse import urlencode
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -55,6 +55,8 @@ from app.schemas.calendar import (
     ListBookableServicesRequest,
     OAuthStartResponse,
     ProviderConfigurationResponse,
+    ResolveBookingDateTimeRequest,
+    ResolveBookingDateTimeResponse,
     ResolveServiceRequest,
     SnapshotAvailabilityRequest,
     SnapshotAvailabilityResponse,
@@ -79,6 +81,7 @@ from app.services.calendar_connections import (
 )
 from app.services.calendar_oauth import complete_oauth, consume_state, load_valid_state, start_oauth
 from app.services.conversation_orchestrator import ConversationOrchestrator
+from app.services.german_datetime import resolve_german_datetime
 from app.services.tool_audit import ToolAudit
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
@@ -806,6 +809,75 @@ def conversation_resolve_service(
         "appointment_types": [{"appointment_type_id": str(item.id), "appointment_format": item.location_type.value}
                               for item in appointment_types],
     }
+
+
+@router.post(
+    "/tools/resolve-booking-datetime",
+    response_model=ResolveBookingDateTimeResponse,
+)
+def conversation_resolve_booking_datetime(
+    payload: ResolveBookingDateTimeRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+) -> ResolveBookingDateTimeResponse:
+    orchestrator = ConversationOrchestrator(
+        db,
+        context.id,
+        payload.session_id,
+        context.tenant.timezone,
+    )
+    audit = ToolAudit(
+        db,
+        context.id,
+        payload.session_id,
+        payload.tool_call_id,
+        "resolve_booking_datetime",
+    )
+    if orchestrator.context.state == BookingState.date_time_required:
+        orchestrator.transition(BookingState.date_time_resolving)
+    if orchestrator.context.state != BookingState.date_time_resolving:
+        audit.complete(success=False, error_code="service_required")
+        raise calendar_http_error(
+            CalendarError(
+                "service_required",
+                "Vor der Datumsauflösung muss eine Leistung ausgewählt werden.",
+            )
+        )
+    configuration, _hours = get_or_create_booking_configuration(
+        db,
+        context.id,
+        context.tenant.timezone,
+    )
+    resolution = resolve_german_datetime(
+        payload.expression,
+        now=datetime.now(timezone.utc),
+        timezone_name=context.tenant.timezone,
+        horizon_days=configuration.maximum_booking_horizon_days,
+    )
+    booking = orchestrator.context
+    booking.datetime_resolution_status = resolution.status.value
+    booking.datetime_resolution_version += 1
+    booking.datetime_explicit_year = resolution.explicit_year
+    booking.requested_start = aware_utc(resolution.start) if resolution.start else None
+    booking.requested_end = aware_utc(resolution.end) if resolution.end else None
+    db.commit()
+    audit.complete(
+        success=resolution.status.value in {"concrete", "search_window"},
+        error_code=None
+        if resolution.status.value in {"concrete", "search_window"}
+        else resolution.reason,
+    )
+    return ResolveBookingDateTimeResponse(
+        status=resolution.status.value,
+        timezone=context.tenant.timezone,
+        start=resolution.start,
+        end=resolution.end,
+        speech=resolution.speech,
+        reason=resolution.reason,
+        explicit_year=resolution.explicit_year,
+        resolution_version=booking.datetime_resolution_version,
+    )
 
 
 @router.post("/tools/check-appointment-availability/session", response_model=SnapshotAvailabilityResponse)

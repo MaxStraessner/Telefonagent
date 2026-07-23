@@ -92,7 +92,8 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert FakeAsyncClient.last_payload["expires_after"] == {"anchor": "created_at", "seconds": 60}
     session = FakeAsyncClient.last_payload["session"]
     assert [item["name"] for item in session["tools"]] == [
-        "list_bookable_services", "resolve_service", "check_appointment_availability",
+        "list_bookable_services", "resolve_service", "resolve_booking_datetime",
+        "check_appointment_availability",
         "find_alternative_slots", "finalize_appointment_booking",
     ]
     assert session["tool_choice"] == "auto"
