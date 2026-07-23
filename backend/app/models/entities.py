@@ -118,8 +118,11 @@ class BookingState(str, enum.Enum):
     date_time_resolving = "date_time_resolving"
     availability_checking = "availability_checking"
     slot_available = "slot_available"
+    alternatives_available = "alternatives_available"
     slot_unavailable = "slot_unavailable"
+    slot_rechecking = "slot_rechecking"
     customer_data_required = "customer_data_required"
+    awaiting_confirmation = "awaiting_confirmation"
     confirmation_required = "confirmation_required"
     final_check_running = "final_check_running"
     booking_running = "booking_running"
@@ -574,12 +577,18 @@ class BookingConversation(Base, TimestampMixin):
     datetime_explicit_year: Mapped[bool] = mapped_column(Boolean, default=False)
     selected_slot_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     selected_slot_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    selected_slot_id: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    offered_slot_ids: Mapped[list] = mapped_column(JSON, default=list)
     timezone: Mapped[str] = mapped_column(String(100), default="Europe/Berlin")
     customer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     customer_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     customer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     booking_confirmed_by_customer: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmation_version: Mapped[int] = mapped_column(Integer, default=0)
+    confirmation_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmation_classification: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    confirmation_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmation_transition_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     appointment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("calendar_bookings.id"), nullable=True)
     external_event_id: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)

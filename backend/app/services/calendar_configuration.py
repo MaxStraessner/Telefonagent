@@ -13,15 +13,15 @@ from app.schemas.calendar import BookingConfigurationUpdate, CalendarSelectionUp
 def get_or_create_booking_configuration(
     db: Session, tenant_id: UUID, tenant_timezone: str = "Europe/Berlin"
 ) -> tuple[BookingConfiguration, list[CalendarBusinessHour]]:
+    try:
+        ZoneInfo(tenant_timezone)
+        timezone_name = tenant_timezone
+    except ZoneInfoNotFoundError:
+        timezone_name = "Europe/Berlin"
     configuration = db.scalar(
         select(BookingConfiguration).where(BookingConfiguration.tenant_id == tenant_id)
     )
     if configuration is None:
-        try:
-            ZoneInfo(tenant_timezone)
-            timezone_name = tenant_timezone
-        except ZoneInfoNotFoundError:
-            timezone_name = "Europe/Berlin"
         configuration = BookingConfiguration(
             tenant_id=tenant_id,
             timezone=timezone_name,
@@ -43,6 +43,10 @@ def get_or_create_booking_configuration(
                     is_active=True,
                 )
             )
+        db.commit()
+        db.refresh(configuration)
+    elif configuration.timezone != timezone_name:
+        configuration.timezone = timezone_name
         db.commit()
         db.refresh(configuration)
     hours = list(
@@ -77,8 +81,8 @@ def update_booking_configuration(
 ) -> tuple[BookingConfiguration, list[CalendarBusinessHour]]:
     validate_business_hours(payload)
     configuration, _ = get_or_create_booking_configuration(db, tenant_id, tenant_timezone)
+    configuration.timezone = tenant_timezone
     for field in (
-        "timezone",
         "slot_interval_minutes",
         "minimum_notice_minutes",
         "maximum_booking_horizon_days",

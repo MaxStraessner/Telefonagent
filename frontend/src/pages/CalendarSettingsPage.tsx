@@ -136,7 +136,7 @@ export function CalendarSettingsPage() {
     {tab === "availability" && configuration && <section className="card calendar-section">
       <div className="section-heading"><div><h2>Verfügbarkeit und Buchungsregeln</h2><p>Diese Werte werden serverseitig bei jeder Suche und unmittelbar vor jeder Buchung angewendet.</p></div><button className="button primary" disabled={busy !== null} onClick={() => void saveConfiguration()}>Regeln speichern</button></div>
       <div className="calendar-rule-grid">
-        <label>Zeitzone<input value={configuration.timezone} onChange={(event) => setConfiguration({ ...configuration, timezone: event.target.value })} /></label>
+        <label>Zeitzone (vom Unternehmen abgeleitet)<input value={configuration.timezone} disabled readOnly /></label>
         <label>Startzeitraster (Min.)<input type="number" min="5" max="120" value={configuration.slot_interval_minutes} onChange={(event) => setConfiguration({ ...configuration, slot_interval_minutes: Number(event.target.value) })} /></label>
         <label>Mindestvorlauf (Min.)<input type="number" min="0" value={configuration.minimum_notice_minutes} onChange={(event) => setConfiguration({ ...configuration, minimum_notice_minutes: Number(event.target.value) })} /></label>
         <label>Buchungshorizont (Tage)<input type="number" min="1" value={configuration.maximum_booking_horizon_days} onChange={(event) => setConfiguration({ ...configuration, maximum_booking_horizon_days: Number(event.target.value) })} /></label>

@@ -90,20 +90,12 @@ async function executeCalendarTool(
       return api.checkAppointmentAvailability({
         session_id: executor.sessionId,
         tool_call_id: id,
-        service_id: requiredString(input, "service_id"),
         appointment_type_id: requiredString(input, "appointment_type_id"),
-        requested_start: requiredString(input, "requested_start"),
-        timezone: requiredString(input, "timezone"),
       });
     case "find_alternative_slots":
       return api.findAlternativeSlots({
         session_id: executor.sessionId,
         tool_call_id: id,
-        service_id: requiredString(input, "service_id"),
-        appointment_type_id: requiredString(input, "appointment_type_id"),
-        search_start: requiredString(input, "search_start"),
-        search_days: requiredNumber(input, "search_days"),
-        preferred_day: optionalString(input, "preferred_day"),
         preferred_time_of_day: optionalString(input, "preferred_time_of_day") as
           | "morning"
           | "afternoon"
@@ -111,20 +103,26 @@ async function executeCalendarTool(
           | undefined,
         maximum_results: requiredNumber(input, "maximum_results"),
       });
+    case "select_booking_slot":
+      return api.selectBookingSlot({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        slot_id: requiredString(input, "slot_id"),
+      });
+    case "prepare_appointment_confirmation":
+      return api.prepareAppointmentConfirmation({
+        session_id: executor.sessionId,
+        tool_call_id: id,
+        customer_name: requiredString(input, "customer_name"),
+        customer_phone: optionalString(input, "customer_phone") ?? null,
+        customer_email: optionalString(input, "customer_email") ?? null,
+      });
     case "finalize_appointment_booking": {
       const result = await api.finalizeAppointmentBooking({
         session_id: executor.sessionId,
         tool_call_id: id,
-        service_id: requiredString(input, "service_id"),
-        appointment_type_id: requiredString(input, "appointment_type_id"),
-        customer_name: requiredString(input, "customer_name"),
-        customer_phone: optionalString(input, "customer_phone") ?? null,
-        customer_email: optionalString(input, "customer_email") ?? null,
-        start_at: requiredString(input, "start_at"),
-        timezone: requiredString(input, "timezone"),
         confirmation_version: requiredNumber(input, "confirmation_version"),
         confirmation_utterance: latestUserUtterance(runContext),
-        confirmed: true,
       });
       return result.success && result.status === "confirmed" && result.external_event_id
         ? result

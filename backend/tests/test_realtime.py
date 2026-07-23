@@ -94,7 +94,8 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert [item["name"] for item in session["tools"]] == [
         "list_bookable_services", "resolve_service", "resolve_booking_datetime",
         "check_appointment_availability",
-        "find_alternative_slots", "finalize_appointment_booking",
+        "find_alternative_slots", "select_booking_slot",
+        "prepare_appointment_confirmation", "finalize_appointment_booking",
     ]
     assert session["tool_choice"] == "auto"
     assert session["parallel_tool_calls"] is False

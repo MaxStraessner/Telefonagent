@@ -265,6 +265,8 @@ class CalendarAgendaResponse(BaseModel):
 
 
 class ConversationToolRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: UUID
     tool_call_id: str = Field(min_length=1, max_length=200)
 
@@ -317,6 +319,10 @@ class SnapshotAvailabilityRequest(ConversationToolRequest):
     timezone: str = Field(min_length=1, max_length=100)
 
 
+class StoredAvailabilityRequest(ConversationToolRequest):
+    appointment_type_id: UUID
+
+
 class AlternativeSlotsRequest(ConversationToolRequest):
     service_id: UUID
     appointment_type_id: UUID
@@ -325,6 +331,29 @@ class AlternativeSlotsRequest(ConversationToolRequest):
     preferred_day: date | None = None
     preferred_time_of_day: Literal["morning", "afternoon", "evening"] | None = None
     maximum_results: int = Field(default=3, ge=1, le=10)
+
+
+class StoredAlternativeSlotsRequest(ConversationToolRequest):
+    preferred_time_of_day: Literal["morning", "afternoon", "evening"] | None = None
+    maximum_results: int = Field(default=3, ge=1, le=10)
+
+
+class SelectBookingSlotRequest(ConversationToolRequest):
+    slot_id: str = Field(min_length=20, max_length=4000)
+
+
+class PrepareAppointmentConfirmationRequest(ConversationToolRequest):
+    customer_name: str = Field(min_length=1, max_length=150)
+    customer_phone: str | None = Field(default=None, max_length=50)
+    customer_email: str | None = Field(default=None, max_length=320)
+
+
+class PrepareAppointmentConfirmationResponse(BaseModel):
+    success: bool
+    confirmation_version: int
+    confirmation_digest: str
+    summary: dict[str, str | None]
+    state: Literal["awaiting_confirmation"]
 
 
 class SnapshotAvailabilityResponse(ExactAvailabilityResponse):
@@ -343,3 +372,8 @@ class FinalizeAppointmentRequest(ConversationToolRequest):
     confirmation_version: int = Field(ge=1)
     confirmation_utterance: str = Field(min_length=1, max_length=300)
     confirmed: Literal[True]
+
+
+class FinalizeStoredAppointmentRequest(ConversationToolRequest):
+    confirmation_version: int = Field(ge=1)
+    confirmation_utterance: str = Field(min_length=1, max_length=300)
