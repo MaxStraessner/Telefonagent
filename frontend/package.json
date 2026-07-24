@@ -12,7 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@openai/agents": "^0.13.5",
+    "@openai/agents": "0.13.5",
     "@vitejs/plugin-react": "4.7.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",

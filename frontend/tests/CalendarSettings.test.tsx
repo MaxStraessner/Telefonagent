@@ -138,6 +138,6 @@ describe("Kalenderverwaltung", () => {
     const tabs = screen.getByRole("tablist");
     expect(within(tabs).getAllByRole("tab")).toHaveLength(4);
     await userEvent.click(within(tabs).getByRole("tab", { name: "Verfügbarkeit" }));
-    expect(screen.getByLabelText("Zeitzone")).toBeInTheDocument();
+    expect(screen.getByLabelText("Zeitzone (vom Unternehmen abgeleitet)")).toBeDisabled();
   });
 });

@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, AppliedRealtimeConfiguration, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeConfigurationDiff, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -38,6 +38,16 @@ export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   realtimeAgentConfig: (signal?: AbortSignal) => request<RealtimeAgentConfig>("/realtime/agent-config", { signal }),
   realtimeClientSecret: (signal?: AbortSignal) => request<RealtimeClientSecret>("/realtime/client-secret", { signal, method: "POST" }),
+  realtimeSessionBootstrap: (signal?: AbortSignal) => request<RealtimeSessionBootstrap>("/realtime/session-bootstrap", { signal, method: "POST" }),
+  reportAppliedRealtimeConfiguration: (
+    sessionId: string,
+    manifestDigest: string,
+    applied: AppliedRealtimeConfiguration,
+  ) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/applied-configuration`, {
+    method: "POST",
+    body: { manifest_digest: manifestDigest, applied },
+  }),
+  realtimeRuntimeDiff: (sessionId: string, signal?: AbortSignal) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/runtime-diff`, { signal }),
   agentConfiguration: (signal?: AbortSignal) => request<AgentConfiguration>("/agent/config", { signal }),
   saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...value, expected_version: value.version } }),
   agentKnowledge: (signal?: AbortSignal) => request<AgentKnowledge>("/agent/knowledge", { signal }),
@@ -68,9 +78,21 @@ export const api = {
   bootstrapBookingConversation: (session_id: string) => request<{ success: boolean; state: string; snapshot_status: "ready" | "unavailable"; error_code: string | null }>("/calendar/conversation/bootstrap", { method: "POST", body: { session_id } }),
   listBookableServices: (session_id: string, tool_call_id: string) => request<{ success: boolean; services: Array<{ service_id: string; name: string; description: string; duration_minutes: number; appointment_types: Array<{ appointment_type_id: string; appointment_format: string; location: string; buffer_before_minutes: number; buffer_after_minutes: number }> }> }>("/calendar/tools/list-bookable-services", { method: "POST", body: { session_id, tool_call_id } }),
   resolveService: (value: { session_id: string; tool_call_id: string; service_name: string }) => request<Record<string, unknown>>("/calendar/tools/resolve-service", { method: "POST", body: value }),
-  checkAppointmentAvailability: (value: { session_id: string; tool_call_id: string; service_id: string; appointment_type_id: string; requested_start: string; timezone: string }) => request<{ available: boolean; appointment_start: string; appointment_end: string; blocked_start: string; blocked_end: string; slot_id: string | null; reason: string | null; alternatives: Array<{ start: string; end: string }>; source: "snapshot" | "targeted_refresh"; preliminary: boolean }>("/calendar/tools/check-appointment-availability/session", { method: "POST", body: value }),
-  findAlternativeSlots: (value: { session_id: string; tool_call_id: string; service_id: string; appointment_type_id: string; search_start: string; search_days: number; preferred_day?: string; preferred_time_of_day?: "morning" | "afternoon" | "evening"; maximum_results: number }) => request<{ success: boolean; timezone: string; slots: Array<{ slot_id: string; start: string; end: string; spoken_date: string; spoken_time: string }> }>("/calendar/tools/find-alternative-slots", { method: "POST", body: value }),
-  finalizeAppointmentBooking: (value: { session_id: string; tool_call_id: string; service_id: string; appointment_type_id: string; customer_name: string; customer_phone: string | null; customer_email: string | null; start_at: string; timezone: string; confirmation_version: number; confirmation_utterance: string; confirmed: true }) => request<CalendarBookingResult>("/calendar/tools/finalize-appointment-booking", { method: "POST", body: value }),
+  resolveBookingDatetime: (value: { session_id: string; tool_call_id: string; expression: string }) => request<{
+    status: "concrete" | "search_window" | "clarification_required" | "past" | "out_of_horizon" | "invalid";
+    timezone: string;
+    start: string | null;
+    end: string | null;
+    speech: string | null;
+    reason: string | null;
+    explicit_year: boolean;
+    resolution_version: number;
+  }>("/calendar/tools/resolve-booking-datetime", { method: "POST", body: value }),
+  checkAppointmentAvailability: (value: { session_id: string; tool_call_id: string; appointment_type_id: string }) => request<{ available: boolean; appointment_start: string; appointment_end: string; blocked_start: string; blocked_end: string; slot_id: string | null; reason: string | null; alternatives: Array<{ slot_id: string; start: string; end: string; spoken_date: string; spoken_time: string }>; source: "snapshot" | "targeted_refresh"; preliminary: boolean }>("/calendar/tools/check-appointment-availability/session", { method: "POST", body: value }),
+  findAlternativeSlots: (value: { session_id: string; tool_call_id: string; preferred_time_of_day?: "morning" | "afternoon" | "evening"; maximum_results: number }) => request<{ success: boolean; timezone: string; slots: Array<{ slot_id: string; start: string; end: string; spoken_date: string; spoken_time: string }> }>("/calendar/tools/find-alternative-slots", { method: "POST", body: value }),
+  selectBookingSlot: (value: { session_id: string; tool_call_id: string; slot_id: string }) => request<Record<string, unknown>>("/calendar/tools/select-booking-slot", { method: "POST", body: value }),
+  prepareAppointmentConfirmation: (value: { session_id: string; tool_call_id: string; customer_name: string; customer_phone: string | null; customer_email: string | null }) => request<{ success: boolean; confirmation_version: number; confirmation_digest: string; summary: Record<string, string | null>; state: "awaiting_confirmation" }>("/calendar/tools/prepare-appointment-confirmation", { method: "POST", body: value }),
+  finalizeAppointmentBooking: (value: { session_id: string; tool_call_id: string; confirmation_version: number; confirmation_utterance: string }) => request<CalendarBookingResult>("/calendar/tools/finalize-appointment-booking", { method: "POST", body: value }),
   findAvailableAppointments: (value: AgentAvailabilityRequest) => request<CalendarAvailabilityResult>("/calendar/tools/find-available-appointments", { method: "POST", body: value }),
   createCalendarBooking: (value: { slot_id: string; appointment_type_id: string; customer_name: string; customer_phone: string; customer_email: string; customer_notes: string; idempotency_key: string }) => request<CalendarBookingResult>("/calendar/tools/create-calendar-booking", { method: "POST", body: value }),
 };

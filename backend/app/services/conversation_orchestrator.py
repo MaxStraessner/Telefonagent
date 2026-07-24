@@ -12,17 +12,69 @@ ALLOWED_TRANSITIONS: dict[BookingState, set[BookingState]] = {
     BookingState.catalog_loading: {BookingState.ready, BookingState.service_required},
     BookingState.ready: {BookingState.service_required, BookingState.service_selected},
     BookingState.service_required: {BookingState.service_selected},
-    BookingState.service_selected: {BookingState.date_time_required},
-    BookingState.date_time_required: {BookingState.availability_checking},
-    BookingState.availability_checking: {BookingState.slot_available, BookingState.slot_unavailable},
-    BookingState.slot_available: {BookingState.customer_data_required, BookingState.date_time_required},
-    BookingState.slot_unavailable: {BookingState.date_time_required, BookingState.availability_checking},
-    BookingState.customer_data_required: {BookingState.confirmation_required},
+    BookingState.service_selected: {BookingState.date_time_required, BookingState.date_time_resolving},
+    BookingState.date_time_required: {BookingState.date_time_resolving},
+    BookingState.date_time_resolving: {
+        BookingState.availability_checking,
+        BookingState.service_required,
+    },
+    BookingState.availability_checking: {
+        BookingState.slot_available,
+        BookingState.alternatives_available,
+        BookingState.slot_unavailable,
+    },
+    BookingState.slot_available: {
+        BookingState.slot_rechecking,
+        BookingState.date_time_resolving,
+        BookingState.service_required,
+    },
+    BookingState.alternatives_available: {
+        BookingState.slot_rechecking,
+        BookingState.date_time_resolving,
+        BookingState.service_required,
+    },
+    BookingState.slot_rechecking: {
+        BookingState.customer_data_required,
+        BookingState.alternatives_available,
+        BookingState.date_time_resolving,
+        BookingState.service_required,
+    },
+    BookingState.slot_unavailable: {
+        BookingState.date_time_resolving,
+        BookingState.availability_checking,
+        BookingState.service_required,
+    },
+    BookingState.customer_data_required: {
+        BookingState.awaiting_confirmation,
+        BookingState.confirmation_required,
+        BookingState.date_time_resolving,
+        BookingState.service_required,
+    },
+    BookingState.awaiting_confirmation: {
+        BookingState.final_check_running,
+        BookingState.date_time_resolving,
+        BookingState.slot_rechecking,
+        BookingState.service_required,
+    },
     BookingState.confirmation_required: {BookingState.final_check_running, BookingState.date_time_required},
-    BookingState.final_check_running: {BookingState.booking_running, BookingState.slot_unavailable, BookingState.booking_failed},
-    BookingState.booking_running: {BookingState.booking_confirmed, BookingState.booking_failed, BookingState.slot_unavailable},
+    BookingState.final_check_running: {
+        BookingState.booking_running,
+        BookingState.alternatives_available,
+        BookingState.slot_unavailable,
+        BookingState.booking_failed,
+    },
+    BookingState.booking_running: {
+        BookingState.booking_confirmed,
+        BookingState.booking_failed,
+        BookingState.alternatives_available,
+        BookingState.slot_unavailable,
+    },
     BookingState.booking_confirmed: {BookingState.completed},
-    BookingState.booking_failed: {BookingState.confirmation_required, BookingState.date_time_required},
+    BookingState.booking_failed: {
+        BookingState.awaiting_confirmation,
+        BookingState.date_time_resolving,
+        BookingState.service_required,
+    },
     BookingState.completed: {BookingState.service_required, BookingState.service_selected},
 }
 
@@ -91,12 +143,39 @@ class ConversationOrchestrator:
             self.transition_through(BookingState.service_required, BookingState.service_selected)
         elif self.context.state in {BookingState.ready, BookingState.service_required, BookingState.completed}:
             self.transition(BookingState.service_selected)
+        elif self.context.state in {
+            BookingState.date_time_resolving,
+            BookingState.slot_available,
+            BookingState.alternatives_available,
+            BookingState.slot_rechecking,
+            BookingState.customer_data_required,
+            BookingState.awaiting_confirmation,
+            BookingState.booking_failed,
+        }:
+            self.transition_through(
+                BookingState.service_required,
+                BookingState.service_selected,
+            )
         elif self.context.state != BookingState.service_selected:
             raise CalendarError("invalid_booking_state_transition", "Die Leistung kann in diesem Buchungsschritt nicht geändert werden.")
         self.context.service_id = service_id
         self.context.service_name = service_name
         self.context.appointment_type_id = appointment_type_id
-        self.transition(BookingState.date_time_required)
+        self.context.requested_start = None
+        self.context.requested_end = None
+        self.context.selected_slot_start = None
+        self.context.selected_slot_end = None
+        self.context.selected_slot_id = None
+        self.context.offered_slot_ids = []
+        self.invalidate_confirmation("service_changed")
+        self.transition(BookingState.date_time_resolving)
+
+    def invalidate_confirmation(self, reason: str) -> None:
+        self.context.booking_confirmed_by_customer = False
+        self.context.confirmation_digest = None
+        self.context.confirmation_classification = None
+        self.context.confirmation_decided_at = None
+        self.context.confirmation_transition_reason = reason
 
     def bootstrap_started(self) -> None:
         self.session.bootstrap_status = "running"

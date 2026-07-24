@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -73,6 +74,71 @@ class RealtimeClientSecretResponse(BaseModel):
     configuration_version: int
     call_session_id: UUID
     tenant_id: UUID
+
+
+class RuntimeRecoveryPolicy(BaseModel):
+    continuation_ack_timeout_ms: int
+    recovery_response_timeout_ms: int
+    maximum_attempts_per_turn: int
+
+
+class RuntimeManifestResponse(BaseModel):
+    schema_version: str
+    digest: str
+    tenant_id: UUID
+    timezone: str
+    assistant_name: str
+    language: str
+    welcome_message: str
+    instructions: str
+    prompt_digest: str
+    model: str
+    voice: str
+    speed: float
+    configuration_version: int
+    source_digests: dict[str, str]
+    capability_keys: list[str]
+    tools: list[dict[str, Any]]
+    tool_names: list[str]
+    tools_digest: str
+    maximum_session_minutes: int
+    max_output_tokens: int
+    transcription_enabled: bool
+    raw_event_logging: bool
+    vad: RealtimeVadResponse
+    recovery: RuntimeRecoveryPolicy
+    setting_targets: dict[str, Literal["prompt", "session", "tools", "ui_only"]]
+
+
+class RealtimeSessionBootstrapResponse(BaseModel):
+    secret: RealtimeClientSecretResponse
+    manifest: RuntimeManifestResponse
+
+
+class AppliedRealtimeConfiguration(BaseModel):
+    model: str | None = None
+    voice: str | None = None
+    speed: float | None = None
+    language: str | None = None
+    prompt_digest: str | None = None
+    tool_names: list[str] | None = None
+    tools_digest: str | None = None
+    vad: dict[str, Any] | None = None
+
+
+class AppliedRealtimeConfigurationRequest(BaseModel):
+    manifest_digest: str = Field(min_length=64, max_length=64)
+    applied: AppliedRealtimeConfiguration
+
+
+class RuntimeConfigurationDiffResponse(BaseModel):
+    session_id: UUID
+    status: Literal["pending", "applied", "mismatch"]
+    manifest_digest: str
+    expected: AppliedRealtimeConfiguration
+    applied: AppliedRealtimeConfiguration | None = None
+    differences: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    unobserved: list[str] = Field(default_factory=list)
 
 
 class TenantSettingsResponse(ORMModel):

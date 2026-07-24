@@ -20,18 +20,27 @@ from app.db.session import get_db
 from app.models import AgentConfiguration, Service
 from app.repositories import TenantRepository
 from app.schemas.api import (
+    AppliedRealtimeConfigurationRequest,
     AppointmentResponse,
     HealthResponse,
     LocationResponse,
     PlatformStatusResponse,
     RealtimeAgentConfigResponse,
     RealtimeClientSecretResponse,
+    RealtimeSessionBootstrapResponse,
+    RuntimeConfigurationDiffResponse,
     ServiceResponse,
     ServiceWrite,
     StaffResponse,
     TenantResponse,
 )
-from app.services.realtime import agent_config, create_client_secret
+from app.services.realtime import (
+    agent_config,
+    apply_session_configuration,
+    create_client_secret,
+    create_session_bootstrap,
+    session_configuration_diff,
+)
 
 router = APIRouter()
 router.include_router(agent_router)
@@ -92,6 +101,43 @@ async def realtime_client_secret(
     settings: Settings = Depends(get_settings),
 ) -> RealtimeClientSecretResponse:
     return await create_client_secret(context, settings, db)
+
+
+@router.post("/realtime/session-bootstrap", response_model=RealtimeSessionBootstrapResponse)
+async def realtime_session_bootstrap(
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> RealtimeSessionBootstrapResponse:
+    return await create_session_bootstrap(context, settings, db)
+
+
+@router.post(
+    "/realtime/sessions/{session_id}/applied-configuration",
+    response_model=RuntimeConfigurationDiffResponse,
+)
+def realtime_applied_configuration(
+    session_id: UUID,
+    payload: AppliedRealtimeConfigurationRequest,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+) -> RuntimeConfigurationDiffResponse:
+    return apply_session_configuration(db, context, session_id, payload)
+
+
+@router.get(
+    "/realtime/sessions/{session_id}/runtime-diff",
+    response_model=RuntimeConfigurationDiffResponse,
+)
+def realtime_runtime_diff(
+    session_id: UUID,
+    context: TenantContext = Depends(get_tenant_context),
+    _user: UserContext = Depends(get_user_context),
+    db: Session = Depends(get_db),
+) -> RuntimeConfigurationDiffResponse:
+    return session_configuration_diff(db, context, session_id)
 
 
 @router.get("/tenant", response_model=TenantResponse)

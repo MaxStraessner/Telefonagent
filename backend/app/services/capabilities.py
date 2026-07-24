@@ -36,12 +36,14 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
     return [
         {
             "type": "function",
+            "strict": True,
             "name": "list_bookable_services",
             "description": "Lädt nur aktive Leistungen und deren aktive Terminarten. Keine Leistungen erfinden.",
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
         {
             "type": "function",
+            "strict": True,
             "name": "resolve_service",
             "description": "Löst eine genannte Leistung eindeutig gegen den aktiven Katalog auf.",
             "parameters": {
@@ -53,41 +55,87 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
         },
         {
             "type": "function",
+            "strict": True,
+            "name": "resolve_booking_datetime",
+            "description": (
+                "Löst eine natürliche deutsche Datums- und Zeitangabe in der "
+                "Unternehmenszeitzone auf. Keine Zeitzone und keinen ISO-Zeitpunkt erfinden."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "Natürliche deutsche Angabe, zum Beispiel morgen um 14 Uhr.",
+                    }
+                },
+                "required": ["expression"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "strict": True,
             "name": "check_appointment_availability",
             "description": "Prüft eine konkrete Startzeit serverseitig gegen lokale und externe Kalenderdaten.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service_id": {"type": "string"},
                     "appointment_type_id": {"type": "string"},
-                    "requested_start": {"type": "string", "description": "ISO-8601-Zeitpunkt mit Zeitzone."},
-                    "timezone": {"type": "string"},
                 },
-                "required": ["service_id", "appointment_type_id", "requested_start", "timezone"],
+                "required": ["appointment_type_id"],
                 "additionalProperties": False,
             },
         },
         {
             "type": "function",
+            "strict": True,
             "name": "find_alternative_slots",
             "description": "Findet freie Alternativtermine serverseitig aus dem Sitzungssnapshot.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service_id": {"type": "string"},
-                    "appointment_type_id": {"type": "string"},
-                    "search_start": {"type": "string"},
-                    "search_days": {"type": "integer", "minimum": 1, "maximum": 30},
-                    "preferred_day": {"type": "string"},
                     "preferred_time_of_day": {"type": "string", "enum": ["morning", "afternoon", "evening"]},
                     "maximum_results": {"type": "integer", "minimum": 1, "maximum": 10},
                 },
-                "required": ["service_id", "appointment_type_id", "search_start", "search_days", "maximum_results"],
+                "required": ["maximum_results"],
                 "additionalProperties": False,
             },
         },
         {
             "type": "function",
+            "strict": True,
+            "name": "select_booking_slot",
+            "description": "Wählt ausschließlich eine zuvor angebotene signierte Slot-ID aus.",
+            "parameters": {
+                "type": "object",
+                "properties": {"slot_id": {"type": "string"}},
+                "required": ["slot_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "strict": True,
+            "name": "prepare_appointment_confirmation",
+            "description": (
+                "Prüft den ausgewählten Slot erneut, speichert Kundendaten serverseitig "
+                "und erzeugt die verbindliche Zusammenfassung mit Version und Digest."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_name": {"type": "string"},
+                    "customer_phone": {"type": ["string", "null"]},
+                    "customer_email": {"type": ["string", "null"]},
+                },
+                "required": ["customer_name", "customer_phone", "customer_email"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "strict": True,
             "name": "finalize_appointment_booking",
             "description": (
                 "Bucht erst nach ausdrücklicher Kundenbestätigung. Nur success=true, status=confirmed und "
@@ -96,20 +144,9 @@ def realtime_tools(bundle: AgentBundle) -> list[dict[str, object]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service_id": {"type": "string"},
-                    "appointment_type_id": {"type": "string"},
-                    "customer_name": {"type": "string"},
-                    "customer_phone": {"type": ["string", "null"]},
-                    "customer_email": {"type": ["string", "null"]},
-                    "start_at": {"type": "string"},
-                    "timezone": {"type": "string"},
                     "confirmation_version": {"type": "integer", "minimum": 1},
-                    "confirmed": {"type": "boolean", "const": True},
                 },
-                "required": [
-                    "service_id", "appointment_type_id", "customer_name", "customer_phone",
-                    "customer_email", "start_at", "timezone", "confirmation_version", "confirmed",
-                ],
+                "required": ["confirmation_version"],
                 "additionalProperties": False,
             },
         },

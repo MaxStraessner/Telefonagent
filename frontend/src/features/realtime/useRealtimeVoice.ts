@@ -34,7 +34,9 @@ function readableRealtimeError(error: unknown): ReadableError {
       browser_unsupported: "Dieser Browser unterstützt die benötigten WebRTC- und Medienfunktionen nicht.",
       microphone_access_ended: "Der Mikrofonzugriff wurde während des Gesprächs beendet.",
       realtime_client_secret_expired: "Das kurzlebige Verbindungs-Token ist abgelaufen. Bitte starte das Testgespräch erneut.",
+      realtime_configuration_ack_timeout: "OpenAI hat die aktive Sitzungskonfiguration nicht rechtzeitig bestätigt. Bitte starte das Testgespräch erneut.",
       realtime_configuration_mismatch: "Die Realtime-Konfiguration hat sich während des Starts geändert. Bitte versuche es erneut.",
+      realtime_continuation_failed: "Nach der Kalenderprüfung konnte das Gespräch nicht zuverlässig fortgesetzt werden. Die Sitzung wurde sicher beendet; bitte starte sie erneut.",
       realtime_connection_lost: "Die WebRTC-Sprachverbindung wurde unterbrochen. Bitte prüfe dein Netzwerk und starte erneut.",
       realtime_connection_timeout: "Der Aufbau der Sprachverbindung hat zu lange gedauert. Bitte versuche es erneut.",
     };
@@ -140,10 +142,7 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
       }
       addEvent("microphone.permission_granted");
       setView((current) => ({ ...current, state: "connecting", notice: "Sprachverbindung wird aufgebaut …" }));
-      const [agentConfig, secret] = await Promise.all([
-        api.realtimeAgentConfig(abortController.signal),
-        api.realtimeClientSecret(abortController.signal),
-      ]);
+      const { manifest, secret } = await api.realtimeSessionBootstrap(abortController.signal);
       if (abortController.signal.aborted || attemptRef.current !== attempt) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -153,7 +152,13 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
         (result) => addEvent("booking.bootstrap_completed", JSON.stringify(result)),
         (error) => addEvent("booking.bootstrap_failed", error instanceof Error ? error.message : String(error)),
       );
-      if (secret.tenant_id !== agentConfig.tenant_id || secret.model !== agentConfig.model || secret.voice !== agentConfig.voice || secret.speed !== agentConfig.speed || secret.configuration_version !== agentConfig.configuration_version) {
+      if (
+        secret.tenant_id !== manifest.tenant_id
+        || secret.model !== manifest.model
+        || secret.voice !== manifest.voice
+        || secret.speed !== manifest.speed
+        || secret.configuration_version !== manifest.configuration_version
+      ) {
         throw realtimeErrors.configurationMismatch();
       }
 
@@ -195,20 +200,20 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
         onCallId: (callId) => setView((current) => ({ ...current, callId })),
       });
       clientRef.current = client;
-      await client.connect(agentConfig, secret, stream, audioElement);
+      await client.connect(manifest, secret, stream, audioElement);
       if (attemptRef.current !== attempt || clientRef.current !== client) {
         client.close();
         return;
       }
 
-      const maximumSeconds = agentConfig.maximum_session_minutes * 60;
+      const maximumSeconds = manifest.maximum_session_minutes * 60;
       remainingRef.current = maximumSeconds;
       setView((current) => ({
         ...current,
         remainingSeconds: maximumSeconds,
-        vadSummary: agentConfig.vad.type === "semantic_vad"
-          ? `semantic_vad · Reaktionsbereitschaft ${agentConfig.vad.eagerness ?? "medium"} · Unterbrechung ${agentConfig.vad.interrupt_response ? "an" : "aus"}`
-          : `server_vad · Schwelle ${agentConfig.vad.threshold} · Präfix ${agentConfig.vad.prefix_padding_ms} ms · Stille ${agentConfig.vad.silence_duration_ms} ms · Unterbrechung ${agentConfig.vad.interrupt_response ? "an" : "aus"}`,
+        vadSummary: manifest.vad.type === "semantic_vad"
+          ? `semantic_vad · Reaktionsbereitschaft ${manifest.vad.eagerness} · Unterbrechung ${manifest.vad.interrupt_response ? "an" : "aus"}`
+          : `server_vad · Schwelle ${manifest.vad.threshold} · Präfix ${manifest.vad.prefix_padding_ms} ms · Stille ${manifest.vad.silence_duration_ms} ms · Unterbrechung ${manifest.vad.interrupt_response ? "an" : "aus"}`,
       }));
       intervalRef.current = window.setInterval(() => {
         const tick = tickSessionTimer(remainingRef.current ?? maximumSeconds, warnedRef.current);
