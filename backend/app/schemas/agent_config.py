@@ -8,6 +8,7 @@ VoiceName = Literal["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer"
 
 
 class AgentListItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     id: UUID | None = None
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=500)
@@ -24,6 +25,7 @@ class AgentRuleData(AgentListItem):
 
 
 class AgentConfigurationData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     company_name: str = Field(min_length=1, max_length=200)
     assistant_name: str = Field(min_length=1, max_length=100)
     assistant_role: str = Field(min_length=1, max_length=200)
@@ -93,11 +95,12 @@ class AgentConfigurationResponse(AgentConfigurationData):
     version: int
     updated_at: datetime
     can_edit: bool
-    role: Literal["owner", "admin", "member"]
+    role: Literal["owner", "admin", "employee"]
     model_config = ConfigDict(from_attributes=True)
 
 
 class KnowledgeProfileData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     company_description: str = Field(default="", max_length=4000)
     products: str = Field(default="", max_length=4000)
     locations: str = Field(default="", max_length=4000)
@@ -119,6 +122,7 @@ class KnowledgeServiceData(AgentListItem):
 
 
 class BusinessHoursData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     weekday: int = Field(ge=0, le=6)
     opens_at: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     closes_at: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -132,6 +136,7 @@ class BusinessHoursData(BaseModel):
 
 
 class AgentKnowledgeData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     profile: KnowledgeProfileData
     faqs: list[FaqData] = Field(default_factory=list, max_length=50)
     services: list[KnowledgeServiceData] = Field(default_factory=list, max_length=50)
@@ -181,6 +186,7 @@ class AgentCatalogResponse(BaseModel):
 
 
 class VoicePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     voice: VoiceName
     speed: float = Field(ge=0.25, le=1.5)
     text: str = Field(min_length=1, max_length=300)

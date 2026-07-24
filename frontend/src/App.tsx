@@ -1,5 +1,7 @@
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { PlatformDataProvider } from "./api/PlatformDataProvider";
+import { AuthProvider } from "./api/AuthProvider";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 import { AppLayout } from "./layouts/AppLayout";
 import { AppointmentsPage } from "./pages/AppointmentsPage";
 import { AgentSettingsPage } from "./pages/AgentSettingsPage";
@@ -10,14 +12,22 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { ServicesPage } from "./pages/ServicesPage";
 import { StaffPage } from "./pages/StaffPage";
 import { SystemPage } from "./pages/SystemPage";
+import { LoginPage } from "./pages/LoginPage";
 
-function buildRouter() { return createBrowserRouter([{ path: "/", element: <AppLayout />, children: [
+function ProtectedShell() {
+  return <ProtectedRoute><PlatformDataProvider><AppLayout /></PlatformDataProvider></ProtectedRoute>;
+}
+
+function buildRouter() { return createBrowserRouter([
+  { path: "/login", element: <LoginPage /> },
+  { path: "/", element: <ProtectedShell />, children: [
     { index: true, element: <OverviewPage /> }, { path: "testgespraech", element: <ConversationPage /> },
     { path: "ki-konfigurieren", element: <AgentSettingsPage /> },
     { path: "kalender", element: <CalendarSettingsPage /> },
     { path: "termine", element: <AppointmentsPage /> }, { path: "leistungen", element: <ServicesPage /> },
     { path: "mitarbeiter", element: <StaffPage /> }, { path: "unternehmen", element: <CompanyPage /> },
     { path: "system", element: <SystemPage /> },
-  ]}]); }
+  ]},
+]); }
 
-export function App() { return <PlatformDataProvider><RouterProvider router={buildRouter()} /></PlatformDataProvider>; }
+export function App() { return <AuthProvider><RouterProvider router={buildRouter()} /></AuthProvider>; }

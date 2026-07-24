@@ -116,6 +116,7 @@ class RealtimeSessionBootstrapResponse(BaseModel):
 
 
 class AppliedRealtimeConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     model: str | None = None
     voice: str | None = None
     speed: float | None = None
@@ -127,6 +128,7 @@ class AppliedRealtimeConfiguration(BaseModel):
 
 
 class AppliedRealtimeConfigurationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     manifest_digest: str = Field(min_length=64, max_length=64)
     applied: AppliedRealtimeConfiguration
 
@@ -180,6 +182,7 @@ class ServiceResponse(ORMModel):
 
 
 class ServiceWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=150)
     description: str = Field(default="", max_length=5000)
     duration_minutes: int = Field(ge=5, le=720)

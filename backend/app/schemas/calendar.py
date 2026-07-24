@@ -7,6 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 ProviderName = Literal["google", "microsoft"]
 
 
+class StrictWriteModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class ProviderConfigurationResponse(BaseModel):
     provider: ProviderName
     label: str
@@ -63,18 +67,18 @@ class ConnectionTestResponse(BaseModel):
     checked_until: datetime
 
 
-class CalendarSelectionItem(BaseModel):
+class CalendarSelectionItem(StrictWriteModel):
     calendar_id: UUID
     is_selected_for_availability: bool
     is_selected_for_booking: bool
 
 
-class CalendarSelectionUpdate(BaseModel):
+class CalendarSelectionUpdate(StrictWriteModel):
     calendars: list[CalendarSelectionItem] = Field(min_length=1)
 
 
-class BusinessHourInput(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class BusinessHourInput(StrictWriteModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     weekday: int = Field(ge=0, le=6)
     start_time: time
@@ -88,7 +92,7 @@ class BusinessHourInput(BaseModel):
         return self
 
 
-class BookingConfigurationUpdate(BaseModel):
+class BookingConfigurationUpdate(StrictWriteModel):
     timezone: str = Field(min_length=1, max_length=100)
     slot_interval_minutes: int = Field(ge=5, le=120)
     minimum_notice_minutes: int = Field(ge=0, le=43_200)
@@ -105,7 +109,7 @@ class BookingConfigurationResponse(BookingConfigurationUpdate):
     updated_at: datetime
 
 
-class AppointmentTypeWrite(BaseModel):
+class AppointmentTypeWrite(StrictWriteModel):
     service_id: UUID
     buffer_before_minutes: int | None = Field(default=None, ge=0, le=240)
     buffer_after_minutes: int | None = Field(default=None, ge=0, le=240)
@@ -126,7 +130,7 @@ class AppointmentTypeResponse(AppointmentTypeWrite):
     updated_at: datetime
 
 
-class AvailabilitySearchRequest(BaseModel):
+class AvailabilitySearchRequest(StrictWriteModel):
     appointment_type_id: UUID
     search_start: datetime
     search_end: datetime
@@ -135,7 +139,7 @@ class AvailabilitySearchRequest(BaseModel):
     maximum_results: int | None = Field(default=None, ge=1, le=10)
 
 
-class AgentAvailabilityRequest(BaseModel):
+class AgentAvailabilityRequest(StrictWriteModel):
     appointment_type_id: UUID
     preferred_date: date | None = None
     preferred_time_of_day: Literal["morning", "afternoon", "evening"] | None = None
@@ -156,7 +160,7 @@ class AvailabilityResponse(BaseModel):
     slots: list[AvailableSlotResponse]
 
 
-class CalendarBookingCreate(BaseModel):
+class CalendarBookingCreate(StrictWriteModel):
     slot_id: str = Field(min_length=20, max_length=4000)
     appointment_type_id: UUID
     customer_name: str = Field(min_length=1, max_length=150)
@@ -207,7 +211,7 @@ class BookingDetailResponse(BaseModel):
     created_at: datetime
 
 
-class ExactAvailabilityRequest(BaseModel):
+class ExactAvailabilityRequest(StrictWriteModel):
     service_id: UUID
     appointment_type_id: UUID
     requested_start: datetime
@@ -225,7 +229,7 @@ class ExactAvailabilityResponse(BaseModel):
     alternatives: list[AvailableSlotResponse] = []
 
 
-class AgentAppointmentCreate(BaseModel):
+class AgentAppointmentCreate(StrictWriteModel):
     service_id: UUID
     appointment_type_id: UUID
     customer_name: str = Field(min_length=1, max_length=150)
@@ -264,14 +268,12 @@ class CalendarAgendaResponse(BaseModel):
     entries: list[CalendarEntryResponse]
 
 
-class ConversationToolRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class ConversationToolRequest(StrictWriteModel):
     session_id: UUID
     tool_call_id: str = Field(min_length=1, max_length=200)
 
 
-class ConversationBootstrapRequest(BaseModel):
+class ConversationBootstrapRequest(StrictWriteModel):
     session_id: UUID
 
 

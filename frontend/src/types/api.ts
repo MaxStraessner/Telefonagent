@@ -28,6 +28,22 @@ export interface Tenant {
   primary_location: Location | null;
 }
 
+export interface AuthUser {
+  id: string;
+  username: string;
+  email: string | null;
+  display_name: string;
+  role: "owner" | "admin" | "employee";
+  is_platform_admin: boolean;
+}
+export interface AuthTenant { id: string; slug: string; name: string; }
+export interface AuthSession {
+  user: AuthUser;
+  tenant: AuthTenant;
+  idle_expires_at: string;
+  absolute_expires_at: string;
+}
+
 export interface Service { id: string; name: string; description: string; duration_minutes: number; is_active: boolean; }
 export interface StaffMember { id: string; display_name: string; role_name: string; is_active: boolean; }
 export interface Appointment {
@@ -113,7 +129,7 @@ export interface AgentListItem { id?: string | null; is_active: boolean; sort_or
 export interface AgentTopic extends AgentListItem { label: string; instructions: string; topic_type: "allowed" | "forbidden"; }
 export interface AgentRule extends AgentListItem { rule_text: string; }
 export interface AgentConfiguration {
-  tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "owner" | "admin" | "member";
+  tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "owner" | "admin" | "employee";
   company_name: string; assistant_name: string; assistant_role: string; transparency_notice: string;
   address_formality: "formal" | "informal"; language: "de";
   standard_greeting: string; outside_hours_greeting: string; test_greeting: string; farewell: string;

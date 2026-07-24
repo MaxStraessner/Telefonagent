@@ -13,6 +13,7 @@ from app.models.entities import (
     AppointmentSource,
     AppointmentStatus,
     AppUser,
+    AuthenticationRateLimit,
     AvailabilitySnapshot,
     BookingConfiguration,
     BookingConversation,
@@ -35,6 +36,7 @@ from app.models.entities import (
     Service,
     StaffMember,
     Tenant,
+    TenantInboundRoute,
     TenantMembership,
     TenantRole,
     TenantSettings,
@@ -42,19 +44,20 @@ from app.models.entities import (
     ToolExecution,
     TurnDetectionType,
     TurnEagerness,
+    UserSession,
 )
 
 __all__ = [
     "AddressFormality", "AgentBehaviorRule", "AgentBusinessHours", "AgentCapability",
     "AgentConfiguration", "AgentConfigurationAudit", "AgentFaq", "AgentKnowledgeProfile",
     "AgentKnowledgeService", "AgentTopic", "Appointment", "AppointmentSource",
-    "AppointmentStatus", "AppUser", "AvailabilitySnapshot", "BookingConversation",
+    "AppointmentStatus", "AppUser", "AuthenticationRateLimit", "AvailabilitySnapshot", "BookingConversation",
     "BookingConfiguration", "BookingState", "CalendarAppointmentType",
     "CalendarBooking", "CalendarBookingSource", "CalendarBookingStatus", "CalendarBusinessHour",
     "CalendarConnection", "CalendarConnectionStatus", "CalendarLocationType", "CalendarOAuthState",
     "CalendarProviderName", "CallChannel", "CallSession", "ExternalCalendar", "Location",
-    "ResponseLength", "Service", "StaffMember", "Tenant", "TenantMembership",
+    "ResponseLength", "Service", "StaffMember", "Tenant", "TenantInboundRoute", "TenantMembership",
     "TenantRole", "TenantSettings", "TenantStatus", "ToolExecution", "TurnDetectionType",
-    "TurnEagerness",
+    "TurnEagerness", "UserSession",
 ]
 

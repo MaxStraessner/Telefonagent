@@ -102,7 +102,10 @@ def provider_enum(value: str) -> CalendarProviderName:
 
 def calendar_http_error(exc: CalendarError) -> HTTPException:
     status_by_code = {
-        "tenant_access_denied": status.HTTP_403_FORBIDDEN,
+        "calendar_not_found": status.HTTP_404_NOT_FOUND,
+        "calendar_connection_not_found": status.HTTP_404_NOT_FOUND,
+        "booking_not_found": status.HTTP_404_NOT_FOUND,
+        "slot_not_found": status.HTTP_404_NOT_FOUND,
         "provider_not_configured": status.HTTP_503_SERVICE_UNAVAILABLE,
         "provider_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
         "provider_rate_limited": status.HTTP_429_TOO_MANY_REQUESTS,
@@ -645,7 +648,7 @@ def get_booking(
         )
     )
     if booking is None:
-        raise HTTPException(status_code=404, detail={"code": "tenant_access_denied", "message": "Buchung nicht gefunden."})
+        raise HTTPException(status_code=404, detail={"code": "booking_not_found", "message": "Buchung nicht gefunden."})
     return BookingDetailResponse.model_validate(booking, from_attributes=True)
 
 

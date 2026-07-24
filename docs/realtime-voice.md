@@ -11,7 +11,7 @@ FastAPI bleibt die Sicherheitsgrenze: Der normale `OPENAI_API_KEY` existiert aus
 1. Der Browser lädt Plattformstatus und aktiven Tenant über `/api/v1`.
 2. Erst der Klick auf „Testgespräch starten“ löst `getUserMedia` aus.
 3. Nach der Mikrofonfreigabe lädt der Browser `GET /api/v1/realtime/agent-config` und `POST /api/v1/realtime/client-secret`.
-4. FastAPI ermittelt den Tenant aus `ACTIVE_TENANT_SLUG`; der Client kann keine Tenant-ID wählen.
+4. FastAPI ermittelt den Tenant aus der validierten Administrationssitzung; der Client kann keine Tenant-ID wählen.
 5. FastAPI ruft `POST https://api.openai.com/v1/realtime/client_secrets` mit kurzem Timeout und 60 Sekunden Secret-Laufzeit auf.
 6. Der Request enthält dynamische Anweisungen, Modell, Stimme, Transkription, leere Werkzeugliste und zentrale VAD-Werte. Der `OpenAI-Safety-Identifier` ist ein HMAC aus Tenant-UUID und installationsbezogenem Salt, nicht aus personenbezogenen Daten.
 7. Der Browser prüft Tenant, Modell und Stimme der beiden Antworten gegeneinander und verbindet die `RealtimeSession` mit dem `ek_…`-Secret.

@@ -12,11 +12,17 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.app_name, version=settings.backend_version, docs_url="/docs", redoc_url=None)
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.backend_version,
+    docs_url=None if settings.is_production else "/docs",
+    openapi_url=None if settings.is_production else "/openapi.json",
+    redoc_url=None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )

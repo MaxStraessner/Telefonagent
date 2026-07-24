@@ -31,7 +31,7 @@ Alembic ist alleinige Quelle für die produktive Schemastruktur. Der Container f
 1. Der Browser lädt die Anwendung ohne eingebettete Unternehmensstammdaten.
 2. Der zentrale Provider ruft Tenant, Leistungen, Mitarbeiter, Termine, Health und Plattformstatus ab.
 3. FastAPI öffnet eine requestgebundene SQLAlchemy-Session.
-4. `get_tenant_context` löst `ACTIVE_TENANT_SLUG` serverseitig auf; `get_user_context` löst `ACTIVE_USER_EMAIL` und die gespeicherte Mandantenrolle auf.
+4. `get_authenticated_session` validiert das HttpOnly-Sitzungscookie; `get_tenant_context` und `get_user_context` leiten daraus Tenant, Benutzer und aktive Mitgliedschaft ab und setzen PostgreSQL `app.tenant_id` transaktionslokal.
 5. Repositories und Agent-Services filtern fachliche Abfragen immer mit der ermittelten UUID.
 6. Owner/Admin dürfen Konfiguration schreiben; Mitglieder erhalten einen schreibgeschützten Zugriff.
 7. Pydantic validiert und serialisiert die Antwort; React zeigt Lade-, Erfolgs- oder Fehlerzustand.

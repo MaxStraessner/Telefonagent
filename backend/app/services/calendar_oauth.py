@@ -4,7 +4,7 @@ import secrets
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.calendar.errors import CalendarError
@@ -12,10 +12,14 @@ from app.calendar.providers import create_calendar_provider
 from app.core.config import Settings
 from app.core.encryption import CalendarTokenCipher
 from app.models import (
+    AppUser,
     CalendarConnection,
     CalendarConnectionStatus,
     CalendarOAuthState,
     CalendarProviderName,
+    Tenant,
+    TenantMembership,
+    TenantStatus,
 )
 from app.services.calendar_connections import as_utc, utc_now
 
@@ -84,7 +88,52 @@ async def complete_oauth(
     code: str,
     settings: Settings,
 ) -> CalendarConnection:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        tenant_id = db.scalar(
+            text(
+                "SELECT resolve_calendar_oauth_tenant(:state_hash, :provider)"
+            ),
+            {
+                "state_hash": state_hash(state),
+                "provider": provider_name.value,
+            },
+        )
+        if tenant_id is None:
+            raise CalendarError(
+                "oauth_state_invalid",
+                "Der OAuth-Status ist ungültig oder abgelaufen.",
+            )
+        db.execute(
+            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+            {"tenant_id": str(tenant_id)},
+        )
     oauth_state = load_valid_state(db, provider_name, state)
+    active_context = db.execute(
+        select(AppUser, TenantMembership, Tenant)
+        .join(
+            TenantMembership,
+            TenantMembership.user_id == AppUser.id,
+        )
+        .join(Tenant, Tenant.id == TenantMembership.tenant_id)
+        .where(
+            AppUser.id == oauth_state.user_id,
+            AppUser.is_active.is_(True),
+            TenantMembership.tenant_id == oauth_state.tenant_id,
+            TenantMembership.is_active.is_(True),
+            Tenant.status == TenantStatus.active,
+        )
+    ).one_or_none()
+    if active_context is None:
+        consume_state(db, oauth_state)
+        raise CalendarError(
+            "oauth_membership_inactive",
+            "Die zugehörige Benutzer- oder Tenant-Berechtigung ist nicht mehr aktiv.",
+        )
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+            {"tenant_id": str(oauth_state.tenant_id)},
+        )
     provider = create_calendar_provider(provider_name, settings)
     cipher = CalendarTokenCipher(settings.calendar_token_encryption_key)
     verifier = cipher.decrypt(oauth_state.encrypted_code_verifier)

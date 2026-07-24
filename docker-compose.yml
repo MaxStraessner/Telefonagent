@@ -16,14 +16,42 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  migrate:
+    build: ./backend
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-telefonagent}:${POSTGRES_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+      AUTH_HMAC_SECRET: ${AUTH_HMAC_SECRET:-development-only-change-this-auth-secret}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
+      CORS_ORIGINS: ${FRONTEND_URL:-http://localhost:5173}
+      ALLOW_DEVELOPMENT_TENANT_FALLBACK: "false"
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
   backend:
     build: ./backend
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_NAME: ${APP_NAME:-Telefonagent}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-telefonagent}:${POSTGRES_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
-      ACTIVE_TENANT_SLUG: ${ACTIVE_TENANT_SLUG:-salon-haarkunst-test}
-      ACTIVE_USER_EMAIL: ${ACTIVE_USER_EMAIL:-owner@telefonagent.local}
+      AUTH_HMAC_SECRET: ${AUTH_HMAC_SECRET:-development-only-change-this-auth-secret}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      SESSION_ABSOLUTE_HOURS: ${SESSION_ABSOLUTE_HOURS:-12}
+      SESSION_TOUCH_INTERVAL_SECONDS: ${SESSION_TOUCH_INTERVAL_SECONDS:-300}
+      AUTH_RATE_LIMIT_WINDOW_MINUTES: ${AUTH_RATE_LIMIT_WINDOW_MINUTES:-15}
+      AUTH_USERNAME_FAILURE_LIMIT: ${AUTH_USERNAME_FAILURE_LIMIT:-5}
+      AUTH_IP_FAILURE_LIMIT: ${AUTH_IP_FAILURE_LIMIT:-30}
+      DEV_BOOTSTRAP_ENABLED: ${DEV_BOOTSTRAP_ENABLED:-false}
+      DEV_BOOTSTRAP_USERNAME: ${DEV_BOOTSTRAP_USERNAME:-owner@telefonagent.local}
+      DEV_BOOTSTRAP_PASSWORD: ${DEV_BOOTSTRAP_PASSWORD:-}
+      ALLOW_DEVELOPMENT_TENANT_FALLBACK: ${ALLOW_DEVELOPMENT_TENANT_FALLBACK:-false}
+      DEVELOPMENT_TENANT_SLUG: ${DEVELOPMENT_TENANT_SLUG:-salon-haarkunst-test}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
       CORS_ORIGINS: ${FRONTEND_URL:-http://localhost:5173}
@@ -47,6 +75,8 @@ services:
     depends_on:
       database:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s

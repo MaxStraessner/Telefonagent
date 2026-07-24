@@ -113,7 +113,7 @@ def update_calendar_selection(
         )
     )
     if len(calendars) != len(set(requested_ids)):
-        raise CalendarError("tenant_access_denied", "Mindestens ein Kalender gehört nicht zu diesem Account.")
+        raise CalendarError("calendar_not_found", "Mindestens ein Kalender wurde nicht gefunden.")
     booking_targets = [item for item in payload.calendars if item.is_selected_for_booking]
     if len(booking_targets) != 1:
         raise CalendarError("calendar_not_selected", "Genau ein Zielkalender muss ausgewählt sein.")

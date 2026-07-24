@@ -1024,8 +1024,8 @@ def test_tenant_ids_from_client_cannot_cross_account_boundaries(client, db, cale
         "/api/v1/calendar/configuration/calendars",
         json={"calendars": [{"calendar_id": str(calendar.id), "is_selected_for_availability": True, "is_selected_for_booking": True}]},
     )
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "tenant_access_denied"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "calendar_not_found"
     db.delete(calendar)
     db.delete(second)
     db.commit()

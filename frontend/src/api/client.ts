@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, AppliedRealtimeConfiguration, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeConfigurationDiff, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, AppliedRealtimeConfiguration, Appointment, AppointmentTypeWrite, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeConfigurationDiff, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -6,14 +6,33 @@ export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string, public readonly fieldErrors: Record<string, string> = {}) { super(message); }
 }
 
-async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown } = {}): Promise<T> {
+function cookieValue(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`;
+  const match = document.cookie.split("; ").find((value) => value.startsWith(prefix));
+  return match ? decodeURIComponent(match.slice(prefix.length)) : null;
+}
+
+function csrfToken(): string | null {
+  return cookieValue("__Host-telefonagent_csrf") ?? cookieValue("telefonagent_csrf");
+}
+
+function withoutServerFields<T extends object>(value: T, fields: ReadonlyArray<keyof T>): Partial<T> {
+  const excluded = new Set<PropertyKey>(fields);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !excluded.has(key))) as Partial<T>;
+}
+
+async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; suppressUnauthorizedEvent?: boolean; loginRequest?: boolean } = {}): Promise<T> {
   try {
+    const method = options.method ?? "GET";
+    const csrf = method !== "GET" && !options.loginRequest ? csrfToken() : null;
     const response = await fetch(`${API_BASE_URL}${path}`, {
-      signal: options.signal, method: options.method ?? "GET",
-      headers: { Accept: "application/json", ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
+      signal: options.signal, method, credentials: "include",
+      headers: { Accept: "application/json", ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...(csrf ? { "X-CSRF-Token": csrf } : {}), ...(options.loginRequest ? { "X-Requested-With": "Telefonagent" } : {}) },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     if (!response.ok) {
+      if (response.status === 401 && !options.suppressUnauthorizedEvent)
+        window.dispatchEvent(new Event("telefonagent:unauthorized"));
       const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string }; detail?: Array<{ loc?: Array<string | number>; msg?: string }> } | null;
       const fieldErrors = Object.fromEntries((body?.detail ?? []).map((item) => [String(item.loc?.slice(1).join(".") ?? "request"), item.msg ?? "Ungültiger Wert"]));
       throw new ApiError(body?.error?.message ?? (body?.detail ? "Bitte prüfen Sie die markierten Eingaben." : "Die Plattformdaten konnten nicht geladen werden."), response.status, body?.error?.code, fieldErrors);
@@ -27,6 +46,10 @@ async function request<T>(path: string, options: { signal?: AbortSignal; method?
 }
 
 export const api = {
+  authSession: (signal?: AbortSignal) => request<AuthSession>("/auth/session", { signal, suppressUnauthorizedEvent: true }),
+  login: (username: string, password: string) => request<AuthSession>("/auth/login", { method: "POST", body: { username, password }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  logout: () => request<void>("/auth/logout", { method: "POST", suppressUnauthorizedEvent: true }),
+  changePassword: (currentPassword: string, newPassword: string) => request<AuthSession>("/auth/change-password", { method: "POST", body: { current_password: currentPassword, new_password: newPassword } }),
   tenant: (signal?: AbortSignal) => request<Tenant>("/tenant", { signal }),
   services: (signal?: AbortSignal) => request<Service[]>("/services", { signal }),
   createService: (value: Omit<Service, "id">) => request<Service>("/services", { method: "POST", body: value }),
@@ -49,15 +72,17 @@ export const api = {
   }),
   realtimeRuntimeDiff: (sessionId: string, signal?: AbortSignal) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/runtime-diff`, { signal }),
   agentConfiguration: (signal?: AbortSignal) => request<AgentConfiguration>("/agent/config", { signal }),
-  saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...value, expected_version: value.version } }),
+  saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...withoutServerFields(value, ["tenant_id", "version", "updated_at", "can_edit", "role"]), expected_version: value.version } }),
   agentKnowledge: (signal?: AbortSignal) => request<AgentKnowledge>("/agent/knowledge", { signal }),
-  saveAgentKnowledge: (value: AgentKnowledge) => request<AgentKnowledge>("/agent/knowledge", { method: "PUT", body: { ...value, expected_version: value.version } }),
+  saveAgentKnowledge: (value: AgentKnowledge) => request<AgentKnowledge>("/agent/knowledge", { method: "PUT", body: { ...withoutServerFields(value, ["tenant_id", "version", "can_edit"]), expected_version: value.version } }),
   agentCatalog: (signal?: AbortSignal) => request<AgentCatalog>("/agent/catalog", { signal }),
   agentTestSession: (signal?: AbortSignal) => request<RuntimeSummary>("/agent/test-session", { signal, method: "POST" }),
   agentPromptPreview: (signal?: AbortSignal) => request<PromptPreview>("/agent/prompt-preview", { signal }),
   voicePreview: async (value: Pick<AgentConfiguration, "pronunciation_style" | "regional_accent" | "pronunciation_instructions"> & { voice: string; speed: number; text: string }) => {
-    const response = await fetch(`${API_BASE_URL}/agent/voice-preview`, { method: "POST", headers: { Accept: "audio/mpeg", "Content-Type": "application/json" }, body: JSON.stringify(value) });
+    const csrf = csrfToken();
+    const response = await fetch(`${API_BASE_URL}/agent/voice-preview`, { method: "POST", credentials: "include", headers: { Accept: "audio/mpeg", "Content-Type": "application/json", ...(csrf ? { "X-CSRF-Token": csrf } : {}) }, body: JSON.stringify(value) });
     if (!response.ok) {
+      if (response.status === 401) window.dispatchEvent(new Event("telefonagent:unauthorized"));
       const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
       throw new ApiError(body?.error?.message ?? "Die Stimmprobe konnte nicht geladen werden.", response.status, body?.error?.code);
     }

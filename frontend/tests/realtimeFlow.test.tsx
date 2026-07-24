@@ -164,7 +164,12 @@ function mockBackend() {
   vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     let body: unknown = { status: "healthy", database: "connected" };
-    if (url.endsWith("/tenant")) body = tenant;
+    if (url.endsWith("/auth/session")) body = {
+      user: { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", username: "owner", email: "owner@example.test", display_name: "Lokale Administration", role: "owner", is_platform_admin: false },
+      tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+      idle_expires_at: "2026-07-24T12:30:00Z", absolute_expires_at: "2026-07-24T23:00:00Z",
+    };
+    else if (url.endsWith("/tenant")) body = tenant;
     else if (url.endsWith("/services") || url.endsWith("/staff") || url.endsWith("/appointments")) body = [];
     else if (url.endsWith("/platform/status")) body = platformStatus;
     else if (url.endsWith("/realtime/session-bootstrap")) {

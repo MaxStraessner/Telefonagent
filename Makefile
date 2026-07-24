@@ -1,4 +1,4 @@
-.PHONY: start stop logs migrate seed test test-backend test-frontend build
+.PHONY: start stop logs migrate seed provision-tenant set-password test test-backend test-frontend build
 
 start:
 	docker compose up --build
@@ -10,10 +10,16 @@ logs:
 	docker compose logs -f
 
 migrate:
-	docker compose run --rm backend alembic upgrade head
+	docker compose run --rm migrate
 
 seed:
 	docker compose run --rm backend python -m app.seed
+
+provision-tenant:
+	docker compose run --rm migrate python -m app.cli provision-tenant $(ARGS)
+
+set-password:
+	docker compose run --rm migrate python -m app.cli set-password $(ARGS)
 
 test: test-backend test-frontend
 

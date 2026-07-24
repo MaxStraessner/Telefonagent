@@ -30,6 +30,7 @@ class ToolAudit:
         before_booking = self.context.state.value if self.context else None
         self.execution = db.scalar(
             select(ToolExecution).where(
+                ToolExecution.tenant_id == tenant_id,
                 ToolExecution.call_session_id == session_id,
                 ToolExecution.call_id == call_id,
             )

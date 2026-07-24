@@ -3,6 +3,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { Icon } from "../components/Icon";
 import { usePersistentSetting } from "../hooks/usePersistentSetting";
 import { usePlatformData } from "../api/PlatformDataProvider";
+import { useAuth } from "../api/AuthProvider";
 
 const navigation = [
   ["/", "Übersicht", "home"], ["/testgespraech", "Testgespräch", "call"],
@@ -17,6 +18,7 @@ export function AppLayout() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setTheme] = usePersistentSetting<"light" | "dark">("telefonagent-theme", "light");
   const { data } = usePlatformData();
+  const { session, logout } = useAuth();
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
 
   return <div className="app-shell">
@@ -34,7 +36,8 @@ export function AppLayout() {
       <nav aria-label="Hauptnavigation">{navigation.map(([path, label, icon]) => <NavLink to={path} end={path === "/"} onClick={() => setMenuOpen(false)} key={path}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav>
       <div className="sidebar-footer">
         <button className="theme-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")}><Icon name={theme === "light" ? "moon" : "sun"} /><span>{theme === "light" ? "Dunkler Modus" : "Heller Modus"}</span></button>
-        <div className="tenant-chip"><span className="avatar">{data?.tenant.name.charAt(0) ?? "T"}</span><div><strong>{data?.tenant.name ?? "Unternehmen"}</strong><small>Lokaler Testmandant</small></div></div>
+        <div className="tenant-chip"><span className="avatar">{data?.tenant.name.charAt(0) ?? "T"}</span><div><strong>{data?.tenant.name ?? session?.tenant.name ?? "Unternehmen"}</strong><small>{session?.user.display_name} · {session?.user.role}</small></div></div>
+        <button className="theme-button" onClick={() => void logout()}><Icon name="close" /><span>Abmelden</span></button>
       </div>
     </aside>
     <main className="main-content"><Outlet /></main>

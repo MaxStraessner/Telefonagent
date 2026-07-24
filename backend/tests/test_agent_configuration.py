@@ -27,6 +27,22 @@ def configured_settings(**overrides) -> Settings:
     return Settings(**values)
 
 
+def configuration_write(value: dict) -> dict:
+    return {
+        key: item
+        for key, item in value.items()
+        if key not in {"tenant_id", "version", "updated_at", "can_edit", "role"}
+    }
+
+
+def knowledge_write(value: dict) -> dict:
+    return {
+        key: item
+        for key, item in value.items()
+        if key not in {"tenant_id", "version", "can_edit"}
+    }
+
+
 def test_configuration_api_returns_versioned_tenant_data_and_catalog(client):
     config = client.get("/api/v1/agent/config")
     knowledge = client.get("/api/v1/agent/knowledge")
@@ -46,7 +62,7 @@ def test_configuration_api_returns_versioned_tenant_data_and_catalog(client):
 def test_save_increments_version_writes_audit_and_changes_runtime(client, db):
     original = client.get("/api/v1/agent/config").json()
     before_audits = db.scalar(select(func.count(AgentConfigurationAudit.id)))
-    payload = {**original, "expected_version": original["version"], "assistant_name": "Mira", "voice": "cedar", "speech_speed": 1.15, "turn_detection_type": "semantic_vad", "turn_eagerness": "high"}
+    payload = {**configuration_write(original), "expected_version": original["version"], "assistant_name": "Mira", "voice": "cedar", "speech_speed": 1.15, "turn_detection_type": "semantic_vad", "turn_eagerness": "high"}
     saved = client.put("/api/v1/agent/config", json=payload)
     assert saved.status_code == 200, saved.text
     assert saved.json()["version"] == original["version"] + 1
@@ -60,26 +76,34 @@ def test_save_increments_version_writes_audit_and_changes_runtime(client, db):
     db.expire_all()
     assert db.scalar(select(func.count(AgentConfigurationAudit.id))) == before_audits + 1
 
-    restored_payload = {**original, "expected_version": saved.json()["version"]}
+    restored_payload = {**configuration_write(original), "expected_version": saved.json()["version"]}
     assert client.put("/api/v1/agent/config", json=restored_payload).status_code == 200
 
 
 def test_stale_version_is_rejected(client):
     current = client.get("/api/v1/agent/config").json()
-    response = client.put("/api/v1/agent/config", json={**current, "expected_version": current["version"] + 1})
+    response = client.put("/api/v1/agent/config", json={**configuration_write(current), "expected_version": current["version"] + 1})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "agent_configuration_version_conflict"
 
 
 def test_invalid_voice_speed_and_empty_required_fields_are_rejected(client):
     current = client.get("/api/v1/agent/config").json()
-    current.update({"expected_version": current["version"], "voice": "nova", "speech_speed": 2.0, "assistant_name": " "})
-    response = client.put("/api/v1/agent/config", json=current)
+    payload = configuration_write(current)
+    payload.update({"expected_version": current["version"], "voice": "nova", "speech_speed": 2.0, "assistant_name": " "})
+    response = client.put("/api/v1/agent/config", json=payload)
     assert response.status_code == 422
 
 
 def test_member_can_read_but_cannot_write(client):
-    member = UserContext(id=uuid4(), email="member@example.test", role=TenantRole.member)
+    member = UserContext(
+        id=uuid4(),
+        username="member",
+        email="member@example.test",
+        display_name="Member",
+        role=TenantRole.employee,
+        is_platform_admin=False,
+    )
     app.dependency_overrides[get_user_context] = lambda: member
     current = client.get("/api/v1/agent/config")
     assert current.status_code == 200
@@ -126,7 +150,7 @@ def test_server_vad_uses_saved_silence_duration_and_prompt_mappings_are_effectiv
 def test_knowledge_save_versions_and_only_active_entries_reach_prompt(client):
     original = client.get("/api/v1/agent/knowledge").json()
     payload = {
-        **original,
+        **knowledge_write(original),
         "expected_version": original["version"],
         "faqs": [
             {"question": "Aktive Testfrage", "answer": "Aktive Testantwort", "is_active": True, "sort_order": 0},
@@ -140,7 +164,7 @@ def test_knowledge_save_versions_and_only_active_entries_reach_prompt(client):
     assert preview.status_code == 200
     assert "Aktive Testantwort" in preview.json()["prompt"]
     assert "INACTIVE_SECRET" not in preview.json()["prompt"]
-    restore = {**original, "expected_version": saved.json()["version"]}
+    restore = {**knowledge_write(original), "expected_version": saved.json()["version"]}
     assert client.put("/api/v1/agent/knowledge", json=restore).status_code == 200
 
 

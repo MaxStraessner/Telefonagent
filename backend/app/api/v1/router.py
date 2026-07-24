@@ -14,6 +14,7 @@ from app.api.dependencies import (
     require_agent_admin,
 )
 from app.api.v1.agent import router as agent_router
+from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
@@ -43,6 +44,7 @@ from app.services.realtime import (
 )
 
 router = APIRouter()
+router.include_router(auth_router)
 router.include_router(agent_router)
 router.include_router(calendar_router)
 

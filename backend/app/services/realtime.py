@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext
@@ -274,8 +275,13 @@ def apply_session_configuration(
     session_id,
     payload: AppliedRealtimeConfigurationRequest,
 ) -> RuntimeConfigurationDiffResponse:
-    call_session = db.get(CallSession, session_id)
-    if call_session is None or call_session.tenant_id != context.id:
+    call_session = db.scalar(
+        select(CallSession).where(
+            CallSession.id == session_id,
+            CallSession.tenant_id == context.id,
+        )
+    )
+    if call_session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "realtime_session_not_found", "message": "Die Realtime-Sitzung wurde nicht gefunden."},
@@ -315,7 +321,7 @@ def apply_session_configuration(
         session_id=call_session.id,
         status=call_session.configuration_status,
         manifest_digest=call_session.runtime_manifest_digest or payload.manifest_digest,
-        expected=AppliedRealtimeConfiguration.model_validate(expected),
+        expected=AppliedRealtimeConfiguration.model_validate(comparison_expected),
         applied=payload.applied,
         differences=differences,
         unobserved=unobserved,
@@ -327,13 +333,25 @@ def session_configuration_diff(
     context: TenantContext,
     session_id,
 ) -> RuntimeConfigurationDiffResponse:
-    call_session = db.get(CallSession, session_id)
-    if call_session is None or call_session.tenant_id != context.id:
+    call_session = db.scalar(
+        select(CallSession).where(
+            CallSession.id == session_id,
+            CallSession.tenant_id == context.id,
+        )
+    )
+    if call_session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "realtime_session_not_found", "message": "Die Realtime-Sitzung wurde nicht gefunden."},
         )
-    expected = AppliedRealtimeConfiguration.model_validate(call_session.runtime_manifest_snapshot or {})
+    expected_snapshot = call_session.runtime_manifest_snapshot or {}
+    expected = AppliedRealtimeConfiguration.model_validate(
+        {
+            key: value
+            for key, value in expected_snapshot.items()
+            if key not in {"canonical_tools_digest", "outbound_wire_tools_digest"}
+        }
+    )
     applied = (
         AppliedRealtimeConfiguration.model_validate(call_session.applied_configuration)
         if call_session.applied_configuration

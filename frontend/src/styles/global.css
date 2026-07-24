@@ -146,6 +146,14 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 
 @media (max-width: 1000px) { .calendar-provider-grid,.calendar-type-layout { grid-template-columns: 1fr; }.calendar-rule-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.calendar-row { grid-template-columns: minmax(220px,1fr) 170px 140px; } }
 @media (max-width: 760px) { .calendar-provider-grid,.calendar-rule-grid { grid-template-columns: 1fr; }.provider-title { flex-direction: column; }.calendar-actions .button { width: 100%; }.calendar-row { grid-template-columns: 1fr; gap: 10px; }.calendar-day { grid-template-columns: 1fr; }.calendar-window { align-items: stretch; flex-wrap: wrap; }.calendar-window input { flex: 1; }.calendar-window .text-button { width: 100%; text-align: left; }.calendar-form-pair { grid-template-columns: 1fr; }.appointment-type-list article { flex-direction: column; }.appointment-type-list article > div:last-child { justify-content: flex-start; } }
+.auth-loading { min-height: 100vh; display: grid; place-items: center; color: var(--text-soft); background: var(--background); }
+.login-page { min-height: 100vh; padding: 24px; display: grid; place-items: center; background: radial-gradient(circle at top, var(--primary-soft), transparent 42%), var(--background); }
+.login-card { width: min(440px, 100%); padding: clamp(28px, 6vw, 44px); border: 1px solid var(--border); border-radius: 24px; background: var(--surface-raised); box-shadow: var(--shadow-lg); }
+.login-card h1 { margin: 30px 0 8px; }.login-card > p { margin: 0 0 28px; color: var(--text-soft); line-height: 1.6; }
+.login-brand { justify-content: flex-start; }.login-card form { display: grid; gap: 18px; }.login-card label { display: grid; gap: 8px; font-weight: 650; font-size: .86rem; }
+.login-card input { min-height: 48px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 11px; color: var(--text); background: var(--surface-soft); font: inherit; }
+.login-card input:focus { outline: 3px solid color-mix(in srgb,var(--primary) 18%,transparent); border-color: var(--primary); }
+.login-card .button { width: 100%; min-height: 48px; }.login-error { padding: 12px 14px; border-radius: 10px; color: var(--danger); background: var(--danger-soft); font-size: .84rem; }
 .week-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .65rem; margin-top: 1rem; overflow-x: auto; }
 .week-grid > section { min-width: 9rem; min-height: 14rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface-subtle); }
 .week-grid > section.today { border-color: var(--primary); }

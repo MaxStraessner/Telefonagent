@@ -51,6 +51,8 @@ class CallChannel(str, enum.Enum):
 class TenantRole(str, enum.Enum):
     owner = "owner"
     admin = "admin"
+    employee = "employee"
+    # Transitional compatibility for databases upgraded from revisions <= 0009.
     member = "member"
 
 
@@ -151,9 +153,15 @@ class Tenant(Base, TimestampMixin):
 class AppUser(Base, TimestampMixin):
     __tablename__ = "app_users"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(150))
+    normalized_username: Mapped[str] = mapped_column(String(150), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(500), default="!unusable!")
+    email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(150))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TenantMembership(Base, TimestampMixin):
@@ -162,8 +170,55 @@ class TenantMembership(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
-    role: Mapped[TenantRole] = mapped_column(Enum(TenantRole, native_enum=False), default=TenantRole.member)
+    role: Mapped[TenantRole] = mapped_column(
+        Enum(TenantRole, native_enum=False), default=TenantRole.employee
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     user: Mapped[AppUser] = relationship()
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_user_session_token_hash"),
+        Index("ix_user_sessions_user_active", "user_id", "revoked_at"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    csrf_token_hash: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class AuthenticationRateLimit(Base, TimestampMixin):
+    __tablename__ = "authentication_rate_limits"
+    __table_args__ = (
+        UniqueConstraint("scope", "key_hash", name="uq_auth_rate_limit_scope_key"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    scope: Mapped[str] = mapped_column(String(20))
+    key_hash: Mapped[str] = mapped_column(String(64))
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TenantInboundRoute(Base, TimestampMixin):
+    __tablename__ = "tenant_inbound_routes"
+    __table_args__ = (
+        UniqueConstraint("route_type", "normalized_identifier", name="uq_tenant_inbound_route"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    route_type: Mapped[str] = mapped_column(String(30))
+    normalized_identifier: Mapped[str] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class TenantSettings(Base, TimestampMixin):
