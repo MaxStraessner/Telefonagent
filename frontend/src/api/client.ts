@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, AppliedRealtimeConfiguration, Appointment, AppointmentTypeWrite, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeConfigurationDiff, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -21,12 +21,12 @@ function withoutServerFields<T extends object>(value: T, fields: ReadonlyArray<k
   return Object.fromEntries(Object.entries(value).filter(([key]) => !excluded.has(key))) as Partial<T>;
 }
 
-async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; suppressUnauthorizedEvent?: boolean; loginRequest?: boolean } = {}): Promise<T> {
+async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; suppressUnauthorizedEvent?: boolean; loginRequest?: boolean; keepalive?: boolean } = {}): Promise<T> {
   try {
     const method = options.method ?? "GET";
     const csrf = method !== "GET" && !options.loginRequest ? csrfToken() : null;
     const response = await fetch(`${API_BASE_URL}${path}`, {
-      signal: options.signal, method, credentials: "include",
+      signal: options.signal, method, credentials: "include", keepalive: options.keepalive,
       headers: { Accept: "application/json", ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...(csrf ? { "X-CSRF-Token": csrf } : {}), ...(options.loginRequest ? { "X-Requested-With": "Telefonagent" } : {}) },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
@@ -47,9 +47,15 @@ async function request<T>(path: string, options: { signal?: AbortSignal; method?
 
 export const api = {
   authSession: (signal?: AbortSignal) => request<AuthSession>("/auth/session", { signal, suppressUnauthorizedEvent: true }),
+  initialSetupStatus: (signal?: AbortSignal) => request<InitialSetupStatus>("/auth/setup-status", { signal, loginRequest: true, suppressUnauthorizedEvent: true }),
+  initialSetup: (value: InitialSetupRequest) => request<AuthSession>("/auth/initial-setup", { method: "POST", body: value, loginRequest: true, suppressUnauthorizedEvent: true }),
   login: (username: string, password: string) => request<AuthSession>("/auth/login", { method: "POST", body: { username, password }, loginRequest: true, suppressUnauthorizedEvent: true }),
   logout: () => request<void>("/auth/logout", { method: "POST", suppressUnauthorizedEvent: true }),
   changePassword: (currentPassword: string, newPassword: string) => request<AuthSession>("/auth/change-password", { method: "POST", body: { current_password: currentPassword, new_password: newPassword } }),
+  managedUsers: () => request<ManagedUser[]>("/auth/users"),
+  createManagedUser: (value: ManagedUserWrite) => request<ManagedUser>("/auth/users", { method: "POST", body: value }),
+  updateManagedUser: (id: string, value: ManagedUserUpdate) => request<ManagedUser>(`/auth/users/${id}`, { method: "PUT", body: value }),
+  resetManagedUserPassword: (id: string, password: string) => request<void>(`/auth/users/${id}/reset-password`, { method: "POST", body: { password } }),
   tenant: (signal?: AbortSignal) => request<Tenant>("/tenant", { signal }),
   services: (signal?: AbortSignal) => request<Service[]>("/services", { signal }),
   createService: (value: Omit<Service, "id">) => request<Service>("/services", { method: "POST", body: value }),
@@ -61,16 +67,9 @@ export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   realtimeAgentConfig: (signal?: AbortSignal) => request<RealtimeAgentConfig>("/realtime/agent-config", { signal }),
   realtimeClientSecret: (signal?: AbortSignal) => request<RealtimeClientSecret>("/realtime/client-secret", { signal, method: "POST" }),
-  realtimeSessionBootstrap: (signal?: AbortSignal) => request<RealtimeSessionBootstrap>("/realtime/session-bootstrap", { signal, method: "POST" }),
-  reportAppliedRealtimeConfiguration: (
-    sessionId: string,
-    manifestDigest: string,
-    applied: AppliedRealtimeConfiguration,
-  ) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/applied-configuration`, {
-    method: "POST",
-    body: { manifest_digest: manifestDigest, applied },
-  }),
-  realtimeRuntimeDiff: (sessionId: string, signal?: AbortSignal) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/runtime-diff`, { signal }),
+  realtimeSessionBootstrap: (callAttemptId: string, signal?: AbortSignal) => request<RealtimeSessionBootstrap>("/realtime/session-bootstrap", { signal, method: "POST", body: { call_attempt_id: callAttemptId } }),
+  realtimeAttemptConnected: (callAttemptId: string) => request<void>(`/realtime/call-attempts/${encodeURIComponent(callAttemptId)}/connected`, { method: "POST" }),
+  realtimeAttemptFinish: (callAttemptId: string, value: RealtimeAttemptFinish, keepalive = false) => request<void>(`/realtime/call-attempts/${encodeURIComponent(callAttemptId)}/finish`, { method: "POST", body: value, keepalive, suppressUnauthorizedEvent: keepalive }),
   agentConfiguration: (signal?: AbortSignal) => request<AgentConfiguration>("/agent/config", { signal }),
   saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...withoutServerFields(value, ["tenant_id", "version", "updated_at", "can_edit", "role"]), expected_version: value.version } }),
   agentKnowledge: (signal?: AbortSignal) => request<AgentKnowledge>("/agent/knowledge", { signal }),

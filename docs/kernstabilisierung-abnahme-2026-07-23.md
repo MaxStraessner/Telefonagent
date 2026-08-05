@@ -1,5 +1,9 @@
 # Abnahme der Kernstabilisierung vom 23. Juli 2026
 
+> Historischer Stand: Die hier beschriebene Coordinator- und Recovery-Architektur
+> wurde bei der Realtime-Stabilisierung vom 24. Juli 2026 ersetzt. Der aktuelle
+> Stand ist in `realtime-core-stabilization-2026-07-24.md` dokumentiert.
+
 ## Ergebnis
 
 Die Kernstabilisierung des KI-Telefonagenten ist auf dem lokalen Branch

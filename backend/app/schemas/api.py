@@ -73,13 +73,8 @@ class RealtimeClientSecretResponse(BaseModel):
     speed: float
     configuration_version: int
     call_session_id: UUID
+    call_attempt_id: UUID
     tenant_id: UUID
-
-
-class RuntimeRecoveryPolicy(BaseModel):
-    continuation_ack_timeout_ms: int
-    recovery_response_timeout_ms: int
-    maximum_attempts_per_turn: int
 
 
 class RuntimeManifestResponse(BaseModel):
@@ -106,7 +101,6 @@ class RuntimeManifestResponse(BaseModel):
     transcription_enabled: bool
     raw_event_logging: bool
     vad: RealtimeVadResponse
-    recovery: RuntimeRecoveryPolicy
     setting_targets: dict[str, Literal["prompt", "session", "tools", "ui_only"]]
 
 
@@ -115,32 +109,22 @@ class RealtimeSessionBootstrapResponse(BaseModel):
     manifest: RuntimeManifestResponse
 
 
-class AppliedRealtimeConfiguration(BaseModel):
+class RealtimeSessionBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    model: str | None = None
-    voice: str | None = None
-    speed: float | None = None
-    language: str | None = None
-    prompt_digest: str | None = None
-    tool_names: list[str] | None = None
-    tools_digest: str | None = None
-    vad: dict[str, Any] | None = None
+
+    call_attempt_id: UUID
 
 
-class AppliedRealtimeConfigurationRequest(BaseModel):
+class RealtimeAttemptFinishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    manifest_digest: str = Field(min_length=64, max_length=64)
-    applied: AppliedRealtimeConfiguration
 
-
-class RuntimeConfigurationDiffResponse(BaseModel):
-    session_id: UUID
-    status: Literal["pending", "applied", "mismatch"]
-    manifest_digest: str
-    expected: AppliedRealtimeConfiguration
-    applied: AppliedRealtimeConfiguration | None = None
-    differences: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    unobserved: list[str] = Field(default_factory=list)
+    status: Literal["ended", "cancelled", "failed", "abandoned"]
+    phase: str = Field(min_length=1, max_length=50)
+    error_code: str | None = Field(default=None, max_length=100)
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    provider_request_id: str | None = Field(default=None, max_length=255)
+    retryable: bool | None = None
+    technical_message: str | None = Field(default=None, max_length=500)
 
 
 class TenantSettingsResponse(ORMModel):

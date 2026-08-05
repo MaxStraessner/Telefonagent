@@ -18,8 +18,19 @@ export const realtimeErrors = {
   configurationAckTimeout: () => new RealtimeClientError("realtime_configuration_ack_timeout", "realtime configuration acknowledgement timed out"),
   connectionLost: () => new RealtimeClientError("realtime_connection_lost", "realtime connection disconnected"),
   clientSecretExpired: () => new RealtimeClientError("realtime_client_secret_expired", "ephemeral client secret expired"),
-  configurationMismatch: () => new RealtimeClientError("realtime_configuration_mismatch", "realtime configuration mismatch"),
-  continuationFailed: (details?: Readonly<Record<string, unknown>>) =>
-    new RealtimeClientError("realtime_continuation_failed", "realtime tool continuation failed", details),
+  bootstrapMismatch: () => new RealtimeClientError("realtime_bootstrap_mismatch", "realtime bootstrap values do not match"),
+  signalingFailed: (details?: Readonly<Record<string, unknown>>) => new RealtimeClientError(
+    "realtime_signaling_failed",
+    "realtime signaling failed",
+    details,
+  ),
+  providerRequestFailed: (details?: Readonly<Record<string, unknown>>) => {
+    const responseCreateRejected = details?.providerErrorParam === "response.create";
+    return new RealtimeClientError(
+      responseCreateRejected ? "realtime_response_create_rejected" : "realtime_provider_request_failed",
+      responseCreateRejected ? "realtime response creation was rejected" : "realtime provider request failed",
+      details,
+    );
+  },
   microphoneEnded: () => new RealtimeClientError("microphone_access_ended", "microphone track ended"),
 };

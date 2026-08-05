@@ -209,6 +209,15 @@ class AuthenticationRateLimit(Base, TimestampMixin):
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class InitialAppSetup(Base, TimestampMixin):
+    __tablename__ = "initial_app_setup"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
+
+
 class TenantInboundRoute(Base, TimestampMixin):
     __tablename__ = "tenant_inbound_routes"
     __table_args__ = (
@@ -569,10 +578,16 @@ class Appointment(Base, TimestampMixin):
 
 class CallSession(Base):
     __tablename__ = "call_sessions"
+    __table_args__ = (
+        UniqueConstraint("call_attempt_id", name="uq_call_sessions_call_attempt_id"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    call_attempt_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     channel: Mapped[CallChannel] = mapped_column(Enum(CallChannel, native_enum=False))
     status: Mapped[str] = mapped_column(String(50))
+    provider_session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     configuration_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     runtime_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     runtime_manifest_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -582,7 +597,12 @@ class CallSession(Base):
     runtime_state: Mapped[str] = mapped_column(String(50), default="idle")
     bootstrap_status: Mapped[str] = mapped_column(String(50), default="not_started")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_phase: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failure_retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -597,7 +617,7 @@ class ToolExecution(Base):
     tool_name: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50))
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    continuation_mode: Mapped[str] = mapped_column(String(50), default="sdk_automatic")
+    continuation_mode: Mapped[str] = mapped_column(String(50), default="agents_sdk")
     result_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     continuation_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     continuation_response_id: Mapped[str | None] = mapped_column(String(200), nullable=True)

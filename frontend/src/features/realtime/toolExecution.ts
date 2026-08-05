@@ -1,11 +1,19 @@
-export interface ToolContinuationState {
+export type ToolExecutionStatus =
+  | "received"
+  | "running"
+  | "completed"
+  | "failed"
+  | "result_submitted"
+  | "continuation_started"
+  | "response_completed";
+
+export interface ToolExecutionState {
   callId: string;
   toolName: string;
   startedAt: number;
-  resultSentAt: number | null;
-  continuationStartedAt: number | null;
+  completedAt: number | null;
+  status: ToolExecutionStatus;
   responseId: string | null;
-  completed: boolean;
 }
 
 export interface NormalizedToolFailure {
@@ -30,38 +38,50 @@ function normalizeToolFailure(error: unknown): NormalizedToolFailure {
 
 export class RealtimeToolExecutor {
   private readonly pending = new Map<string, Promise<unknown>>();
-  private readonly continuation = new Map<string, ToolContinuationState>();
+  private readonly executions = new Map<string, ToolExecutionState>();
 
   constructor(
     readonly sessionId: string,
     private readonly onEvent: (type: string, detail?: string) => void,
-    private readonly onToolStarted: (callId: string) => void,
-    private readonly onToolResultReady: (callId: string, result: unknown) => Promise<void>,
   ) {}
 
   execute<T>(callId: string, toolName: string, action: () => Promise<T>): Promise<T | NormalizedToolFailure> {
     const duplicate = this.pending.get(callId);
-    if (duplicate) return duplicate as Promise<T | NormalizedToolFailure>;
-    const state: ToolContinuationState = {
-      callId, toolName, startedAt: performance.now(), resultSentAt: null,
-      continuationStartedAt: null, responseId: null, completed: false,
+    if (duplicate) {
+      this.onEvent("tool_duplicate_ignored", JSON.stringify({
+        sessionId: this.sessionId,
+        toolCallId: callId,
+        toolName,
+        toolStatus: this.executions.get(callId)?.status ?? "received",
+      }));
+      return duplicate as Promise<T | NormalizedToolFailure>;
+    }
+    const state: ToolExecutionState = {
+      callId,
+      toolName,
+      startedAt: performance.now(),
+      completedAt: null,
+      status: "received",
+      responseId: null,
     };
-    this.continuation.set(callId, state);
-    this.onToolStarted(callId);
-    this.onEvent("tool_started", JSON.stringify({ sessionId: this.sessionId, toolCallId: callId, toolName }));
+    this.executions.set(callId, state);
+    this.onEvent("tool_received", JSON.stringify({
+      sessionId: this.sessionId, toolCallId: callId, toolName, toolStatus: state.status,
+    }));
+    state.status = "running";
+    this.onEvent("tool_started", JSON.stringify({
+      sessionId: this.sessionId, toolCallId: callId, toolName, toolStatus: state.status,
+    }));
     const finish = async (result: T | NormalizedToolFailure, success: boolean) => {
-      state.resultSentAt = performance.now();
-      state.continuationStartedAt = state.resultSentAt;
-      await this.onToolResultReady(callId, result);
+      state.completedAt = performance.now();
+      state.status = success ? "completed" : "failed";
       this.onEvent("tool_completed", JSON.stringify({
         sessionId: this.sessionId, toolCallId: callId, toolName, success,
+        toolStatus: state.status,
+        durationMs: Math.round(state.completedAt - state.startedAt),
         ...(!success && typeof result === "object" && result !== null && "error_code" in result
           ? { errorCode: result.error_code }
           : {}),
-      }));
-      this.onEvent("tool_result_sent", JSON.stringify({
-        sessionId: this.sessionId, toolCallId: callId, toolName,
-        durationMs: Math.round(state.resultSentAt - state.startedAt), continuationMode: "sdk_automatic", success,
       }));
       return result;
     };
@@ -73,21 +93,47 @@ export class RealtimeToolExecutor {
     return execution;
   }
 
+  markResultSubmitted(callId: string) {
+    const state = this.executions.get(callId);
+    if (!state || ["result_submitted", "continuation_started", "response_completed"].includes(state.status)) return;
+    state.status = "result_submitted";
+    this.onEvent("tool_result_submitted", JSON.stringify({
+      sessionId: this.sessionId,
+      toolCallId: callId,
+      toolName: state.toolName,
+      toolStatus: state.status,
+      continuationMode: "sdk_sequenced",
+    }));
+  }
+
   attachContinuationResponse(responseId: string) {
-    const state = [...this.continuation.values()].reverse().find((item) => item.continuationStartedAt !== null && item.responseId === null);
+    const state = [...this.executions.values()].find(
+      (item) => item.status === "result_submitted" && item.responseId === null,
+    );
     if (!state) return;
     state.responseId = responseId;
-      this.onEvent("tool_continuation_response_created", JSON.stringify({ toolCallId: state.callId, responseId }));
+    state.status = "continuation_started";
+    this.onEvent("tool_continuation_response_created", JSON.stringify({
+      sessionId: this.sessionId,
+      toolCallId: state.callId,
+      toolName: state.toolName,
+      responseId,
+      toolStatus: state.status,
+    }));
   }
 
   completeResponse(responseId: string | null) {
-    const state = [...this.continuation.values()].find((item) => item.responseId === responseId);
-    if (state) state.completed = true;
+    const state = [...this.executions.values()].find((item) => item.responseId === responseId);
+    if (state) state.status = "response_completed";
   }
 
   hasAwaitingContinuation() {
-    return [...this.continuation.values()].some((item) =>
-      item.continuationStartedAt !== null && item.responseId === null && !item.completed
+    return [...this.executions.values()].some(
+      (item) => item.status === "result_submitted" && item.responseId === null,
     );
+  }
+
+  status(callId: string | null): ToolExecutionStatus | null {
+    return callId ? this.executions.get(callId)?.status ?? null : null;
   }
 }

@@ -43,6 +43,19 @@ export interface AuthSession {
   idle_expires_at: string;
   absolute_expires_at: string;
 }
+export interface InitialSetupStatus { available: boolean; }
+export interface InitialSetupRequest {
+  setup_code: string; company_name: string; industry: string; timezone: string;
+  display_name: string; username: string; email: string | null; password: string;
+}
+export interface ManagedUser extends AuthUser { is_active: boolean; }
+export interface ManagedUserWrite {
+  username: string; display_name: string; email: string | null;
+  role: "admin" | "employee"; password: string;
+}
+export interface ManagedUserUpdate {
+  display_name: string; email: string | null; role: "admin" | "employee"; is_active: boolean;
+}
 
 export interface Service { id: string; name: string; description: string; duration_minutes: number; is_active: boolean; }
 export interface StaffMember { id: string; display_name: string; role_name: string; is_active: boolean; }
@@ -71,7 +84,7 @@ export interface RealtimeAgentConfig {
 }
 export interface RealtimeClientSecret {
   client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
-  speed: number; configuration_version: number; call_session_id: string; tenant_id: string;
+  speed: number; configuration_version: number; call_session_id: string; call_attempt_id: string; tenant_id: string;
 }
 export interface RuntimeJsonObjectSchema {
   type: "object";
@@ -87,11 +100,6 @@ export interface RuntimeToolDefinition {
   description: string;
   parameters: RuntimeJsonObjectSchema;
 }
-export interface RuntimeRecoveryPolicy {
-  continuation_ack_timeout_ms: number;
-  recovery_response_timeout_ms: number;
-  maximum_attempts_per_turn: number;
-}
 export interface RuntimeManifest {
   schema_version: string; digest: string; tenant_id: string; timezone: string;
   assistant_name: string; language: string; welcome_message: string;
@@ -100,24 +108,20 @@ export interface RuntimeManifest {
   capability_keys: string[]; tools: RuntimeToolDefinition[]; tool_names: string[];
   tools_digest: string; maximum_session_minutes: number; max_output_tokens: number;
   transcription_enabled: boolean; raw_event_logging: boolean; vad: RealtimeVadConfig;
-  recovery: RuntimeRecoveryPolicy;
   setting_targets: Record<string, "prompt" | "session" | "tools" | "ui_only">;
 }
 export interface RealtimeSessionBootstrap {
   secret: RealtimeClientSecret;
   manifest: RuntimeManifest;
 }
-export interface AppliedRealtimeConfiguration {
-  model?: string; voice?: string; speed?: number; language?: string;
-  prompt_digest?: string; tool_names?: string[]; tools_digest?: string;
-  vad?: Record<string, unknown>;
-}
-export interface RuntimeConfigurationDiff {
-  session_id: string; status: "pending" | "applied" | "mismatch";
-  manifest_digest: string; expected: AppliedRealtimeConfiguration;
-  applied: AppliedRealtimeConfiguration | null;
-  differences: Record<string, { expected: unknown; actual: unknown }>;
-  unobserved: string[];
+export interface RealtimeAttemptFinish {
+  status: "ended" | "cancelled" | "failed" | "abandoned";
+  phase: string;
+  error_code?: string | null;
+  http_status?: number | null;
+  provider_request_id?: string | null;
+  retryable?: boolean | null;
+  technical_message?: string | null;
 }
 export interface Health { status: string; database: string; }
 export interface PlatformData {

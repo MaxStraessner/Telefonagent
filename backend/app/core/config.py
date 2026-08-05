@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     dev_bootstrap_enabled: bool = False
     dev_bootstrap_username: str = "owner@telefonagent.local"
     dev_bootstrap_password: str | None = None
+    initial_setup_token: str | None = None
     allow_development_tenant_fallback: bool = False
     development_tenant_slug: str = "salon-haarkunst-test"
     log_level: str = "INFO"
@@ -103,6 +104,7 @@ class Settings(BaseSettings):
         "microsoft_calendar_client_id",
         "microsoft_calendar_client_secret",
         "microsoft_calendar_redirect_uri",
+        "initial_setup_token",
         mode="before",
     )
     @classmethod
@@ -206,6 +208,8 @@ class Settings(BaseSettings):
                 raise ValueError("APP_BASE_URL muss in Produktion HTTPS verwenden.")
             if any(not origin.lower().startswith("https://") for origin in self.cors_origin_list):
                 raise ValueError("Alle CORS_ORIGINS müssen in Produktion HTTPS verwenden.")
+            if self.initial_setup_token and len(self.initial_setup_token.encode("utf-8")) < 32:
+                raise ValueError("INITIAL_SETUP_TOKEN muss in Produktion mindestens 32 Bytes lang sein.")
         return self
 
 

@@ -28,6 +28,7 @@ from app.models import (
     TurnDetectionType,
     TurnEagerness,
 )
+from app.services.provisioning import ProvisioningService
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,9 @@ def seed_database(db: Session, app_settings: Settings | None = None) -> Tenant:
                 is_active=True,
             )
         )
+
+    if owner.password_hash != UNUSABLE_PASSWORD_HASH:
+        ProvisioningService(db).mark_initial_setup_completed(tenant, owner)
 
     agent_config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant.id))
     if agent_config is None:

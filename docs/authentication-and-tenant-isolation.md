@@ -52,6 +52,14 @@ nur der Name einer kurzlebigen Umgebungsvariable über `--password-env`
 Widersprüche brechen kontrolliert ab, und ein bestehendes Passwort wird bei
 erneuter Provisionierung nicht geändert.
 
+## Einmalige Browser-Ersteinrichtung
+
+Für eine neue Installation kann der Betreiber `INITIAL_SETUP_TOKEN` als geheimen
+Wert in `.env` setzen. Solange noch kein aktiver Tenant-Owner mit Passwort
+existiert, zeigt die Loginseite eine Ersteinrichtung an. Sie erstellt ein leeres
+Unternehmen und dessen Owner, meldet diesen direkt an und wird danach dauerhaft
+geschlossen. Der Setup-Code wird weder gespeichert noch protokolliert.
+
 ## Entwicklung und Bootstrap
 
 Migrationen laufen in Compose automatisch vor dem Backendstart. Seed-Daten werden nur mit

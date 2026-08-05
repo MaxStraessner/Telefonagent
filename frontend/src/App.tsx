@@ -13,6 +13,8 @@ import { ServicesPage } from "./pages/ServicesPage";
 import { StaffPage } from "./pages/StaffPage";
 import { SystemPage } from "./pages/SystemPage";
 import { LoginPage } from "./pages/LoginPage";
+import { InitialSetupPage } from "./pages/InitialSetupPage";
+import { AccountsPage } from "./pages/AccountsPage";
 
 function ProtectedShell() {
   return <ProtectedRoute><PlatformDataProvider><AppLayout /></PlatformDataProvider></ProtectedRoute>;
@@ -20,12 +22,14 @@ function ProtectedShell() {
 
 function buildRouter() { return createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
+  { path: "/einrichtung", element: <InitialSetupPage /> },
   { path: "/", element: <ProtectedShell />, children: [
     { index: true, element: <OverviewPage /> }, { path: "testgespraech", element: <ConversationPage /> },
     { path: "ki-konfigurieren", element: <AgentSettingsPage /> },
     { path: "kalender", element: <CalendarSettingsPage /> },
     { path: "termine", element: <AppointmentsPage /> }, { path: "leistungen", element: <ServicesPage /> },
     { path: "mitarbeiter", element: <StaffPage /> }, { path: "unternehmen", element: <CompanyPage /> },
+    { path: "konten", element: <AccountsPage /> },
     { path: "system", element: <SystemPage /> },
   ]},
 ]); }

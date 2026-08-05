@@ -201,6 +201,17 @@ class AuthenticationService:
         self.db.commit()
         return result
 
+    def issue_session(
+        self, user: AppUser, membership: TenantMembership, tenant: Tenant
+    ) -> tuple[AuthenticatedSession, SessionSecrets]:
+        """Issue a normal browser session after an already-authorized flow."""
+        self._set_user_context(user.id)
+        self._set_tenant_context(tenant.id)
+        user.last_login_at = self._now()
+        result = self._new_session(user, membership, tenant)
+        self.db.commit()
+        return result
+
     def _new_session(
         self, user: AppUser, membership: TenantMembership, tenant: Tenant
     ) -> tuple[AuthenticatedSession, SessionSecrets]:

@@ -1,0 +1,23 @@
+import { useEffect, useState, type FormEvent } from "react";
+import { ApiError, api } from "../api/client";
+import { useAuth } from "../api/AuthProvider";
+import type { ManagedUser, ManagedUserWrite } from "../types/api";
+import { PageHeader } from "./shared";
+
+const emptyUser: ManagedUserWrite = { username: "", display_name: "", email: null, role: "employee", password: "" };
+
+export function AccountsPage() {
+  const { session } = useAuth(); const [users, setUsers] = useState<ManagedUser[]>([]); const [form, setForm] = useState<ManagedUserWrite>(emptyUser);
+  const [error, setError] = useState<string | null>(null); const [message, setMessage] = useState<string | null>(null); const [saving, setSaving] = useState(false); const isOwner = session?.user.role === "owner";
+  const load = async () => { try { setUsers(await api.managedUsers()); } catch (cause) { setError(cause instanceof ApiError ? cause.message : "Konten konnten nicht geladen werden."); } };
+  useEffect(() => { void load(); }, []);
+  const create = async (event: FormEvent) => { event.preventDefault(); setError(null); setMessage(null); setSaving(true); try { await api.createManagedUser({ ...form, email: form.email || null }); setForm(emptyUser); setMessage("Konto wurde angelegt."); await load(); } catch (cause) { setError(cause instanceof ApiError ? cause.message : "Konto konnte nicht angelegt werden."); } finally { setSaving(false); } };
+  const update = async (user: ManagedUser, isActive: boolean) => { setError(null); setMessage(null); try { await api.updateManagedUser(user.id, { display_name: user.display_name, email: user.email, role: user.role === "owner" ? "admin" : user.role, is_active: isActive }); setMessage(isActive ? "Konto wurde aktiviert." : "Konto wurde deaktiviert."); await load(); } catch (cause) { setError(cause instanceof ApiError ? cause.message : "Konto konnte nicht geändert werden."); } };
+  const resetPassword = async (user: ManagedUser) => { const password = window.prompt(`Neues temporäres Passwort für ${user.display_name} (mindestens 15 Zeichen):`); if (!password) return; setError(null); setMessage(null); try { await api.resetManagedUserPassword(user.id, password); setMessage("Passwort wurde zurückgesetzt und alle Sitzungen dieses Kontos beendet."); } catch (cause) { setError(cause instanceof ApiError ? cause.message : "Passwort konnte nicht zurückgesetzt werden."); } };
+  return <div className="page"><PageHeader eyebrow="Zugriffsverwaltung" title="Benutzerkonten" description="Konten gelten ausschließlich für Ihr Unternehmen. Passwörter werden nicht angezeigt oder gespeichert." />
+    {error && <p className="form-error" role="alert">{error}</p>}{message && <p className="form-success" role="status">{message}</p>}
+    <div className="grid company-grid"><section className="card detail-card"><h2>Neues Konto</h2><form className="settings-form" onSubmit={create}>
+      <label>Name<input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required /></label><label>Benutzername<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required autoComplete="username" /></label><label>E-Mail (optional)<input type="email" value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label><label>Rolle<select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as "admin" | "employee" })}><option value="employee">Mitarbeiter</option>{isOwner && <option value="admin">Administrator</option>}</select></label><label>Startpasswort<input type="password" minLength={15} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required autoComplete="new-password" /></label><button className="primary-button" disabled={saving}>{saving ? "Wird angelegt …" : "Konto anlegen"}</button>
+    </form></section><section className="card detail-card"><h2>Bestehende Konten</h2>{users.map((user) => <article className="account-row" key={user.id}><div><strong>{user.display_name}</strong><p>{user.username} · {user.role === "owner" ? "Owner" : user.role === "admin" ? "Administrator" : "Mitarbeiter"}</p><small>{user.is_active ? "Aktiv" : "Deaktiviert"}</small></div>{user.id !== session?.user.id && user.role !== "owner" && (isOwner || user.role === "employee") && <div><button type="button" onClick={() => void update(user, !user.is_active)}>{user.is_active ? "Deaktivieren" : "Aktivieren"}</button> <button type="button" onClick={() => void resetPassword(user)}>Passwort zurücksetzen</button></div>}</article>)}</section></div>
+  </div>;
+}

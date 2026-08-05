@@ -21,15 +21,15 @@ from app.db.session import get_db
 from app.models import AgentConfiguration, Service
 from app.repositories import TenantRepository
 from app.schemas.api import (
-    AppliedRealtimeConfigurationRequest,
     AppointmentResponse,
     HealthResponse,
     LocationResponse,
     PlatformStatusResponse,
     RealtimeAgentConfigResponse,
+    RealtimeAttemptFinishRequest,
     RealtimeClientSecretResponse,
+    RealtimeSessionBootstrapRequest,
     RealtimeSessionBootstrapResponse,
-    RuntimeConfigurationDiffResponse,
     ServiceResponse,
     ServiceWrite,
     StaffResponse,
@@ -37,10 +37,10 @@ from app.schemas.api import (
 )
 from app.services.realtime import (
     agent_config,
-    apply_session_configuration,
     create_client_secret,
     create_session_bootstrap,
-    session_configuration_diff,
+    finish_attempt,
+    mark_attempt_connected,
 )
 
 router = APIRouter()
@@ -107,39 +107,42 @@ async def realtime_client_secret(
 
 @router.post("/realtime/session-bootstrap", response_model=RealtimeSessionBootstrapResponse)
 async def realtime_session_bootstrap(
+    payload: RealtimeSessionBootstrapRequest,
     context: TenantContext = Depends(get_tenant_context),
     _user: UserContext = Depends(get_user_context),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> RealtimeSessionBootstrapResponse:
-    return await create_session_bootstrap(context, settings, db)
+    return await create_session_bootstrap(
+        context, settings, db, payload.call_attempt_id
+    )
 
 
 @router.post(
-    "/realtime/sessions/{session_id}/applied-configuration",
-    response_model=RuntimeConfigurationDiffResponse,
+    "/realtime/call-attempts/{call_attempt_id}/connected",
+    status_code=status.HTTP_204_NO_CONTENT,
 )
-def realtime_applied_configuration(
-    session_id: UUID,
-    payload: AppliedRealtimeConfigurationRequest,
+def realtime_attempt_connected(
+    call_attempt_id: UUID,
     context: TenantContext = Depends(get_tenant_context),
     _user: UserContext = Depends(get_user_context),
     db: Session = Depends(get_db),
-) -> RuntimeConfigurationDiffResponse:
-    return apply_session_configuration(db, context, session_id, payload)
+) -> None:
+    mark_attempt_connected(db, context, call_attempt_id)
 
 
-@router.get(
-    "/realtime/sessions/{session_id}/runtime-diff",
-    response_model=RuntimeConfigurationDiffResponse,
+@router.post(
+    "/realtime/call-attempts/{call_attempt_id}/finish",
+    status_code=status.HTTP_204_NO_CONTENT,
 )
-def realtime_runtime_diff(
-    session_id: UUID,
+def realtime_attempt_finished(
+    call_attempt_id: UUID,
+    payload: RealtimeAttemptFinishRequest,
     context: TenantContext = Depends(get_tenant_context),
     _user: UserContext = Depends(get_user_context),
     db: Session = Depends(get_db),
-) -> RuntimeConfigurationDiffResponse:
-    return session_configuration_diff(db, context, session_id)
+) -> None:
+    finish_attempt(db, context, call_attempt_id, payload)
 
 
 @router.get("/tenant", response_model=TenantResponse)

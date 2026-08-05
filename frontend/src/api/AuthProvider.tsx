@@ -1,13 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AuthSession } from "../types/api";
+import type { AuthSession, InitialSetupRequest } from "../types/api";
 import { api, ApiError } from "./client";
 
 interface AuthState {
   session: AuthSession | null;
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
+  initialSetup: (value: InitialSetupRequest) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  setupAvailable: boolean;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -15,6 +17,7 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
+  const [setupAvailable, setSetupAvailable] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -28,8 +31,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
     api.authSession()
-      .then((value) => { if (mounted) setSession(value); })
-      .catch(() => { if (mounted) setSession(null); })
+      .then((value) => { if (mounted) { setSession(value); setSetupAvailable(false); } })
+      .catch(async () => {
+        if (!mounted) return;
+        setSession(null);
+        try {
+          const setup = await api.initialSetupStatus();
+          if (mounted) setSetupAvailable(setup.available);
+        } catch {
+          if (mounted) setSetupAvailable(false);
+        }
+      })
       .finally(() => { if (mounted) setLoading(false); });
     const unauthorized = () => setSession(null);
     window.addEventListener("telefonagent:unauthorized", unauthorized);
@@ -41,6 +53,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, password: string) => {
     setSession(await api.login(username, password));
+    setSetupAvailable(false);
+  }, []);
+
+  const initialSetup = useCallback(async (value: InitialSetupRequest) => {
+    setSession(await api.initialSetup(value));
+    setSetupAvailable(false);
   }, []);
 
   const logout = useCallback(async () => {
@@ -49,8 +67,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ session, loading, login, logout, refresh }),
-    [session, loading, login, logout, refresh],
+    () => ({ session, loading, login, initialSetup, logout, refresh, setupAvailable }),
+    [session, loading, login, initialSetup, logout, refresh, setupAvailable],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

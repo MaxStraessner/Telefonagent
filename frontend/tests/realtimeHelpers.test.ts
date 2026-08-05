@@ -51,9 +51,9 @@ describe("Realtime playback status", () => {
 
 describe("Realtime completion diagnosis", () => {
   it("unterscheidet Ausgabelimit, unvollständigen Tool Call, Inhaltsfilter und echten Abbruch", () => {
-    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "max_output_tokens" } })).toMatchObject({ reason: "output_token_limit", recoverable: true });
-    expect(diagnoseResponseCompletion({ status: "incomplete" }, true, false)).toMatchObject({ reason: "incomplete_function_call", recoverable: true });
-    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "content_filter" } })).toMatchObject({ reason: "content_filter", recoverable: false });
+    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "max_output_tokens" } })).toMatchObject({ reason: "output_token_limit" });
+    expect(diagnoseResponseCompletion({ status: "incomplete" }, true, false)).toMatchObject({ reason: "incomplete_function_call" });
+    expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "content_filter" } })).toMatchObject({ reason: "content_filter" });
     expect(diagnoseResponseCompletion({ status: "incomplete", status_details: { reason: "turn_detected" } })).toMatchObject({ reason: "interrupted", interruption: true });
   });
 });

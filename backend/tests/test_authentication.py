@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.config import Settings, get_settings
 from app.core.security import sha256_token
 from app.main import app
-from app.models import AuthenticationRateLimit, UserSession
+from app.models import AuthenticationRateLimit, InitialAppSetup, UserSession
 from app.services.provisioning import ProvisioningService
 
 ORIGIN_HEADERS = {
@@ -65,6 +65,7 @@ def test_csrf_is_required_and_logout_revokes_session(anonymous_client):
     )
     assert accepted.status_code == 204
     assert anonymous_client.get("/api/v1/auth/session").status_code == 401
+    assert anonymous_client.cookies.get("telefonagent_csrf") is None
 
 
 def test_expired_session_is_rejected(anonymous_client, db):
@@ -176,6 +177,15 @@ def test_password_change_revokes_other_sessions_and_rotates_current_session(
 def test_production_security_configuration_fails_closed():
     with pytest.raises(ValidationError):
         Settings(app_env="production")
+    with pytest.raises(ValidationError):
+        Settings(
+            app_env="production",
+            database_url="postgresql+psycopg://runtime:test@database/app",
+            auth_hmac_secret="production-auth-secret-with-more-than-thirty-two-bytes",
+            app_base_url="https://api.example.test",
+            cors_origins="https://app.example.test",
+            initial_setup_token="too-short",
+        )
     settings = Settings(
         app_env="production",
         database_url="postgresql+psycopg://runtime:test@database/app",
@@ -186,3 +196,96 @@ def test_production_security_configuration_fails_closed():
     assert settings.session_cookie_name == "__Host-telefonagent_session"
     assert settings.csrf_cookie_name == "__Host-telefonagent_csrf"
     assert settings.is_production
+
+
+def _initial_setup_settings() -> Settings:
+    return Settings(
+        app_env="test",
+        database_url="sqlite:///./test.db",
+        cors_origins="http://testserver",
+        auth_hmac_secret="test-auth-secret-with-at-least-thirty-two-bytes",
+        initial_setup_token="initial-setup-token-with-at-least-32-characters",
+    )
+
+
+def _reopen_initial_setup(db) -> None:
+    state = db.get(InitialAppSetup, 1)
+    assert state is not None
+    state.completed_at = None
+    state.tenant_id = None
+    state.user_id = None
+    db.commit()
+
+
+def test_initial_setup_creates_owner_and_issues_a_session(anonymous_client, db):
+    _reopen_initial_setup(db)
+    app.dependency_overrides[get_settings] = _initial_setup_settings
+    status_response = anonymous_client.get(
+        "/api/v1/auth/setup-status", headers=ORIGIN_HEADERS
+    )
+    assert status_response.status_code == 200
+    assert status_response.json() == {"available": True}
+
+    response = anonymous_client.post(
+        "/api/v1/auth/initial-setup",
+        json={
+            "setup_code": "initial-setup-token-with-at-least-32-characters",
+            "company_name": "Einrichtungs GmbH",
+            "industry": "services",
+            "timezone": "Europe/Berlin",
+            "display_name": "Erste Ownerin",
+            "username": "erste-ownerin",
+            "email": "owner@einrichtung.test",
+            "password": "a sufficiently long initial password",
+        },
+        headers=ORIGIN_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["role"] == "owner"
+    assert response.json()["tenant"]["name"] == "Einrichtungs GmbH"
+    assert anonymous_client.cookies.get("telefonagent_session")
+
+    state = db.get(InitialAppSetup, 1)
+    assert state is not None and state.completed_at is not None
+    assert str(state.tenant_id) == response.json()["tenant"]["id"]
+    assert anonymous_client.get(
+        "/api/v1/auth/setup-status", headers=ORIGIN_HEADERS
+    ).json() == {"available": False}
+    replay = anonymous_client.post(
+        "/api/v1/auth/initial-setup",
+        json={
+            "setup_code": "initial-setup-token-with-at-least-32-characters",
+            "company_name": "Weitere GmbH",
+            "industry": "services",
+            "timezone": "Europe/Berlin",
+            "display_name": "Weitere Ownerin",
+            "username": "weitere-ownerin",
+            "password": "another sufficiently long password",
+        },
+        headers=ORIGIN_HEADERS,
+    )
+    assert replay.status_code == 409
+
+
+def test_initial_setup_rejects_wrong_code_without_creating_data(anonymous_client, db):
+    _reopen_initial_setup(db)
+    app.dependency_overrides[get_settings] = _initial_setup_settings
+    response = anonymous_client.post(
+        "/api/v1/auth/initial-setup",
+        json={
+            "setup_code": "wrong-code",
+            "company_name": "Einrichtungs GmbH",
+            "industry": "services",
+            "timezone": "Europe/Berlin",
+            "display_name": "Erste Ownerin",
+            "username": "setup-wrong-code-owner",
+            "password": "a sufficiently long initial password",
+        },
+        headers=ORIGIN_HEADERS,
+    )
+    assert response.status_code == 403
+    assert db.get(InitialAppSetup, 1).completed_at is None
+    assert any(
+        item.scope == "setup_ip"
+        for item in db.scalars(select(AuthenticationRateLimit))
+    )

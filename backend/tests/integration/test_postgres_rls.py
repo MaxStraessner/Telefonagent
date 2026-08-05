@@ -165,7 +165,14 @@ def postgres_rls_fixture():
                     CAST(:user_id AS uuid), 'google', 'known-state-hash',
                     'encrypted-test-verifier', now() + interval '10 minutes'
                 )
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT (id) DO UPDATE
+                SET tenant_id = EXCLUDED.tenant_id,
+                    user_id = EXCLUDED.user_id,
+                    provider = EXCLUDED.provider,
+                    state_hash = EXCLUDED.state_hash,
+                    encrypted_code_verifier = EXCLUDED.encrypted_code_verifier,
+                    expires_at = EXCLUDED.expires_at,
+                    consumed_at = NULL
                 """
             ),
             {

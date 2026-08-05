@@ -154,6 +154,7 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 .login-card input { min-height: 48px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 11px; color: var(--text); background: var(--surface-soft); font: inherit; }
 .login-card input:focus { outline: 3px solid color-mix(in srgb,var(--primary) 18%,transparent); border-color: var(--primary); }
 .login-card .button { width: 100%; min-height: 48px; }.login-error { padding: 12px 14px; border-radius: 10px; color: var(--danger); background: var(--danger-soft); font-size: .84rem; }
+.setup-card { width: min(560px, 100%); }.setup-link { margin: 22px 0 0 !important; font-size: .9rem; }.setup-link a { color: var(--primary); font-weight: 700; }
 .week-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .65rem; margin-top: 1rem; overflow-x: auto; }
 .week-grid > section { min-width: 9rem; min-height: 14rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface-subtle); }
 .week-grid > section.today { border-color: var(--primary); }

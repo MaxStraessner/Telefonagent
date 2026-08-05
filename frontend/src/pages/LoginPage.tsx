@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthProvider";
 import { ApiError } from "../api/client";
 
@@ -10,7 +10,7 @@ function safeReturnTo(value: unknown): string {
 }
 
 export function LoginPage() {
-  const { session, login } = useAuth();
+  const { session, loading, login, setupAvailable } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
@@ -19,6 +19,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
 
   if (session) return <Navigate to="/" replace />;
+  if (loading) return <main className="auth-loading" aria-live="polite">Sitzung wird geprüft …</main>;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -46,6 +47,7 @@ export function LoginPage() {
         {error && <div className="login-error" role="alert">{error}</div>}
         <button className="button primary" type="submit" disabled={submitting}>{submitting ? "Anmeldung läuft …" : "Anmelden"}</button>
       </form>
+      {setupAvailable && <p className="setup-link">Noch kein Zugang eingerichtet? <Link to="/einrichtung">Ersteinrichtung starten</Link></p>}
     </section>
   </main>;
 }

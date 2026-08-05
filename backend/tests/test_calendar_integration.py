@@ -46,6 +46,40 @@ from app.services.calendar_connections import test_connection as run_connection_
 from app.services.calendar_connections import valid_access_token
 
 TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+BERLIN = ZoneInfo("Europe/Berlin")
+GERMAN_MONTHS = (
+    "Januar",
+    "Februar",
+    "März",
+    "April",
+    "Mai",
+    "Juni",
+    "Juli",
+    "August",
+    "September",
+    "Oktober",
+    "November",
+    "Dezember",
+)
+
+
+def next_test_monday():
+    today = datetime.now(BERLIN).date()
+    days_until_monday = (7 - today.weekday()) % 7
+    return today + timedelta(days=days_until_monday or 7)
+
+
+TEST_DAY = next_test_monday()
+TEST_DAY_ISO = TEST_DAY.isoformat()
+TEST_DAY_TEXT = f"{TEST_DAY.day}. {GERMAN_MONTHS[TEST_DAY.month - 1]} {TEST_DAY.year}"
+
+
+def target_local_datetime(hour: int, minute: int = 0) -> datetime:
+    return datetime.combine(TEST_DAY, time(hour, minute), tzinfo=BERLIN)
+
+
+def target_utc_datetime(hour: int, minute: int = 0) -> datetime:
+    return target_local_datetime(hour, minute).astimezone(timezone.utc)
 
 
 def calendar_settings(**overrides):
@@ -243,7 +277,7 @@ def prepare_conversation(
     }).json()["success"] is True
     assert client.post("/api/v1/calendar/tools/resolve-booking-datetime", json={
         "session_id": str(call.id), "tool_call_id": f"{prefix}-datetime",
-        "expression": f"3. August 2026 um {hour} Uhr",
+        "expression": f"{TEST_DAY_TEXT} um {hour} Uhr",
     }).json()["status"] == "concrete"
     checked = client.post("/api/v1/calendar/tools/check-appointment-availability/session", json={
         "session_id": str(call.id), "tool_call_id": f"{prefix}-availability",
@@ -276,6 +310,41 @@ def test_provider_configuration_never_exposes_secrets(client, calendar_env):
     assert "google-secret" not in response.text
     assert "microsoft-secret" not in response.text
     assert TEST_KEY not in response.text
+
+
+def test_duplicate_tool_call_id_is_rejected_before_second_execution(client, db, calendar_env):
+    tenant, _owner, _settings, _provider = calendar_env
+    call = CallSession(tenant_id=tenant.id, channel=CallChannel.browser, status="active")
+    db.add(call)
+    db.commit()
+    payload = {
+        "session_id": str(call.id),
+        "tool_call_id": "duplicate-catalog-call",
+    }
+    try:
+        first = client.post("/api/v1/calendar/tools/list-bookable-services", json=payload)
+        second = client.post("/api/v1/calendar/tools/list-bookable-services", json=payload)
+
+        assert first.status_code == 200
+        assert second.status_code == 409
+        assert second.json()["error"]["code"] == "duplicate_tool_call"
+        executions = list(
+            db.scalars(
+                select(ToolExecution).where(
+                    ToolExecution.call_session_id == call.id,
+                    ToolExecution.call_id == payload["tool_call_id"],
+                )
+            )
+        )
+        assert len(executions) == 1
+        assert executions[0].status == "completed"
+        assert executions[0].continuation_mode == "agents_sdk"
+        assert executions[0].result_sent_at is None
+        assert executions[0].continuation_triggered_at is None
+        db.refresh(call)
+        assert call.runtime_state == "tool_result_ready"
+    finally:
+        delete_conversation_records(db, call)
 
 
 def test_oauth_callback_is_single_use_encrypted_and_synchronizes_calendars(client, db, calendar_env):
@@ -513,7 +582,7 @@ def test_availability_booking_idempotency_and_provider_confirmation(client, db, 
     _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
     search = client.post(
         "/api/v1/calendar/tools/find-available-appointments",
-        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+        json={"appointment_type_id": str(appointment.id), "preferred_date": TEST_DAY_ISO, "preferred_time_of_day": "morning", "search_days": 1},
     )
     assert search.status_code == 200, search.text
     slot = search.json()["slots"][0]
@@ -542,7 +611,7 @@ def test_new_agent_tools_validate_service_snapshot_and_confirmation(client, db, 
         json={
             "service_id": str(appointment.service_id),
             "appointment_type_id": str(appointment.id),
-            "requested_start": "2026-08-03T09:00:00+02:00",
+            "requested_start": target_local_datetime(9).isoformat(),
             "timezone": "Europe/Berlin",
         },
     )
@@ -554,7 +623,7 @@ def test_new_agent_tools_validate_service_snapshot_and_confirmation(client, db, 
         "customer_name": "Max Mustermann",
         "customer_phone": None,
         "customer_email": None,
-        "start_at": "2026-08-03T09:00:00+02:00",
+        "start_at": target_local_datetime(9).isoformat(),
         "timezone": "Europe/Berlin",
         "idempotency_key": "new-agent-tool-1234",
         "confirmed": True,
@@ -640,7 +709,7 @@ def test_conversation_orchestration_bootstrap_snapshot_and_final_booking(client,
 
     resolved_datetime = client.post("/api/v1/calendar/tools/resolve-booking-datetime", json={
         "session_id": str(call.id), "tool_call_id": "datetime-1",
-        "expression": "3. August 2026 um 9 Uhr",
+        "expression": f"{TEST_DAY_TEXT} um 9 Uhr",
     })
     assert resolved_datetime.status_code == 200, resolved_datetime.text
     assert resolved_datetime.json()["status"] == "concrete"
@@ -669,7 +738,8 @@ def test_conversation_orchestration_bootstrap_snapshot_and_final_booking(client,
     assert booked.json()["success"] is True
     assert booked.json()["external_event_id"] == "event-1"
     repeated = client.post("/api/v1/calendar/tools/finalize-appointment-booking", json=payload)
-    assert repeated.json()["booking_id"] == booked.json()["booking_id"]
+    assert repeated.status_code == 409
+    assert repeated.json()["error"]["code"] == "duplicate_tool_call"
     assert len(provider.created_events) == 1
 
     db.execute(delete(ToolExecution).where(ToolExecution.call_session_id == call.id))
@@ -691,7 +761,7 @@ def test_conversation_booking_rejects_declined_confirmation(client, db, calendar
     }).json()["success"] is True
     assert client.post("/api/v1/calendar/tools/resolve-booking-datetime", json={
         "session_id": str(call.id), "tool_call_id": "decline-datetime",
-        "expression": "3. August 2026 um 10 Uhr",
+        "expression": f"{TEST_DAY_TEXT} um 10 Uhr",
     }).json()["status"] == "concrete"
     assert client.post("/api/v1/calendar/tools/check-appointment-availability/session", json={
         "session_id": str(call.id), "tool_call_id": "decline-availability",
@@ -867,8 +937,8 @@ def test_alternative_slot_must_be_signed_offered_and_is_rechecked_before_summary
     _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
     provider.busy = [
         BusyInterval(
-            datetime(2026, 8, 3, 7, tzinfo=timezone.utc),
-            datetime(2026, 8, 3, 7, 30, tzinfo=timezone.utc),
+            target_utc_datetime(9),
+            target_utc_datetime(9, 30),
         )
     ]
     call = CallSession(tenant_id=tenant.id, channel=CallChannel.browser, status="active")
@@ -880,7 +950,7 @@ def test_alternative_slot_must_be_signed_offered_and_is_rechecked_before_summary
     }).json()["success"] is True
     assert client.post("/api/v1/calendar/tools/resolve-booking-datetime", json={
         "session_id": str(call.id), "tool_call_id": "alternative-datetime",
-        "expression": "3. August 2026 um 9 Uhr",
+        "expression": f"{TEST_DAY_TEXT} um 9 Uhr",
     }).json()["status"] == "concrete"
     checked = client.post("/api/v1/calendar/tools/check-appointment-availability/session", json={
         "session_id": str(call.id), "tool_call_id": "alternative-check",
@@ -922,7 +992,7 @@ def test_selected_slot_is_refreshed_before_confirmation_summary(client, db, cale
     }).json()["success"] is True
     assert client.post("/api/v1/calendar/tools/resolve-booking-datetime", json={
         "session_id": str(call.id), "tool_call_id": "recheck-datetime",
-        "expression": "3. August 2026 um 9 Uhr",
+        "expression": f"{TEST_DAY_TEXT} um 9 Uhr",
     }).json()["status"] == "concrete"
     checked = client.post("/api/v1/calendar/tools/check-appointment-availability/session", json={
         "session_id": str(call.id), "tool_call_id": "recheck-availability",
@@ -931,8 +1001,8 @@ def test_selected_slot_is_refreshed_before_confirmation_summary(client, db, cale
     assert checked.json()["available"] is True
     provider.busy = [
         BusyInterval(
-            datetime(2026, 8, 3, 7, tzinfo=timezone.utc),
-            datetime(2026, 8, 3, 7, 30, tzinfo=timezone.utc),
+            target_utc_datetime(9),
+            target_utc_datetime(9, 30),
         )
     ]
     prepared = client.post("/api/v1/calendar/tools/prepare-appointment-confirmation", json={
@@ -956,7 +1026,7 @@ def test_appointments_agenda_deduplicates_platform_and_provider_event(client, db
     _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
     slot = client.post(
         "/api/v1/calendar/tools/find-available-appointments",
-        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+        json={"appointment_type_id": str(appointment.id), "preferred_date": TEST_DAY_ISO, "preferred_time_of_day": "morning", "search_days": 1},
     ).json()["slots"][0]
     booked = client.post("/api/v1/calendar/tools/create-calendar-booking", json={
         "slot_id": slot["slot_id"], "appointment_type_id": str(appointment.id), "customer_name": "Kunde",
@@ -970,7 +1040,10 @@ def test_appointments_agenda_deduplicates_platform_and_provider_event(client, db
     ]
     response = client.get(
         "/api/v1/calendar/appointments",
-        params={"start": "2026-08-03T00:00:00+02:00", "end": "2026-08-04T00:00:00+02:00"},
+        params={
+            "start": datetime.combine(TEST_DAY, time.min, tzinfo=BERLIN).isoformat(),
+            "end": datetime.combine(TEST_DAY + timedelta(days=1), time.min, tzinfo=BERLIN).isoformat(),
+        },
     )
     assert response.status_code == 200, response.text
     entries = response.json()["entries"]
@@ -983,7 +1056,7 @@ def test_slot_is_rechecked_and_conflict_returns_new_alternatives(client, db, cal
     _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
     slot = client.post(
         "/api/v1/calendar/tools/find-available-appointments",
-        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+        json={"appointment_type_id": str(appointment.id), "preferred_date": TEST_DAY_ISO, "preferred_time_of_day": "morning", "search_days": 1},
     ).json()["slots"][0]
     provider.busy = [BusyInterval(datetime.fromisoformat(slot["start"]), datetime.fromisoformat(slot["end"]))]
     response = client.post(
@@ -1000,7 +1073,7 @@ def test_provider_failure_never_confirms_booking(client, db, calendar_env):
     _, _, appointment = create_connected_calendar(db, tenant, owner, settings)
     slot = client.post(
         "/api/v1/calendar/tools/find-available-appointments",
-        json={"appointment_type_id": str(appointment.id), "preferred_date": "2026-08-03", "preferred_time_of_day": "morning", "search_days": 1},
+        json={"appointment_type_id": str(appointment.id), "preferred_date": TEST_DAY_ISO, "preferred_time_of_day": "morning", "search_days": 1},
     ).json()["slots"][0]
     provider.fail_create = True
     response = client.post(

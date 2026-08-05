@@ -58,6 +58,7 @@ Alle unterstützten Werte sind in `.env.example` dokumentiert. Wichtig:
 - `AUTH_HMAC_SECRET` pseudonymisiert Login-Buckets und muss in Produktion ein eigener, zufälliger Wert mit mindestens 32 Bytes sein.
 - `SESSION_IDLE_MINUTES` und `SESSION_ABSOLUTE_HOURS` begrenzen serverseitige Sitzungen.
 - `DEV_BOOTSTRAP_ENABLED` aktiviert Seed-Daten ausschließlich in der Entwicklung; ohne `DEV_BOOTSTRAP_PASSWORD` entsteht bewusst kein nutzbarer Standardlogin.
+- `INITIAL_SETUP_TOKEN` aktiviert bei einer noch nicht eingerichteten Installation die einmalige Browser-Ersteinrichtung. Der Wert muss geheim bleiben und wird nach dem ersten Owner dauerhaft nicht mehr akzeptiert.
 - `VITE_API_BASE_URL` ist die einzige Frontend-Konfiguration für den API-Pfad und darf keine Geheimnisse enthalten.
 - `OPENAI_API_KEY` wird ausschließlich vom Backend gelesen. Ohne Schlüssel startet die Plattform normal und meldet `realtime_voice_configured: false`.
 - `OPENAI_REALTIME_MODEL` steuert das Plattformmodell. Stimme, Tempo, VAD und Gesprächsverhalten werden versioniert in „KI konfigurieren“ pro Mandant gespeichert.
@@ -149,7 +150,7 @@ Nicht vorhanden sind Telefonie/SIP, n8n, ein externer OIDC-Provider, Selbstregis
 
 ## Realtime-Sprachtest
 
-Architektur, Sicherheitsmodell, manueller Abnahmetest, typische Fehler und Kostenhinweise stehen in [docs/realtime-voice.md](docs/realtime-voice.md). Der Browser fordert das Mikrofon erst nach einem Klick an. Anschließend mintet FastAPI mit dem serverseitigen Standard-Key ein 60 Sekunden gültiges Client-Secret und der Browser verbindet sich direkt per WebRTC mit OpenAI.
+Architektur, Sicherheitsmodell, manueller Abnahmetest, typische Fehler und Kostenhinweise stehen in [docs/realtime-voice.md](docs/realtime-voice.md). Der Browser fordert das Mikrofon erst nach einem Klick an. Anschließend mintet FastAPI mit dem serverseitigen Standard-Key ein 60 Sekunden gültiges Client-Secret und der Browser verbindet sich direkt per WebRTC mit OpenAI. Der Agents-SDK setzt die eine aktive Sessionkonfiguration und sequenziert Tool-Ergebnis sowie genau eine Folgeantwort; die Anwendung startet keine konkurrierende Recovery-Antwort.
 
 Ein ChatGPT-Abonnement umfasst die OpenAI-API-Nutzung nicht automatisch. Für echte Realtime-Tests sind ein API-Projekt mit Abrechnung und Zugriff auf das konfigurierte Modell und die Stimme erforderlich; dabei entstehen nutzungsabhängige API-Kosten.
 

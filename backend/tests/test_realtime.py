@@ -1,14 +1,20 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from sqlalchemy import func, select
 
+from app.api.dependencies import TenantContext
 from app.core.config import Settings, get_settings
+from app.db.session import SessionLocal
 from app.main import app
-from app.models import CallSession
-from app.services.realtime import build_safety_identifier
-from app.services.tool_projections import outbound_wire_tools_digest
+from app.models import CallChannel, CallSession, Tenant, TenantStatus
+from app.schemas.api import RealtimeAttemptFinishRequest
+from app.services.realtime import (
+    ClientSecretGrant,
+    build_safety_identifier,
+    finish_attempt,
+)
 
 
 class FakeAsyncClient:
@@ -43,6 +49,7 @@ def reset_fake_async_client():
     FakeAsyncClient.response = httpx.Response(
         200,
         json={"value": "ek_test_ephemeral", "expires_at": 1_900_000_000, "session": {"id": "sess_test"}},
+        headers={"x-request-id": "req_test_provider"},
         request=httpx.Request("POST", "https://api.openai.com/v1/realtime/client_secrets"),
     )
     FakeAsyncClient.error = None
@@ -78,7 +85,7 @@ def test_agent_config_is_tenant_scoped_and_exposes_no_key(client):
     assert payload["speed"] == 1.0
 
 
-def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
+def test_client_secret_is_short_lived_and_session_config_stays_with_sdk(monkeypatch, client, db):
     monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[get_settings] = lambda: configured_settings()
     before = db.scalar(select(func.count(CallSession.id)))
@@ -88,21 +95,12 @@ def test_client_secret_uses_short_lived_tenant_config(monkeypatch, client, db):
     assert response.status_code == 200
     assert response.json()["client_secret"] == "ek_test_ephemeral"
     assert response.json()["session_id"] == "sess_test"
-    assert set(response.json()) == {"client_secret", "expires_at", "session_id", "model", "voice", "speed", "configuration_version", "call_session_id", "tenant_id"}
+    assert set(response.json()) == {"client_secret", "expires_at", "session_id", "model", "voice", "speed", "configuration_version", "call_session_id", "call_attempt_id", "tenant_id"}
     assert "server-only-test-key" not in response.text
     assert FakeAsyncClient.last_payload["expires_after"] == {"anchor": "created_at", "seconds": 60}
-    session = FakeAsyncClient.last_payload["session"]
-    assert [item["name"] for item in session["tools"]] == [
-        "list_bookable_services", "resolve_service", "resolve_booking_datetime",
-        "check_appointment_availability",
-        "find_alternative_slots", "select_booking_slot",
-        "prepare_appointment_confirmation", "finalize_appointment_booking",
-    ]
-    assert session["tool_choice"] == "auto"
-    assert session["parallel_tool_calls"] is False
-    assert session["max_output_tokens"] == 1024
-    assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
+    assert "session" not in FakeAsyncClient.last_payload
     assert FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"].startswith("tenant_")
+    assert UUID(FakeAsyncClient.last_headers["X-Client-Request-Id"])
     assert "Salon Haarkunst" not in FakeAsyncClient.last_headers["OpenAI-Safety-Identifier"]
     db.expire_all()
     assert db.scalar(select(func.count(CallSession.id))) == before + 1
@@ -112,86 +110,36 @@ def test_session_bootstrap_returns_one_digest_bound_runtime_manifest(monkeypatch
     monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[get_settings] = lambda: configured_settings()
 
-    response = client.post("/api/v1/realtime/session-bootstrap")
+    call_attempt_id = uuid4()
+    response = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
 
     assert response.status_code == 200, response.text
     payload = response.json()
     manifest = payload["manifest"]
     secret = payload["secret"]
+    assert UUID(secret["call_attempt_id"]) == call_attempt_id
     assert len(manifest["digest"]) == 64
     assert len(manifest["prompt_digest"]) == 64
     assert len(manifest["tools_digest"]) == 64
     assert manifest["timezone"] == "Europe/Berlin"
     assert manifest["vad"]["silence_duration_ms"] == 600
     assert manifest["vad"]["interrupt_response"] is True
-    assert manifest["recovery"] == {
-        "continuation_ack_timeout_ms": 4000,
-        "recovery_response_timeout_ms": 8000,
-        "maximum_attempts_per_turn": 1,
-    }
+    assert "recovery" not in manifest
     assert manifest["setting_targets"]["simple_mode"] == "ui_only"
     assert manifest["setting_targets"]["silence_duration_ms"] == "session"
     assert manifest["tool_names"] == [item["name"] for item in manifest["tools"]]
     call_session = db.get(CallSession, UUID(secret["call_session_id"]))
     db.refresh(call_session)
+    assert call_session.status == "provisioned"
+    assert call_session.call_attempt_id == call_attempt_id
+    assert call_session.provider_session_id == "sess_test"
+    assert call_session.provider_request_id == "req_test_provider"
     assert call_session.runtime_manifest_digest == manifest["digest"]
     assert call_session.runtime_manifest_snapshot["prompt_digest"] == manifest["prompt_digest"]
     assert "instructions" not in call_session.runtime_manifest_snapshot
-
-
-def test_applied_configuration_is_compared_without_storing_prompt(monkeypatch, client):
-    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
-    app.dependency_overrides[get_settings] = lambda: configured_settings()
-    bootstrap = client.post("/api/v1/realtime/session-bootstrap").json()
-    manifest = bootstrap["manifest"]
-    session_id = bootstrap["secret"]["call_session_id"]
-    applied = {
-        "model": manifest["model"],
-        "voice": manifest["voice"],
-        "speed": manifest["speed"],
-        "language": manifest["language"],
-        "prompt_digest": manifest["prompt_digest"],
-        "tool_names": manifest["tool_names"],
-        "tools_digest": outbound_wire_tools_digest(manifest["tools"]),
-        "vad": {key: value for key, value in manifest["vad"].items() if value is not None},
-    }
-
-    response = client.post(
-        f"/api/v1/realtime/sessions/{session_id}/applied-configuration",
-        json={"manifest_digest": manifest["digest"], "applied": applied},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == "applied"
-    assert response.json()["differences"] == {}
-    assert response.json()["unobserved"] == []
-    diagnostic = client.get(f"/api/v1/realtime/sessions/{session_id}/runtime-diff").json()
-    assert diagnostic["status"] == "applied"
-    assert "instructions" not in diagnostic["expected"]
-
-
-def test_applied_configuration_reports_critical_drift(monkeypatch, client):
-    monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
-    app.dependency_overrides[get_settings] = lambda: configured_settings()
-    bootstrap = client.post("/api/v1/realtime/session-bootstrap").json()
-    manifest = bootstrap["manifest"]
-    session_id = bootstrap["secret"]["call_session_id"]
-
-    response = client.post(
-        f"/api/v1/realtime/sessions/{session_id}/applied-configuration",
-        json={
-            "manifest_digest": manifest["digest"],
-            "applied": {"model": manifest["model"], "voice": "cedar"},
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "mismatch"
-    assert response.json()["differences"]["voice"] == {
-        "expected": manifest["voice"],
-        "actual": "cedar",
-    }
-    assert "prompt_digest" in response.json()["unobserved"]
 
 
 def test_missing_api_key_returns_controlled_error(client):
@@ -208,7 +156,7 @@ def test_blank_api_key_is_treated_as_missing(client):
     assert response.json()["error"]["code"] == "realtime_not_configured"
 
 
-def test_model_is_platform_controlled_and_voice_is_database_controlled(monkeypatch, client):
+def test_model_and_voice_are_returned_to_the_sdk_without_duplication_in_secret(monkeypatch, client):
     monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[get_settings] = lambda: configured_settings(
         openai_realtime_model="gpt-realtime-custom",
@@ -218,8 +166,7 @@ def test_model_is_platform_controlled_and_voice_is_database_controlled(monkeypat
     secret = client.post("/api/v1/realtime/client-secret").json()
     assert config["model"] == secret["model"] == "gpt-realtime-custom"
     assert config["voice"] == secret["voice"] == "marin"
-    assert FakeAsyncClient.last_payload["session"]["model"] == "gpt-realtime-custom"
-    assert FakeAsyncClient.last_payload["session"]["audio"]["output"] == {"voice": "marin", "speed": 1.0}
+    assert "session" not in FakeAsyncClient.last_payload
 
 
 def test_provider_authentication_error_is_sanitized(monkeypatch, client):
@@ -257,7 +204,8 @@ def test_model_and_voice_provider_errors_are_structured(monkeypatch, client, par
     assert "sensitive provider detail" not in response.text
 
 
-def test_provider_timeout_is_controlled(monkeypatch, client):
+def test_provider_timeout_is_controlled(monkeypatch, client, db):
+    call_attempt_id = uuid4()
     FakeAsyncClient.response = httpx.Response(
         200,
         json={"value": "ek_test", "expires_at": 1},
@@ -266,9 +214,21 @@ def test_provider_timeout_is_controlled(monkeypatch, client):
     FakeAsyncClient.error = httpx.ReadTimeout("late")
     monkeypatch.setattr("app.services.realtime.httpx.AsyncClient", FakeAsyncClient)
     app.dependency_overrides[get_settings] = lambda: configured_settings()
-    response = client.post("/api/v1/realtime/client-secret")
+    response = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
     assert response.status_code == 504
     assert response.json()["error"]["code"] == "realtime_provider_timeout"
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == call_attempt_id
+        )
+    )
+    assert attempt.status == "failed"
+    assert attempt.error_code == "realtime_provider_timeout"
+    assert attempt.failure_retryable is True
     FakeAsyncClient.error = None
 
 
@@ -283,6 +243,310 @@ def test_invalid_provider_response_is_controlled(monkeypatch, client):
     response = client.post("/api/v1/realtime/client-secret")
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "realtime_provider_invalid_response"
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "expected_code", "retryable"),
+    [
+        (400, "realtime_provider_rejected", False),
+        (401, "realtime_provider_authentication_failed", False),
+        (403, "realtime_provider_authentication_failed", False),
+        (429, "realtime_provider_rate_limited", True),
+        (500, "realtime_provider_rejected", True),
+    ],
+)
+def test_provider_failures_terminalize_the_known_attempt(
+    monkeypatch, client, db, provider_status, expected_code, retryable
+):
+    call_attempt_id = uuid4()
+    FakeAsyncClient.response = httpx.Response(
+        provider_status,
+        json={
+            "error": {
+                "type": "invalid_request_error",
+                "code": f"provider_{provider_status}",
+                "message": "redacted provider diagnosis",
+            }
+        },
+        headers={"x-request-id": f"req_{provider_status}"},
+        request=httpx.Request(
+            "POST", "https://api.openai.com/v1/realtime/client_secrets"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.realtime.httpx.AsyncClient", FakeAsyncClient
+    )
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+
+    response = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == expected_code
+    assert "redacted provider diagnosis" not in response.text
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == call_attempt_id
+        )
+    )
+    assert attempt.status == "failed"
+    assert attempt.ended_at is not None
+    assert attempt.failure_phase == "provider_token"
+    assert attempt.error_code == expected_code
+    assert attempt.http_status == provider_status
+    assert attempt.provider_request_id == f"req_{provider_status}"
+    assert attempt.failure_retryable is retryable
+
+
+def test_provider_network_error_terminalizes_the_attempt(
+    monkeypatch, client, db
+):
+    call_attempt_id = uuid4()
+    FakeAsyncClient.error = httpx.ConnectError("dns lookup failed")
+    monkeypatch.setattr(
+        "app.services.realtime.httpx.AsyncClient", FakeAsyncClient
+    )
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+
+    response = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "realtime_provider_unavailable"
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == call_attempt_id
+        )
+    )
+    assert attempt.status == "failed"
+    assert attempt.error_code == "realtime_provider_unavailable"
+    assert attempt.failure_retryable is True
+
+
+def test_connected_and_finish_transitions_are_idempotent(
+    monkeypatch, client, db
+):
+    call_attempt_id = uuid4()
+    monkeypatch.setattr(
+        "app.services.realtime.httpx.AsyncClient", FakeAsyncClient
+    )
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+    bootstrap = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
+    assert bootstrap.status_code == 200
+
+    assert client.post(
+        f"/api/v1/realtime/call-attempts/{call_attempt_id}/connected"
+    ).status_code == 204
+    assert client.post(
+        f"/api/v1/realtime/call-attempts/{call_attempt_id}/connected"
+    ).status_code == 204
+    finish_payload = {
+        "status": "ended",
+        "phase": "conversation",
+        "retryable": False,
+    }
+    assert client.post(
+        f"/api/v1/realtime/call-attempts/{call_attempt_id}/finish",
+        json=finish_payload,
+    ).status_code == 204
+    assert client.post(
+        f"/api/v1/realtime/call-attempts/{call_attempt_id}/finish",
+        json={
+            "status": "failed",
+            "phase": "cleanup",
+            "error_code": "late_failure",
+        },
+    ).status_code == 204
+
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == call_attempt_id
+        )
+    )
+    assert attempt.status == "ended"
+    assert attempt.connected_at is not None
+    assert attempt.ended_at is not None
+    assert attempt.error_code is None
+
+
+def test_finish_before_bootstrap_prevents_token_delivery(
+    monkeypatch, client, db
+):
+    call_attempt_id = uuid4()
+    monkeypatch.setattr(
+        "app.services.realtime.httpx.AsyncClient", FakeAsyncClient
+    )
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+    finish = client.post(
+        f"/api/v1/realtime/call-attempts/{call_attempt_id}/finish",
+        json={
+            "status": "cancelled",
+            "phase": "session_bootstrap",
+            "error_code": "realtime_start_cancelled",
+        },
+    )
+    assert finish.status_code == 204
+
+    bootstrap = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
+
+    assert bootstrap.status_code == 409
+    assert FakeAsyncClient.last_headers == {}
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == call_attempt_id
+        )
+    )
+    assert attempt.status == "cancelled"
+
+
+def test_late_provider_response_cannot_reactivate_cancelled_attempt(
+    monkeypatch, client, db
+):
+    call_attempt_id = uuid4()
+
+    async def late_provider_response(context, _settings, returned_attempt_id):
+        assert returned_attempt_id == call_attempt_id
+        with SessionLocal() as other:
+            tenant = other.get(Tenant, context.id)
+            finish_attempt(
+                other,
+                TenantContext(id=context.id, tenant=tenant),
+                call_attempt_id,
+                RealtimeAttemptFinishRequest(
+                    status="cancelled",
+                    phase="signaling",
+                    error_code="realtime_start_cancelled",
+                ),
+            )
+        return ClientSecretGrant(
+            value="ek_test_late",
+            expires_at=1_900_000_000,
+            provider_session_id="sess_late",
+            provider_request_id="req_late",
+        )
+
+    monkeypatch.setattr(
+        "app.services.realtime._request_client_secret",
+        late_provider_response,
+    )
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+
+    response = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
+
+    assert response.status_code == 409
+    assert "ek_test_late" not in response.text
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == call_attempt_id
+        )
+    )
+    assert attempt.status == "cancelled"
+    assert attempt.provider_session_id is None
+
+
+def test_lifecycle_endpoints_do_not_expose_another_tenant_attempt(client, db):
+    other_tenant = Tenant(
+        slug=f"other-{uuid4().hex[:8]}",
+        name="Other Tenant",
+        industry="services",
+        timezone="Europe/Berlin",
+        status=TenantStatus.active,
+    )
+    db.add(other_tenant)
+    db.commit()
+    other_attempt_id = uuid4()
+    db.add(
+        CallSession(
+            tenant_id=other_tenant.id,
+            call_attempt_id=other_attempt_id,
+            channel=CallChannel.browser,
+            status="provisioned",
+        )
+    )
+    db.commit()
+
+    connected = client.post(
+        f"/api/v1/realtime/call-attempts/{other_attempt_id}/connected"
+    )
+    finished = client.post(
+        f"/api/v1/realtime/call-attempts/{other_attempt_id}/finish",
+        json={"status": "ended", "phase": "conversation"},
+    )
+
+    assert connected.status_code == 404
+    assert finished.status_code == 404
+    db.expire_all()
+    attempt = db.scalar(
+        select(CallSession).where(
+            CallSession.call_attempt_id == other_attempt_id
+        )
+    )
+    assert attempt.status == "provisioned"
+
+
+def test_provider_technical_message_is_redacted_in_structured_log(
+    monkeypatch, client
+):
+    warning_records: list[dict[str, object]] = []
+
+    def capture_warning(_message, *, extra):
+        warning_records.append(extra)
+
+    monkeypatch.setattr(
+        "app.services.realtime.logger.warning", capture_warning
+    )
+    call_attempt_id = uuid4()
+    FakeAsyncClient.response = httpx.Response(
+        400,
+        json={
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_session",
+                "message": "credential sk-proj-1234567890 must not leak",
+            }
+        },
+        request=httpx.Request(
+            "POST", "https://api.openai.com/v1/realtime/client_secrets"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.realtime.httpx.AsyncClient", FakeAsyncClient
+    )
+    app.dependency_overrides[get_settings] = lambda: configured_settings()
+
+    response = client.post(
+        "/api/v1/realtime/session-bootstrap",
+        json={"call_attempt_id": str(call_attempt_id)},
+    )
+
+    assert response.status_code == 502
+    records = [
+        record
+        for record in warning_records
+        if record.get("event_name") == "provider_request_failed"
+        and record.get("call_attempt_id") == str(call_attempt_id)
+    ]
+    assert records
+    assert "sk-proj-1234567890" not in records[-1]["technical_message"]
+    assert "[REDACTED_CREDENTIAL]" in records[-1]["technical_message"]
 
 
 def test_realtime_settings_fall_back_to_safe_defaults():

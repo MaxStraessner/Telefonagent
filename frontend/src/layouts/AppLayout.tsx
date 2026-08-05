@@ -10,7 +10,7 @@ const navigation = [
   ["/ki-konfigurieren", "KI konfigurieren", "mic"],
   ["/kalender", "Kalenderintegration", "calendar"],
   ["/termine", "Termine", "calendar"], ["/leistungen", "Leistungen", "services"],
-  ["/mitarbeiter", "Mitarbeiter", "staff"], ["/unternehmen", "Unternehmen", "company"],
+  ["/mitarbeiter", "Mitarbeiter", "staff"], ["/konten", "Konten", "staff"], ["/unternehmen", "Unternehmen", "company"],
   ["/system", "System", "system"],
 ] as const;
 
