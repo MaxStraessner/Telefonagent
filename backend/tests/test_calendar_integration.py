@@ -40,6 +40,7 @@ from app.models import (
     Service,
     Tenant,
     TenantRole,
+    TenantStatus,
     ToolExecution,
 )
 from app.services.calendar_connections import test_connection as run_connection_test
@@ -164,7 +165,7 @@ def calendar_env(db, monkeypatch):
     tenant = db.scalar(select(Tenant).where(Tenant.slug == "salon-haarkunst-test"))
     owner = db.scalar(select(AppUser).where(AppUser.email == "owner@telefonagent.local"))
     app.dependency_overrides[get_tenant_context] = lambda: TenantContext(id=tenant.id, tenant=tenant)
-    app.dependency_overrides[get_user_context] = lambda: UserContext(id=owner.id, email=owner.email, role=TenantRole.owner)
+    app.dependency_overrides[get_user_context] = lambda: UserContext(id=owner.id, email=owner.email, role=TenantRole.company_admin)
     settings = calendar_settings()
     app.dependency_overrides[get_settings] = lambda: settings
     provider = FakeProvider()
@@ -392,6 +393,41 @@ def test_invalid_oauth_state_and_access_denial_are_controlled(client, calendar_e
         follow_redirects=False,
     )
     assert "oauth_access_denied" in denied.headers["location"]
+
+
+def test_oauth_callback_allows_trial_but_blocks_suspended_company(
+    client, db, calendar_env
+):
+    tenant, _, _, _provider = calendar_env
+    tenant.status = TenantStatus.trial
+    db.commit()
+    trial_state = parse_qs(
+        urlparse(
+            client.post("/api/v1/calendar/oauth/google/start").json()[
+                "authorization_url"
+            ]
+        ).query
+    )["state"][0]
+    trial_callback = client.get(
+        "/api/v1/calendar/oauth/google/callback",
+        params={"state": trial_state, "code": "valid-code"},
+        follow_redirects=False,
+    )
+    assert "calendar_oauth=success" in trial_callback.headers["location"]
+
+    started = client.post("/api/v1/calendar/oauth/google/start").json()
+    suspended_state = parse_qs(urlparse(started["authorization_url"]).query)["state"][0]
+    tenant.status = TenantStatus.suspended
+    db.commit()
+    blocked_callback = client.get(
+        "/api/v1/calendar/oauth/google/callback",
+        params={"state": suspended_state, "code": "valid-code"},
+        follow_redirects=False,
+    )
+    assert "oauth_membership_inactive" in blocked_callback.headers["location"]
+    assert len(list(db.scalars(select(CalendarConnection)))) == 1
+    tenant.status = TenantStatus.active
+    db.commit()
 
 
 def test_reauthorization_updates_existing_provider_account(client, db, calendar_env):

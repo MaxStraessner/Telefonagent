@@ -17,7 +17,16 @@ from app.core.security import (
     sha256_token,
     verify_password,
 )
-from app.models import AppUser, Tenant, TenantMembership, TenantRole, TenantStatus, UserSession
+from app.models import (
+    AppUser,
+    AuditLog,
+    PlatformRole,
+    Tenant,
+    TenantMembership,
+    TenantRole,
+    TenantStatus,
+    UserSession,
+)
 from app.repositories.auth import AuthRepository, as_utc
 from app.services.login_throttle import LoginThrottle, LoginThrottledError
 
@@ -42,8 +51,8 @@ class CsrfValidationError(Exception):
 class AuthenticatedSession:
     session: UserSession
     user: AppUser
-    membership: TenantMembership
-    tenant: Tenant
+    membership: TenantMembership | None
+    tenant: Tenant | None
 
 
 class AuthenticationService:
@@ -64,7 +73,7 @@ class AuthenticationService:
             self._log_event("login_throttled", normalized, client_ip, "rejected")
             raise InvalidCredentialsError from exc
 
-        user = self.repository.user_by_normalized_username(normalized)
+        user = self.repository.user_by_login_identifier(normalized)
         valid_password, updated_hash = verify_password(
             password, user.password_hash if user else None
         )
@@ -76,16 +85,17 @@ class AuthenticationService:
             user
             and valid_password
             and user.is_active
-            and len(membership_rows) == 1
+            and (user.platform_role is not None or membership_rows)
         )
-        tenant = None
-        if accepted:
+        membership: TenantMembership | None = None
+        tenant: Tenant | None = None
+        if accepted and user and user.platform_role is None and len(membership_rows) == 1:
             membership = membership_rows[0]
             self._set_tenant_context(membership.tenant_id)
             tenant = self.db.scalar(
                 select(Tenant).where(
                     Tenant.id == membership.tenant_id,
-                    Tenant.status == TenantStatus.active,
+                    Tenant.status.in_([TenantStatus.trial, TenantStatus.active]),
                 )
             )
             accepted = tenant is not None
@@ -109,8 +119,7 @@ class AuthenticationService:
             raise InvalidCredentialsError
 
         assert user is not None
-        membership = membership_rows[0]
-        assert tenant is not None
+        self._set_platform_role_context(user.platform_role)
         if updated_hash:
             user.password_hash = updated_hash
         user.last_login_at = self._now()
@@ -127,7 +136,7 @@ class AuthenticationService:
         if raw_session is None:
             raise SessionInvalidError
         self._set_user_context(raw_session.user_id)
-        self._set_tenant_context(raw_session.tenant_id)
+        self._set_tenant_context(raw_session.active_tenant_id)
         row = self.repository.session_by_token_hash(sha256_token(raw_token))
         if row is None:
             raise SessionInvalidError
@@ -138,13 +147,23 @@ class AuthenticationService:
             or as_utc(session.idle_expires_at) <= now
             or as_utc(session.absolute_expires_at) <= now
         )
-        active = (
-            user.is_active
+        has_company_access = bool(
+            membership
             and membership.is_active
-            and membership.role
-            in {TenantRole.owner, TenantRole.admin, TenantRole.employee, TenantRole.member}
-            and tenant.status == TenantStatus.active
+            and membership.role in {TenantRole.company_admin, TenantRole.company_user}
+            and tenant
+            and (
+                user.platform_role in {PlatformRole.owner, PlatformRole.admin}
+                or tenant.status in {TenantStatus.trial, TenantStatus.active}
+            )
         )
+        has_platform_access = user.platform_role in {
+            PlatformRole.owner,
+            PlatformRole.admin,
+        }
+        if session.active_tenant_id is None:
+            has_company_access = bool(self.repository.active_memberships(user.id))
+        active = user.is_active and (has_platform_access or has_company_access)
         if expired or not active:
             if session.revoked_at is None:
                 session.revoked_at = now
@@ -162,7 +181,8 @@ class AuthenticationService:
             self.db.commit()
 
         self._set_user_context(user.id)
-        self._set_tenant_context(tenant.id)
+        self._set_platform_role_context(user.platform_role)
+        self._set_tenant_context(tenant.id if tenant else None)
         return AuthenticatedSession(session, user, membership, tenant)
 
     def validate_csrf(
@@ -194,6 +214,7 @@ class AuthenticationService:
             raise InvalidCredentialsError
         authenticated.user.password_hash = hash_password(new_password)
         authenticated.user.password_changed_at = self._now()
+        authenticated.user.must_change_password = False
         self.repository.revoke_user_sessions(authenticated.user.id, "password_changed")
         result = self._new_session(
             authenticated.user, authenticated.membership, authenticated.tenant
@@ -202,18 +223,97 @@ class AuthenticationService:
         return result
 
     def issue_session(
-        self, user: AppUser, membership: TenantMembership, tenant: Tenant
+        self,
+        user: AppUser,
+        membership: TenantMembership | None,
+        tenant: Tenant | None,
     ) -> tuple[AuthenticatedSession, SessionSecrets]:
         """Issue a normal browser session after an already-authorized flow."""
         self._set_user_context(user.id)
-        self._set_tenant_context(tenant.id)
+        self._set_platform_role_context(user.platform_role)
+        self._set_tenant_context(tenant.id if tenant else None)
         user.last_login_at = self._now()
         result = self._new_session(user, membership, tenant)
         self.db.commit()
         return result
 
+    def switch_context(
+        self, authenticated: AuthenticatedSession, tenant_id: UUID
+    ) -> tuple[AuthenticatedSession, SessionSecrets]:
+        self._set_user_context(authenticated.user.id)
+        self._set_platform_role_context(authenticated.user.platform_role)
+        self._set_tenant_context(tenant_id)
+        tenant = self.db.get(Tenant, tenant_id)
+        if tenant is None:
+            raise SessionInvalidError
+        membership = self.db.scalar(
+            select(TenantMembership).where(
+                TenantMembership.user_id == authenticated.user.id,
+                TenantMembership.tenant_id == tenant_id,
+                TenantMembership.is_active.is_(True),
+            )
+        )
+        is_platform_actor = authenticated.user.platform_role in {
+            PlatformRole.owner,
+            PlatformRole.admin,
+        }
+        if not is_platform_actor and (
+            membership is None
+            or tenant.status not in {TenantStatus.trial, TenantStatus.active}
+        ):
+            raise SessionInvalidError
+        authenticated.session.revoked_at = self._now()
+        authenticated.session.revoke_reason = "company_context_switched"
+        result = self._new_session(authenticated.user, membership, tenant)
+        self.db.add(
+            AuditLog(
+                actor_user_id=authenticated.user.id,
+                tenant_id=tenant.id,
+                platform_role=(
+                    authenticated.user.platform_role.value
+                    if authenticated.user.platform_role
+                    else None
+                ),
+                action="auth.context.selected",
+                target_type="tenant",
+                target_id=str(tenant.id),
+                metadata_after={"tenant_slug": tenant.slug},
+            )
+        )
+        self.db.commit()
+        return result
+
+    def clear_context(
+        self, authenticated: AuthenticatedSession
+    ) -> tuple[AuthenticatedSession, SessionSecrets]:
+        if authenticated.user.platform_role not in {
+            PlatformRole.owner,
+            PlatformRole.admin,
+        }:
+            raise SessionInvalidError
+        previous_tenant = authenticated.tenant
+        authenticated.session.revoked_at = self._now()
+        authenticated.session.revoke_reason = "company_context_cleared"
+        self._set_tenant_context(previous_tenant.id if previous_tenant else None)
+        result = self._new_session(authenticated.user, None, None)
+        self.db.add(
+            AuditLog(
+                actor_user_id=authenticated.user.id,
+                tenant_id=previous_tenant.id if previous_tenant else None,
+                platform_role=authenticated.user.platform_role.value,
+                action="auth.context.cleared",
+                target_type="tenant",
+                target_id=str(previous_tenant.id) if previous_tenant else None,
+            )
+        )
+        self.db.commit()
+        return result
+
     def _new_session(
-        self, user: AppUser, membership: TenantMembership, tenant: Tenant
+        self,
+        user: AppUser,
+        membership: TenantMembership | None,
+        tenant: Tenant | None,
     ) -> tuple[AuthenticatedSession, SessionSecrets]:
         now = self._now()
         absolute = now + timedelta(hours=self.settings.session_absolute_hours)
@@ -222,7 +322,7 @@ class AuthenticationService:
             token_hash=secrets.token_hash,
             csrf_token_hash=secrets.csrf_token_hash,
             user_id=user.id,
-            tenant_id=tenant.id,
+            active_tenant_id=tenant.id if tenant else None,
             created_at=now,
             last_seen_at=now,
             idle_expires_at=min(
@@ -234,11 +334,11 @@ class AuthenticationService:
         self.db.flush()
         return AuthenticatedSession(session, user, membership, tenant), secrets
 
-    def _set_tenant_context(self, tenant_id: UUID) -> None:
+    def _set_tenant_context(self, tenant_id: UUID | None) -> None:
         if self.db.bind and self.db.bind.dialect.name == "postgresql":
             self.db.execute(
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
+                {"tenant_id": str(tenant_id) if tenant_id else ""},
             )
 
     def _set_user_context(self, user_id: UUID) -> None:
@@ -246,6 +346,13 @@ class AuthenticationService:
             self.db.execute(
                 text("SELECT set_config('app.user_id', :user_id, true)"),
                 {"user_id": str(user_id)},
+            )
+
+    def _set_platform_role_context(self, role: PlatformRole | None) -> None:
+        if self.db.bind and self.db.bind.dialect.name == "postgresql":
+            self.db.execute(
+                text("SELECT set_config('app.platform_role', :role, true)"),
+                {"role": role.value if role else ""},
             )
 
     def _log_event(

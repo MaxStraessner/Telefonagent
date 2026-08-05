@@ -61,7 +61,7 @@ it("meldet sich an und lädt Tenant-Daten erst nach erfolgreicher Sitzung", asyn
   vi.stubGlobal("fetch", fetchMock);
   render(<App />);
   await screen.findByRole("heading", { name: "Willkommen zurück" });
-  await userEvent.type(screen.getByLabelText("Benutzername"), "owner");
+  await userEvent.type(screen.getByLabelText("Benutzername oder E-Mail"), "owner");
   await userEvent.type(screen.getByLabelText("Passwort"), "correct horse battery staple");
   await userEvent.click(screen.getByRole("button", { name: "Anmelden" }));
   expect(await screen.findByText("Guten Tag bei Beispiel GmbH")).toBeInTheDocument();

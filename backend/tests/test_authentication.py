@@ -5,9 +5,19 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.core.config import Settings, get_settings
-from app.core.security import sha256_token
+from app.core.security import hash_password, sha256_token
 from app.main import app
-from app.models import AuthenticationRateLimit, InitialAppSetup, UserSession
+from app.models import (
+    AppUser,
+    AuditLog,
+    AuthenticationRateLimit,
+    InitialAppSetup,
+    PlatformRole,
+    Tenant,
+    TenantMembership,
+    TenantRole,
+    UserSession,
+)
 from app.services.provisioning import ProvisioningService
 
 ORIGIN_HEADERS = {
@@ -48,8 +58,99 @@ def test_login_sets_server_session_and_csrf_cookies(anonymous_client):
     )
     session = anonymous_client.get("/api/v1/auth/session")
     assert session.status_code == 200
-    assert session.json()["user"]["role"] == "owner"
-    assert session.json()["tenant"]["slug"] == "salon-haarkunst-test"
+    assert session.json()["user"]["platform_role"] == "owner"
+    assert session.json()["user"]["role"] is None
+    assert session.json()["tenant"] is None
+    assert session.json()["mode"] == "platform"
+
+
+def test_login_accepts_normalized_email(anonymous_client):
+    response = login(anonymous_client, "  OWNER@TELEFONAGENT.LOCAL  ")
+    assert response.status_code == 200
+    assert response.json()["user"]["platform_role"] in {"owner", "admin"}
+
+
+def test_platform_context_switch_rotates_session_and_is_audited(
+    anonymous_client, db
+):
+    assert login(anonymous_client).status_code == 200
+    tenant = db.scalar(
+        select(Tenant).where(Tenant.slug == "salon-haarkunst-test")
+    )
+    assert tenant is not None
+    old_token = anonymous_client.cookies.get("telefonagent_session")
+    csrf = anonymous_client.cookies.get("telefonagent_csrf")
+    response = anonymous_client.post(
+        "/api/v1/auth/context",
+        json={"company_id": str(tenant.id)},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200
+    assert response.json()["active_company"]["id"] == str(tenant.id)
+    assert anonymous_client.cookies.get("telefonagent_session") != old_token
+    old_session = db.scalar(
+        select(UserSession).where(UserSession.token_hash == sha256_token(old_token))
+    )
+    assert old_session is not None and old_session.revoked_at is not None
+    audit = db.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "auth.context.selected")
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None and audit.tenant_id == tenant.id
+
+
+def test_company_user_cannot_select_foreign_context(anonymous_client, db):
+    foreign, _ = ProvisioningService(db).provision_tenant(
+        slug="context-foreign-company",
+        name="Context Foreign Company",
+        industry="services",
+        timezone_name="Europe/Berlin",
+        username="context-foreign-admin",
+        display_name="Context Foreign Admin",
+        email="context-foreign-admin@example.test",
+        password="context foreign password is long enough",
+    )
+    tenant = db.scalar(
+        select(Tenant).where(Tenant.slug == "salon-haarkunst-test")
+    )
+    assert tenant is not None and foreign.id != tenant.id
+    user = AppUser(
+        username="context-company-user",
+        normalized_username="context-company-user",
+        password_hash=hash_password("context user password is long enough"),
+        email="context-user@example.test",
+        normalized_email="context-user@example.test",
+        display_name="Context User",
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    db.add(
+        TenantMembership(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            role=TenantRole.company_user,
+            is_active=True,
+            is_primary_admin=False,
+        )
+    )
+    db.commit()
+    assert login(
+        anonymous_client,
+        "context-user@example.test",
+        "context user password is long enough",
+    ).status_code == 200
+    csrf = anonymous_client.cookies.get("telefonagent_csrf")
+    response = anonymous_client.post(
+        "/api/v1/auth/context",
+        json={"company_id": str(foreign.id)},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 403
+    assert anonymous_client.get("/api/v1/auth/session").json()["tenant"]["id"] == str(
+        tenant.id
+    )
 
 
 def test_csrf_is_required_and_logout_revokes_session(anonymous_client):
@@ -188,14 +289,30 @@ def test_production_security_configuration_fails_closed():
         )
     settings = Settings(
         app_env="production",
+        app_component="migration",
         database_url="postgresql+psycopg://runtime:test@database/app",
+        migration_database_url="postgresql+psycopg://migrator:test@database/app",
         auth_hmac_secret="production-auth-secret-with-more-than-thirty-two-bytes",
         app_base_url="https://api.example.test",
         cors_origins="https://app.example.test",
+        smtp_host="smtp.example.test",
+        smtp_from_address="telefonagent@example.test",
     )
     assert settings.session_cookie_name == "__Host-telefonagent_session"
     assert settings.csrf_cookie_name == "__Host-telefonagent_csrf"
     assert settings.is_production
+    with pytest.raises(ValidationError):
+        Settings(
+            app_env="production",
+            app_component="runtime",
+            database_url="postgresql+psycopg://runtime:test@database/app",
+            migration_database_url="postgresql+psycopg://migrator:test@database/app",
+            auth_hmac_secret="production-auth-secret-with-more-than-thirty-two-bytes",
+            app_base_url="https://api.example.test",
+            cors_origins="https://app.example.test",
+            smtp_host="smtp.example.test",
+            smtp_from_address="telefonagent@example.test",
+        )
 
 
 def _initial_setup_settings() -> Settings:
@@ -218,6 +335,12 @@ def _reopen_initial_setup(db) -> None:
 
 
 def test_initial_setup_creates_owner_and_issues_a_session(anonymous_client, db):
+    current_owner = db.scalar(
+        select(AppUser).where(AppUser.platform_role == PlatformRole.owner)
+    )
+    assert current_owner is not None
+    current_owner.platform_role = PlatformRole.admin
+    db.commit()
     _reopen_initial_setup(db)
     app.dependency_overrides[get_settings] = _initial_setup_settings
     status_response = anonymous_client.get(
@@ -241,13 +364,16 @@ def test_initial_setup_creates_owner_and_issues_a_session(anonymous_client, db):
         headers=ORIGIN_HEADERS,
     )
     assert response.status_code == 200, response.text
-    assert response.json()["user"]["role"] == "owner"
-    assert response.json()["tenant"]["name"] == "Einrichtungs GmbH"
+    assert response.json()["user"]["platform_role"] == "owner"
+    assert response.json()["user"]["role"] is None
+    assert response.json()["tenant"] is None
+    assert response.json()["mode"] == "platform"
     assert anonymous_client.cookies.get("telefonagent_session")
 
     state = db.get(InitialAppSetup, 1)
     assert state is not None and state.completed_at is not None
-    assert str(state.tenant_id) == response.json()["tenant"]["id"]
+    tenant = db.get(Tenant, state.tenant_id)
+    assert tenant is not None and tenant.name == "Einrichtungs GmbH"
     assert anonymous_client.get(
         "/api/v1/auth/setup-status", headers=ORIGIN_HEADERS
     ).json() == {"available": False}

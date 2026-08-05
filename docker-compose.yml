@@ -21,6 +21,7 @@ services:
     command: ["alembic", "upgrade", "head"]
     environment:
       APP_ENV: ${APP_ENV:-development}
+      APP_COMPONENT: migration
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-telefonagent}:${POSTGRES_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
       MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
       AUTH_HMAC_SECRET: ${AUTH_HMAC_SECRET:-development-only-change-this-auth-secret}
@@ -38,6 +39,7 @@ services:
     build: ./backend
     environment:
       APP_ENV: ${APP_ENV:-development}
+      APP_COMPONENT: runtime
       APP_NAME: ${APP_NAME:-Telefonagent}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-telefonagent}:${POSTGRES_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
       AUTH_HMAC_SECRET: ${AUTH_HMAC_SECRET:-development-only-change-this-auth-secret}
@@ -57,6 +59,12 @@ services:
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
       CORS_ORIGINS: ${FRONTEND_URL:-http://localhost:5173}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2.1}
       OPENAI_REALTIME_MAX_SESSION_MINUTES: ${OPENAI_REALTIME_MAX_SESSION_MINUTES:-10}

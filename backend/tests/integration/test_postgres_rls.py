@@ -26,9 +26,12 @@ TENANT_B = "10000000-0000-4000-8000-000000000002"
 SERVICE_A = "20000000-0000-4000-8000-000000000001"
 SERVICE_B = "20000000-0000-4000-8000-000000000002"
 USER_A = "30000000-0000-4000-8000-000000000001"
+PLATFORM_USER = "30000000-0000-4000-8000-000000000002"
 MEMBERSHIP_A = "40000000-0000-4000-8000-000000000001"
 INBOUND_ROUTE_A = "50000000-0000-4000-8000-000000000001"
 OAUTH_STATE_A = "60000000-0000-4000-8000-000000000001"
+INVITATION_A = "70000000-0000-4000-8000-000000000001"
+INVITATION_TOKEN_HASH = "a" * 64
 PASSWORD = "postgres runtime authentication password"
 
 
@@ -112,10 +115,12 @@ def postgres_rls_fixture():
                 """
                 INSERT INTO app_users (
                     id, username, normalized_username, password_hash,
-                    email, display_name, is_active, is_platform_admin
+                    email, normalized_email, display_name, is_active,
+                    platform_role, must_change_password, is_platform_admin
                 ) VALUES (
                     CAST(:id AS uuid), 'rls-owner', 'rls-owner', :password_hash,
-                    'rls-owner@example.test', 'RLS Owner', true, false
+                    'rls-owner@example.test', 'rls-owner@example.test',
+                    'RLS Owner', true, NULL, false, false
                 )
                 ON CONFLICT (id) DO NOTHING
                 """
@@ -125,19 +130,67 @@ def postgres_rls_fixture():
         connection.execute(
             text(
                 """
+                INSERT INTO app_users (
+                    id, username, normalized_username, password_hash,
+                    email, normalized_email, display_name, is_active,
+                    platform_role, must_change_password, is_platform_admin
+                ) VALUES (
+                    CAST(:id AS uuid), 'rls-platform', 'rls-platform',
+                    :password_hash, 'rls-platform@example.test',
+                    'rls-platform@example.test', 'RLS Platform', true,
+                    'admin', false, true
+                )
+                ON CONFLICT (id) DO UPDATE
+                SET platform_role = 'admin',
+                    is_active = true,
+                    password_hash = EXCLUDED.password_hash
+                """
+            ),
+            {"id": PLATFORM_USER, "password_hash": hash_password(PASSWORD)},
+        )
+        connection.execute(
+            text(
+                """
                 INSERT INTO tenant_memberships (
-                    id, tenant_id, user_id, role, is_active
+                    id, tenant_id, user_id, role, is_active, is_primary_admin
                 ) VALUES (
                     CAST(:id AS uuid), CAST(:tenant_id AS uuid),
-                    CAST(:user_id AS uuid), 'owner', true
+                    CAST(:user_id AS uuid), 'company_admin', true, true
                 )
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT (id) DO UPDATE
+                SET role = 'company_admin', is_active = true, is_primary_admin = true
                 """
             ),
             {
                 "id": MEMBERSHIP_A,
                 "tenant_id": TENANT_A,
                 "user_id": USER_A,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO invitations (
+                    id, tenant_id, created_by_user_id, email, normalized_email,
+                    username, display_name, tenant_role, token_hash, expires_at,
+                    delivery_status
+                ) VALUES (
+                    CAST(:id AS uuid), CAST(:tenant_id AS uuid),
+                    CAST(:creator_id AS uuid), 'invite@example.test',
+                    'invite@example.test', 'invite', 'Invite', 'company_user',
+                    :token_hash, now() + interval '72 hours', 'sent'
+                )
+                ON CONFLICT (id) DO UPDATE
+                SET token_hash = EXCLUDED.token_hash,
+                    expires_at = EXCLUDED.expires_at,
+                    delivery_status = 'sent', accepted_at = NULL, revoked_at = NULL
+                """
+            ),
+            {
+                "id": INVITATION_A,
+                "tenant_id": TENANT_A,
+                "creator_id": USER_A,
+                "token_hash": INVITATION_TOKEN_HASH,
             },
         )
         connection.execute(
@@ -202,6 +255,61 @@ def test_runtime_role_sees_only_selected_tenant():
         assert connection.scalars(
             text("SELECT name FROM services ORDER BY name")
         ).all() == ["Alpha Service"]
+    engine.dispose()
+
+
+def test_platform_mode_can_read_control_plane_but_not_business_rows():
+    engine = create_engine(RUNTIME_URL)
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.user_id', :user_id, true)"),
+            {"user_id": PLATFORM_USER},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM tenants")) >= 2
+        assert connection.scalar(text("SELECT count(*) FROM services")) == 0
+    engine.dispose()
+
+
+def test_runtime_role_is_not_owner_and_cannot_bypass_rls():
+    engine = create_engine(RUNTIME_URL)
+    with engine.begin() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT role.rolbypassrls,
+                       table_owner.rolname = current_user AS owns_services
+                FROM pg_roles role
+                JOIN pg_class table_info ON table_info.relname = 'services'
+                JOIN pg_roles table_owner ON table_owner.oid = table_info.relowner
+                WHERE role.rolname = current_user
+                """
+            )
+        ).one()
+        assert row.rolbypassrls is False
+        assert row.owns_services is False
+    engine.dispose()
+
+
+def test_invitation_policy_discloses_only_the_exact_hashed_public_token():
+    engine = create_engine(RUNTIME_URL)
+    with engine.begin() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM invitations")) == 0
+        connection.execute(
+            text(
+                "SELECT set_config('app.invitation_token_hash', :token_hash, true)"
+            ),
+            {"token_hash": "b" * 64},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM invitations")) == 0
+        connection.execute(
+            text(
+                "SELECT set_config('app.invitation_token_hash', :token_hash, true)"
+            ),
+            {"token_hash": INVITATION_TOKEN_HASH},
+        )
+        assert connection.scalar(text("SELECT email FROM invitations")) == (
+            "invite@example.test"
+        )
     engine.dispose()
 
 
@@ -274,6 +382,28 @@ def test_authentication_establishes_rls_context_for_runtime_role():
         assert db.scalars(
             text("SELECT name FROM services ORDER BY name")
         ).all() == ["Alpha Service"]
+        assert db.scalar(text("SELECT current_setting('app.platform_role')")) == ""
+    engine.dispose()
+
+
+def test_platform_authentication_sets_access_level_without_implicit_tenant():
+    engine = create_engine(RUNTIME_URL)
+    settings = Settings(
+        app_env="test",
+        database_url=RUNTIME_URL,
+        cors_origins="http://testserver",
+        auth_hmac_secret="postgres-test-auth-secret-with-thirty-two-bytes",
+    )
+    with Session(engine, expire_on_commit=False) as db:
+        authenticated, secrets = AuthenticationService(db, settings).login(
+            "rls-platform", PASSWORD, "127.0.0.2"
+        )
+        assert authenticated.tenant is None
+        restored = AuthenticationService(db, settings).authenticate(secrets.token)
+        assert restored.tenant is None
+        assert db.scalar(text("SELECT current_setting('app.platform_role')")) == "admin"
+        assert db.scalar(text("SELECT current_setting('app.tenant_id')")) == ""
+        assert db.scalar(text("SELECT count(*) FROM services")) == 0
     engine.dispose()
 
 

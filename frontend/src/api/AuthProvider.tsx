@@ -8,6 +8,9 @@ interface AuthState {
   login: (username: string, password: string) => Promise<void>;
   initialSetup: (value: InitialSetupRequest) => Promise<void>;
   logout: () => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  selectCompanyContext: (companyId: string) => Promise<void>;
+  clearCompanyContext: () => Promise<void>;
   refresh: () => Promise<void>;
   setupAvailable: boolean;
 }
@@ -66,9 +69,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     finally { setSession(null); }
   }, []);
 
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    setSession(await api.changePassword(currentPassword, newPassword));
+  }, []);
+
+  const selectCompanyContext = useCallback(async (companyId: string) => {
+    setSession(await api.selectCompanyContext(companyId));
+  }, []);
+
+  const clearCompanyContext = useCallback(async () => {
+    setSession(await api.clearCompanyContext());
+  }, []);
+
   const value = useMemo(
-    () => ({ session, loading, login, initialSetup, logout, refresh, setupAvailable }),
-    [session, loading, login, initialSetup, logout, refresh, setupAvailable],
+    () => ({ session, loading, login, initialSetup, logout, changePassword, selectCompanyContext, clearCompanyContext, refresh, setupAvailable }),
+    [session, loading, login, initialSetup, logout, changePassword, selectCompanyContext, clearCompanyContext, refresh, setupAvailable],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

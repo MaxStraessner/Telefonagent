@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyUser, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -52,6 +52,43 @@ export const api = {
   login: (username: string, password: string) => request<AuthSession>("/auth/login", { method: "POST", body: { username, password }, loginRequest: true, suppressUnauthorizedEvent: true }),
   logout: () => request<void>("/auth/logout", { method: "POST", suppressUnauthorizedEvent: true }),
   changePassword: (currentPassword: string, newPassword: string) => request<AuthSession>("/auth/change-password", { method: "POST", body: { current_password: currentPassword, new_password: newPassword } }),
+  forgotPassword: (identifier: string) => request<void>("/auth/forgot-password", { method: "POST", body: { identifier }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  resetPassword: (token: string, newPassword: string) => request<void>("/auth/reset-password", { method: "POST", body: { token, new_password: newPassword }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  invitation: (token: string, signal?: AbortSignal) => request<InvitationPreview>(`/auth/invitations/${encodeURIComponent(token)}`, { signal, loginRequest: true, suppressUnauthorizedEvent: true }),
+  acceptInvitation: (token: string, password: string) => request<void>(`/auth/invitations/${encodeURIComponent(token)}`, { method: "POST", body: { password }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  selectCompanyContext: (companyId: string) => request<AuthSession>("/auth/context", { method: "POST", body: { company_id: companyId } }),
+  clearCompanyContext: () => request<AuthSession>("/auth/context", { method: "DELETE" }),
+  platformDashboard: () => request<PlatformDashboard>("/platform/dashboard"),
+  companies: (search = "", status = "") => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (status) params.set("status", status);
+    const query = params.toString();
+    return request<CompanySummary[]>(`/platform/companies${query ? `?${query}` : ""}`);
+  },
+  company: (id: string) => request<CompanyDetail>(`/platform/companies/${id}`),
+  createCompany: (value: CompanyCreate) => request<CompanyDetail>("/platform/companies", { method: "POST", body: value }),
+  updateCompanyStatus: (id: string, status: CompanyStatus) => request<CompanyDetail>(`/platform/companies/${id}/status`, { method: "POST", body: { status } }),
+  selectPlatformCompany: (id: string) => request<AuthSession>("/auth/context", { method: "POST", body: { company_id: id } }),
+  platformCompanyUsers: (id: string) => request<CompanyUser[]>(`/platform/companies/${id}/users`),
+  updatePlatformCompanyUser: (companyId: string, userId: string, value: Pick<CompanyUser, "display_name" | "email" | "role" | "is_active">) => request<CompanyUser>(`/platform/companies/${companyId}/users/${userId}`, { method: "PUT", body: value }),
+  transferPlatformPrimaryAdmin: (companyId: string, userId: string) => request<CompanyUser>(`/platform/companies/${companyId}/primary-admin`, { method: "POST", body: { user_id: userId } }),
+  platformCompanyInvitations: (id: string) => request<AccountInvitation[]>(`/platform/companies/${id}/invitations`),
+  invitePlatformCompanyUser: (id: string, value: CompanyUserInvite) => request<AccountInvitation>(`/platform/companies/${id}/invitations`, { method: "POST", body: value }),
+  revokePlatformCompanyInvitation: (companyId: string, invitationId: string) => request<AccountInvitation>(`/platform/companies/${companyId}/invitations/${invitationId}`, { method: "DELETE" }),
+  ownCompany: () => request<CompanyDetail>("/company"),
+  updateOwnCompany: (value: Pick<CompanyDetail, "contact_name" | "contact_email" | "contact_phone" | "timezone">) => request<CompanyDetail>("/company", { method: "PUT", body: value }),
+  ownCompanyUsers: () => request<CompanyUser[]>("/company/users"),
+  inviteOwnCompanyUser: (value: CompanyUserInvite) => request<AccountInvitation>("/company/invitations", { method: "POST", body: value }),
+  updateOwnCompanyUser: (userId: string, value: Pick<CompanyUser, "display_name" | "email" | "role" | "is_active">) => request<CompanyUser>(`/company/users/${userId}`, { method: "PUT", body: value }),
+  transferOwnPrimaryAdmin: (userId: string) => request<CompanyUser>("/company/primary-admin", { method: "POST", body: { user_id: userId } }),
+  ownCompanyInvitations: () => request<AccountInvitation[]>("/company/invitations"),
+  revokeOwnCompanyInvitation: (invitationId: string) => request<AccountInvitation>(`/company/invitations/${invitationId}`, { method: "DELETE" }),
+  platformAdmins: () => request<PlatformAdmin[]>("/platform/admins"),
+  invitePlatformAdmin: (value: { username: string; display_name: string; email: string; current_password: string }) => request<AccountInvitation>("/platform/admins/invitations", { method: "POST", body: value }),
+  updatePlatformAdmin: (id: string, value: { display_name: string; email: string | null; is_active: boolean; current_password: string }) => request<PlatformAdmin>(`/platform/admins/${id}`, { method: "PUT", body: value }),
+  platformAudit: (companyId = "") => request<AuditEntry[]>(`/platform/audit${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ""}`),
+  ownCompanyAudit: () => request<AuditEntry[]>("/company/audit"),
   managedUsers: () => request<ManagedUser[]>("/auth/users"),
   createManagedUser: (value: ManagedUserWrite) => request<ManagedUser>("/auth/users", { method: "POST", body: value }),
   updateManagedUser: (id: string, value: ManagedUserUpdate) => request<ManagedUser>(`/auth/users/${id}`, { method: "PUT", body: value }),

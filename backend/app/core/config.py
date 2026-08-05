@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_env: str = "development"
+    app_component: str = "runtime"
     app_name: str = "Telefonagent"
     backend_version: str = "0.1.0"
     database_url: str = "postgresql+psycopg://telefonagent:telefonagent@database:5432/telefonagent"
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
     dev_bootstrap_username: str = "owner@telefonagent.local"
     dev_bootstrap_password: str | None = None
     initial_setup_token: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str | None = None
+    smtp_starttls: bool = True
     allow_development_tenant_fallback: bool = False
     development_tenant_slug: str = "salon-haarkunst-test"
     log_level: str = "INFO"
@@ -105,6 +112,10 @@ class Settings(BaseSettings):
         "microsoft_calendar_client_secret",
         "microsoft_calendar_redirect_uri",
         "initial_setup_token",
+        "smtp_host",
+        "smtp_username",
+        "smtp_password",
+        "smtp_from_address",
         mode="before",
     )
     @classmethod
@@ -193,7 +204,25 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
         if self.is_production:
-            if self.migration_database_url == self.database_url:
+            component = self.app_component.strip().lower()
+            if component not in {"runtime", "migration", "maintenance"}:
+                raise ValueError(
+                    "APP_COMPONENT muss runtime, migration oder maintenance sein."
+                )
+            if component == "migration" and not self.migration_database_url:
+                raise ValueError(
+                    "MIGRATION_DATABASE_URL muss im produktiven Migrationsprozess "
+                    "mit einer getrennten Migrationsrolle gesetzt sein."
+                )
+            if component == "runtime" and self.migration_database_url:
+                raise ValueError(
+                    "MIGRATION_DATABASE_URL darf dem produktiven Runtime-Prozess "
+                    "nicht bereitgestellt werden."
+                )
+            if (
+                self.migration_database_url
+                and self.migration_database_url == self.database_url
+            ):
                 raise ValueError(
                     "DATABASE_URL und MIGRATION_DATABASE_URL dürfen in "
                     "Produktion nicht dieselbe Rolle verwenden."
@@ -210,6 +239,10 @@ class Settings(BaseSettings):
                 raise ValueError("Alle CORS_ORIGINS müssen in Produktion HTTPS verwenden.")
             if self.initial_setup_token and len(self.initial_setup_token.encode("utf-8")) < 32:
                 raise ValueError("INITIAL_SETUP_TOKEN muss in Produktion mindestens 32 Bytes lang sein.")
+            if not self.smtp_host or not self.smtp_from_address:
+                raise ValueError(
+                    "SMTP_HOST und SMTP_FROM_ADDRESS müssen in Produktion gesetzt sein."
+                )
         return self
 
 

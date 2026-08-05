@@ -17,6 +17,7 @@ from app.models import (
     AgentTopic,
     AppUser,
     Location,
+    PlatformRole,
     ResponseLength,
     Service,
     StaffMember,
@@ -60,9 +61,11 @@ def seed_database(db: Session, app_settings: Settings | None = None) -> Tenant:
             normalized_username=normalize_username(app_settings.dev_bootstrap_username),
             password_hash=UNUSABLE_PASSWORD_HASH,
             email="owner@telefonagent.local",
+            normalized_email="owner@telefonagent.local",
             display_name="Lokale Administration",
             is_active=True,
-            is_platform_admin=False,
+            platform_role=PlatformRole.owner,
+            is_platform_admin=True,
         )
         db.add(owner)
         db.flush()
@@ -86,8 +89,9 @@ def seed_database(db: Session, app_settings: Settings | None = None) -> Tenant:
             TenantMembership(
                 tenant_id=tenant.id,
                 user_id=owner.id,
-                role=TenantRole.owner,
+                role=TenantRole.company_admin,
                 is_active=True,
+                is_primary_admin=True,
             )
         )
 

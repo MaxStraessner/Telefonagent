@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from alembic import command
 from alembic.config import Config
@@ -19,6 +20,7 @@ os.environ["CALENDAR_TOKEN_ENCRYPTION_KEY"] = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM
 from app.core.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models import Tenant  # noqa: E402
 from app.seed import seed_database  # noqa: E402
 
 
@@ -52,6 +54,20 @@ def client() -> TestClient:
         },
     )
     assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        tenant_id = db.scalar(
+            select(Tenant.id).where(Tenant.slug == "salon-haarkunst-test")
+        )
+    csrf_token = client.cookies.get("telefonagent_csrf")
+    context_response = client.post(
+        "/api/v1/auth/context",
+        json={"company_id": str(tenant_id)},
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": csrf_token,
+        },
+    )
+    assert context_response.status_code == 200, context_response.text
     original_request = client.request
 
     def authenticated_request(method: str, url: str, **kwargs):

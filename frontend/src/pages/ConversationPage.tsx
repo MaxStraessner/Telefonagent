@@ -43,15 +43,19 @@ export function ConversationPage() {
 }
 
 function ConversationContent({ data }: { data: PlatformData }) {
+  const realtimeE2eStub = import.meta.env.VITE_REALTIME_E2E_STUB === "true";
   const [mode, setMode] = usePersistentSetting<"test" | "presentation">("telefonagent-display-mode", "test");
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const [runtime, setRuntime] = useState<RuntimeSummary | null>(null);
-  const realtime = useRealtimeVoice(data.platformStatus.realtime_voice_configured, audioElement);
+  const realtime = useRealtimeVoice(
+    data.platformStatus.realtime_voice_configured || realtimeE2eStub,
+    audioElement,
+  );
   const { view } = realtime;
   const active = ["requesting_microphone", "connecting", "connected", "muted", "user_speaking", "assistant_thinking", "assistant_speaking"].includes(view.state);
   const voiceActive = view.state === "user_speaking" || view.state === "assistant_speaking";
-  const canStart = data.platformStatus.realtime_voice_configured && !active;
+  const canStart = (data.platformStatus.realtime_voice_configured || realtimeE2eStub) && !active;
   const agentName = runtime?.assistant_name ?? data.tenant.settings.assistant_name;
   const toolEvents = view.events.filter((event) => event.type.startsWith("tool_"));
 
@@ -76,7 +80,8 @@ function ConversationContent({ data }: { data: PlatformData }) {
         action={<div className="segmented" aria-label="Darstellungsmodus"><button className={mode === "test" ? "active" : ""} onClick={() => setMode("test")}>Testmodus</button><button className={mode === "presentation" ? "active" : ""} onClick={() => setMode("presentation")}>Präsentation</button></div>}
       />
       <audio ref={setAudioElement} autoPlay playsInline hidden aria-label="Sprachausgabe des Assistenten" />
-      {!data.platformStatus.realtime_voice_configured && <div className="notice warning" role="status"><span>!</span><p>OpenAI Realtime ist serverseitig noch nicht konfiguriert. Hinterlege den API-Key ausschließlich im Backend.</p></div>}
+      {realtimeE2eStub && <div className="notice warning" role="status"><span>!</span><p>Lokaler E2E-Stub aktiv: Mikrofon und externer Realtime-Provider bleiben deaktiviert.</p></div>}
+      {!realtimeE2eStub && !data.platformStatus.realtime_voice_configured && <div className="notice warning" role="status"><span>!</span><p>OpenAI Realtime ist serverseitig noch nicht konfiguriert. Hinterlege den API-Key ausschließlich im Backend.</p></div>}
       {view.notice && <div className="notice" role="status"><span>i</span><p>{view.notice}</p><button aria-label="Hinweis schließen" onClick={realtime.dismissNotice}>×</button></div>}
       {view.error && <div className="notice error" role="alert"><span>!</span><p>{view.error}{mode === "test" && view.errorCode && <small className="technical-error-code">Fehlercode: <code>{view.errorCode}</code></small>}</p></div>}
       <div className="conversation-grid">
@@ -89,7 +94,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <div className="call-actions">
             <button className="button primary large" disabled={!canStart} onClick={realtime.start}><Icon name="call" /> {view.state === "ended" ? "Neues Testgespräch" : "Testgespräch starten"}</button>
             <button className="button secondary" disabled={!active} onClick={realtime.end}>Gespräch beenden</button>
-            <button className="button ghost" aria-pressed={view.muted} disabled={!active || view.state === "connecting" || view.state === "requesting_microphone"} onClick={realtime.toggleMute}><Icon name="mic" />{view.muted ? "Mikrofon aktivieren" : "Mikrofon stummschalten"}</button>
+            <button className="button ghost" aria-pressed={view.muted} disabled={realtimeE2eStub || !active || view.state === "connecting" || view.state === "requesting_microphone"} onClick={realtime.toggleMute}><Icon name="mic" />{view.muted ? "Mikrofon aktivieren" : "Mikrofon stummschalten"}</button>
           </div>
           <small>Audio und Transkript bleiben flüchtig im Browser und werden von dieser Anwendung nicht gespeichert.</small>
         </section>
@@ -116,7 +121,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
         <section className="card tool-status"><div className="section-heading"><h2>Werkzeugaufrufe</h2><span>{toolEvents.filter((event) => event.type === "tool_started").length} Aufrufe</span></div>{toolEvents.length === 0 ? <div className="placeholder-panel"><p>Noch keine Werkzeugaufrufe</p><small>Terminwerkzeuge werden ausschließlich bei passenden Gesprächsschritten ausgeführt.</small></div> : <div className="event-list">{[...toolEvents].reverse().map((event) => <div className="event-row" key={event.id}><time>{new Date(event.timestamp).toLocaleTimeString("de-DE")}</time><code>{event.type}</code>{event.detail && <small>{event.detail}</small>}</div>)}</div>}</section>
         <section className="card diagnosis"><div className="section-heading"><h2>Technische Diagnose</h2><span>nicht persistent</span></div><dl>
           <div><dt>Zustand</dt><dd>{stateLabels[view.state]}</dd></div>
-          <div><dt>Transport</dt><dd>{active ? "WebRTC" : "—"}</dd></div>
+          <div><dt>Transport</dt><dd>{active ? (realtimeE2eStub ? "Lokaler Stub" : "WebRTC") : "—"}</dd></div>
           <div><dt>Modell</dt><dd>{data.platformStatus.realtime_model}</dd></div>
           <div><dt>Stimme</dt><dd>{data.platformStatus.realtime_voice}</dd></div>
           <div><dt>Konfiguration</dt><dd>{runtime ? `Version ${runtime.configuration_version}` : "—"}</dd></div>
@@ -132,7 +137,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <div><dt>Sitzungsdauer</dt><dd>{view.metrics.sessionDurationSeconds} s</dd></div>
           <div><dt>Restzeit</dt><dd>{formatRemaining(view.remainingSeconds)}</dd></div>
           <div><dt>Call-ID</dt><dd>{view.callId ? `${view.callId.slice(0, 12)}…` : "—"}</dd></div>
-          <div><dt>Audio</dt><dd>{view.muted ? "Mikrofon stumm" : active ? "flüchtig aktiv" : "inaktiv"}</dd></div>
+          <div><dt>Audio</dt><dd>{realtimeE2eStub ? "deaktiviert (E2E-Stub)" : view.muted ? "Mikrofon stumm" : active ? "flüchtig aktiv" : "inaktiv"}</dd></div>
         </dl></section>
       </div>}
     </div>;

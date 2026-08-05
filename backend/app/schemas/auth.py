@@ -82,11 +82,46 @@ class ChangePasswordRequest(StrictWriteModel):
         return validate_new_password(value)
 
 
+class ContextSelectionRequest(StrictWriteModel):
+    company_id: UUID
+
+
+class ForgotPasswordRequest(StrictWriteModel):
+    identifier: str = Field(min_length=1, max_length=320)
+
+
+class ResetPasswordRequest(StrictWriteModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def reset_password_policy(cls, value: str) -> str:
+        return validate_new_password(value)
+
+
+class InvitationAcceptRequest(StrictWriteModel):
+    password: str
+
+    @field_validator("password")
+    @classmethod
+    def invitation_password_policy(cls, value: str) -> str:
+        return validate_new_password(value)
+
+
+class InvitationPreviewResponse(BaseModel):
+    email: str
+    display_name: str
+    company_name: str | None
+    role: Literal["company_admin", "company_user", "admin"]
+    expires_at: datetime
+
+
 class ManagedUserWrite(StrictWriteModel):
     username: str = Field(min_length=1, max_length=150)
     display_name: str = Field(min_length=1, max_length=150)
     email: str | None = Field(default=None, max_length=320)
-    role: Literal["admin", "employee"]
+    role: Literal["company_admin", "company_user", "admin", "employee"]
     password: str
 
     @field_validator("username")
@@ -121,7 +156,7 @@ class ManagedUserWrite(StrictWriteModel):
 class ManagedUserUpdate(StrictWriteModel):
     display_name: str = Field(min_length=1, max_length=150)
     email: str | None = Field(default=None, max_length=320)
-    role: Literal["admin", "employee"]
+    role: Literal["company_admin", "company_user", "admin", "employee"]
     is_active: bool
 
     @field_validator("display_name")
@@ -161,8 +196,16 @@ class AuthUser(BaseModel):
     username: str
     email: str | None
     display_name: str
-    role: Literal["owner", "admin", "employee"]
+    role: Literal["company_admin", "company_user"] | None
+    platform_role: Literal["owner", "admin"] | None
     is_platform_admin: bool
+    must_change_password: bool
+
+
+class AuthMembership(BaseModel):
+    tenant_id: UUID
+    role: Literal["company_admin", "company_user"]
+    is_primary_admin: bool
 
 
 class ManagedUser(AuthUser):
@@ -171,7 +214,11 @@ class ManagedUser(AuthUser):
 
 class AuthMeResponse(BaseModel):
     user: AuthUser
-    tenant: AuthTenant
+    tenant: AuthTenant | None
+    active_company: AuthTenant | None
+    membership: AuthMembership | None
+    permissions: list[str]
+    mode: Literal["platform", "company"]
 
 
 class SessionResponse(AuthMeResponse):

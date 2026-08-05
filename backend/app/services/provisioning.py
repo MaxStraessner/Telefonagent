@@ -4,13 +4,15 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_password, normalize_username
+from app.core.security import hash_password, normalize_username, verify_password
 from app.models import (
     AddressFormality,
     AgentConfiguration,
     AgentKnowledgeProfile,
     AppUser,
+    AuditLog,
     InitialAppSetup,
+    PlatformRole,
     ResponseLength,
     Tenant,
     TenantMembership,
@@ -48,6 +50,7 @@ class ProvisioningService:
         password: str,
         commit: bool = True,
         mark_initial_setup: bool = True,
+        platform_owner: bool = False,
     ) -> tuple[Tenant, AppUser]:
         normalized = normalize_username(username)
         if not normalized or len(username) > 150 or len(normalized) > 150:
@@ -93,7 +96,7 @@ class ProvisioningService:
             or user.email != email
             or user.display_name != display_name
             or not user.is_active
-            or user.is_platform_admin
+            or (platform_owner and user.platform_role not in {None, PlatformRole.owner})
         ):
             raise ProvisioningConflictError(
                 "Der Benutzername existiert bereits mit abweichenden Stammdaten."
@@ -104,9 +107,11 @@ class ProvisioningService:
                 normalized_username=normalized,
                 password_hash=hash_password(password),
                 email=email,
+                normalized_email=normalize_username(email) if email else None,
                 display_name=display_name,
                 is_active=True,
-                is_platform_admin=False,
+                platform_role=PlatformRole.owner if platform_owner else None,
+                is_platform_admin=platform_owner,
                 password_changed_at=datetime.now(timezone.utc),
             )
             self.db.add(user)
@@ -135,14 +140,32 @@ class ProvisioningService:
                 TenantMembership(
                     tenant_id=tenant.id,
                     user_id=user.id,
-                    role=TenantRole.owner,
+                    role=TenantRole.company_admin,
                     is_active=True,
+                    is_primary_admin=True,
                 )
             )
-        elif membership.role != TenantRole.owner or not membership.is_active:
+        elif (
+            membership.role != TenantRole.company_admin
+            or not membership.is_active
+            or not membership.is_primary_admin
+        ):
             raise ProvisioningConflictError(
-                "Die vorhandene Mitgliedschaft besitzt nicht die Owner-Rolle."
+                "Die vorhandene Mitgliedschaft ist kein aktiver primärer Administrator."
             )
+        if platform_owner:
+            existing_owner = self.db.scalar(
+                select(AppUser).where(
+                    AppUser.platform_role == PlatformRole.owner,
+                    AppUser.id != user.id,
+                )
+            )
+            if existing_owner is not None:
+                raise ProvisioningConflictError(
+                    "Es existiert bereits ein Plattforminhaber."
+                )
+            user.platform_role = PlatformRole.owner
+            user.is_platform_admin = True
         self._ensure_tenant_baseline(tenant, user)
         if mark_initial_setup:
             self.mark_initial_setup_completed(tenant, user)
@@ -166,7 +189,7 @@ class ProvisioningService:
         )
         if user is not None:
             if (
-                not user.is_platform_admin
+                user.platform_role != PlatformRole.admin
                 or user.email != email
                 or user.display_name != display_name
             ):
@@ -180,8 +203,10 @@ class ProvisioningService:
             normalized_username=normalized,
             password_hash=hash_password(password),
             email=email,
+            normalized_email=normalize_username(email) if email else None,
             display_name=display_name,
             is_active=True,
+            platform_role=PlatformRole.admin,
             is_platform_admin=True,
             password_changed_at=datetime.now(timezone.utc),
         )
@@ -189,16 +214,68 @@ class ProvisioningService:
         self.db.commit()
         return user
 
+    def promote_platform_owner(
+        self,
+        *,
+        username: str,
+        reauth_username: str,
+        reauth_password: str,
+    ) -> AppUser:
+        target = self._user(username)
+        if not target.is_active:
+            raise ProvisioningConflictError("Der Zielbenutzer ist deaktiviert.")
+        current_owner = self.db.scalar(
+            select(AppUser).where(AppUser.platform_role == PlatformRole.owner)
+        )
+        expected_actor = current_owner or target
+        if normalize_username(reauth_username) != expected_actor.normalized_username:
+            raise ProvisioningConflictError(
+                "Die Reauthentifizierung muss durch den aktuellen Plattforminhaber "
+                "oder bei der Ersteinrichtung durch den Zielbenutzer erfolgen."
+            )
+        valid, _ = verify_password(reauth_password, expected_actor.password_hash)
+        if not valid:
+            raise ProvisioningConflictError("Die Reauthentifizierung ist fehlgeschlagen.")
+        actor_role = expected_actor.platform_role
+        self._set_user_context(expected_actor.id)
+        if current_owner is not None and current_owner.id != target.id:
+            current_owner.platform_role = PlatformRole.admin
+            current_owner.is_platform_admin = True
+            AuthRepository(self.db).revoke_user_sessions(
+                current_owner.id, "platform_owner_transferred"
+            )
+            self.db.flush()
+        target.platform_role = PlatformRole.owner
+        target.is_platform_admin = True
+        AuthRepository(self.db).revoke_user_sessions(
+            target.id, "platform_owner_promoted"
+        )
+        self.db.add(
+            AuditLog(
+                actor_user_id=expected_actor.id,
+                platform_role=(
+                    actor_role.value if actor_role else None
+                ),
+                action="platform.owner.promoted",
+                target_type="app_user",
+                target_id=str(target.id),
+                metadata_after={"username": target.username, "platform_role": "owner"},
+            )
+        )
+        self.db.commit()
+        return target
+
     def set_password(self, username: str, password: str) -> AppUser:
         user = self._user(username)
         user.password_hash = hash_password(password)
         user.password_changed_at = datetime.now(timezone.utc)
+        user.must_change_password = False
         AuthRepository(self.db).revoke_user_sessions(user.id, "password_changed_by_operator")
         membership = self.db.scalar(
             select(TenantMembership).where(
                 TenantMembership.user_id == user.id,
                 TenantMembership.is_active.is_(True),
-                TenantMembership.role.in_([TenantRole.owner, TenantRole.admin]),
+                TenantMembership.role == TenantRole.company_admin,
             )
         )
         if membership is not None:
@@ -219,7 +296,7 @@ class ProvisioningService:
         tenant = self.db.scalar(select(Tenant).where(Tenant.slug == slug))
         if tenant is None:
             raise ProvisioningNotFoundError("Tenant wurde nicht gefunden.")
-        tenant.status = TenantStatus.inactive
+        tenant.status = TenantStatus.suspended
         AuthRepository(self.db).revoke_tenant_sessions(
             tenant.id, "tenant_deactivated"
         )
@@ -243,7 +320,39 @@ class ProvisioningService:
             state.tenant_id = tenant.id
             state.user_id = user.id
 
-    def _ensure_tenant_baseline(self, tenant: Tenant, user: AppUser) -> None:
+    def provision_pending_tenant(
+        self,
+        *,
+        slug: str,
+        name: str,
+        industry: str,
+        timezone_name: str,
+        status: TenantStatus = TenantStatus.trial,
+    ) -> Tenant:
+        if self.db.scalar(select(Tenant.id).where(Tenant.slug == slug)) is not None:
+            raise ProvisioningConflictError("Der Unternehmens-Slug ist bereits vergeben.")
+        tenant = Tenant(
+            id=uuid4(),
+            slug=slug,
+            name=name,
+            industry=industry,
+            timezone=timezone_name,
+            status=status,
+        )
+        self._set_tenant_context(tenant.id)
+        self.db.add(tenant)
+        self.db.flush()
+        self._ensure_tenant_baseline(tenant, None)
+        return tenant
+
+    def ensure_tenant_baseline(
+        self, tenant: Tenant, user: AppUser | None = None
+    ) -> None:
+        self._ensure_tenant_baseline(tenant, user)
+
+    def _ensure_tenant_baseline(
+        self, tenant: Tenant, user: AppUser | None
+    ) -> None:
         settings = self.db.scalar(
             select(TenantSettings).where(TenantSettings.tenant_id == tenant.id)
         )
@@ -303,7 +412,7 @@ class ProvisioningService:
                     fallback_message="Dazu liegt mir keine verlässliche Information vor.",
                     simple_mode=True,
                     version=1,
-                    updated_by_user_id=user.id,
+                    updated_by_user_id=user.id if user else None,
                 )
             )
         profile = self.db.scalar(
@@ -320,7 +429,7 @@ class ProvisioningService:
                     locations="",
                     important_notes="",
                     contact_phone="",
-                    contact_email=user.email or "",
+                    contact_email=(user.email if user else tenant.contact_email) or "",
                     website="",
                 )
             )
@@ -330,4 +439,11 @@ class ProvisioningService:
             self.db.execute(
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
+            )
+
+    def _set_user_context(self, user_id: UUID) -> None:
+        if self.db.bind and self.db.bind.dialect.name == "postgresql":
+            self.db.execute(
+                text("SELECT set_config('app.user_id', :user_id, true)"),
+                {"user_id": str(user_id)},
             )

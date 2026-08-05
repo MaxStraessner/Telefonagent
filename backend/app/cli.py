@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     platform_admin.add_argument("--email")
     _password_option(platform_admin)
 
+    platform_owner = subparsers.add_parser("promote-platform-owner")
+    platform_owner.add_argument("--username", required=True)
+    platform_owner.add_argument("--reauth-username", required=True)
+    _password_option(platform_owner)
+
     set_password = subparsers.add_parser("set-password")
     set_password.add_argument("--username", required=True)
     _password_option(set_password)
@@ -98,6 +103,13 @@ def main() -> None:
                     password=_password(args.password_env),
                 )
                 print(f"Plattformadministrator {user.username} ist bereit.")
+            elif args.command == "promote-platform-owner":
+                user = service.promote_platform_owner(
+                    username=args.username,
+                    reauth_username=args.reauth_username,
+                    reauth_password=_password(args.password_env),
+                )
+                print(f"Plattforminhaber {user.username} ist bereit.")
             elif args.command == "set-password":
                 user = service.set_password(
                     args.username, _password(args.password_env)
@@ -106,7 +118,7 @@ def main() -> None:
             elif args.command == "deactivate-user":
                 user = service.deactivate_user(args.username)
                 print(f"Benutzer {user.username} wurde deaktiviert.")
-            else:
+            elif args.command == "deactivate-tenant":
                 tenant = service.deactivate_tenant(args.slug)
                 print(f"Tenant {tenant.slug} wurde deaktiviert.")
     except (ValueError, ProvisioningConflictError, ProvisioningNotFoundError) as exc:

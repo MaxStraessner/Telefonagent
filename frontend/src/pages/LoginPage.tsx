@@ -42,11 +42,12 @@ export function LoginPage() {
       <h1>Willkommen zurück</h1>
       <p>Melden Sie sich mit Ihrem persönlichen Unternehmenskonto an.</p>
       <form onSubmit={submit}>
-        <label>Benutzername<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus /></label>
+        <label>Benutzername oder E-Mail<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus /></label>
         <label>Passwort<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         {error && <div className="login-error" role="alert">{error}</div>}
         <button className="button primary" type="submit" disabled={submitting}>{submitting ? "Anmeldung läuft …" : "Anmelden"}</button>
       </form>
+      <p className="setup-link"><Link to="/passwort-vergessen">Passwort vergessen?</Link></p>
       {setupAvailable && <p className="setup-link">Noch kein Zugang eingerichtet? <Link to="/einrichtung">Ersteinrichtung starten</Link></p>}
     </section>
   </main>;

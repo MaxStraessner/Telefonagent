@@ -48,6 +48,8 @@ def test_realtime_lifecycle_migration_reconciles_legacy_active_rows(
     isolated_engine = create_engine(database_url)
     tenant_id = uuid4()
     session_id = uuid4()
+    user_id = uuid4()
+    membership_id = uuid4()
     with isolated_engine.begin() as connection:
         connection.execute(
             text(
@@ -61,6 +63,36 @@ def test_realtime_lifecycle_migration_reconciles_legacy_active_rows(
                 """
             ),
             {"id": tenant_id.hex},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO app_users (
+                    id, email, display_name, is_active, username,
+                    normalized_username, password_hash, is_platform_admin
+                ) VALUES (
+                    :id, 'legacy-owner@example.test', 'Legacy Owner', 1,
+                    'legacy-owner', 'legacy-owner', '!unusable!', 0
+                )
+                """
+            ),
+            {"id": user_id.hex},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_memberships (
+                    id, tenant_id, user_id, role, is_active
+                ) VALUES (
+                    :id, :tenant_id, :user_id, 'owner', 1
+                )
+                """
+            ),
+            {
+                "id": membership_id.hex,
+                "tenant_id": tenant_id.hex,
+                "user_id": user_id.hex,
+            },
         )
         connection.execute(
             text(

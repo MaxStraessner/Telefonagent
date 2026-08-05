@@ -111,6 +111,7 @@ class InitialSetupService:
                 password=password,
                 commit=False,
                 mark_initial_setup=False,
+                platform_owner=True,
             )
             state = self.db.get(InitialAppSetup, self._state_id)
             assert state is not None
@@ -131,7 +132,7 @@ class InitialSetupService:
         self.throttle.clear(self._throttle_scope, client_ip)
         authenticated, session_secrets = AuthenticationService(
             self.db, self.settings
-        ).issue_session(user, membership, tenant)
+        ).issue_session(user, None, None)
         self._log_event("initial_setup_succeeded", client_ip, "accepted")
         return InitialSetupResult(authenticated, session_secrets)
 

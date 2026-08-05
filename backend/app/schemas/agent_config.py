@@ -95,7 +95,7 @@ class AgentConfigurationResponse(AgentConfigurationData):
     version: int
     updated_at: datetime
     can_edit: bool
-    role: Literal["owner", "admin", "employee"]
+    role: Literal["company_admin", "company_user", "platform_admin"]
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -64,6 +64,19 @@ def start_oauth(
 def load_valid_state(
     db: Session, provider_name: CalendarProviderName, state: str
 ) -> CalendarOAuthState:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        tenant_id = db.scalar(
+            text("SELECT resolve_calendar_oauth_tenant(:state_hash, :provider)"),
+            {"state_hash": state_hash(state), "provider": provider_name.value},
+        )
+        if tenant_id is None:
+            raise CalendarError(
+                "oauth_state_invalid", "Der OAuth-Status ist ungültig oder abgelaufen."
+            )
+        db.execute(
+            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+            {"tenant_id": str(tenant_id)},
+        )
     oauth_state = db.scalar(
         select(CalendarOAuthState).where(
             CalendarOAuthState.state_hash == state_hash(state),
@@ -120,7 +133,7 @@ async def complete_oauth(
             AppUser.is_active.is_(True),
             TenantMembership.tenant_id == oauth_state.tenant_id,
             TenantMembership.is_active.is_(True),
-            Tenant.status == TenantStatus.active,
+            Tenant.status.in_([TenantStatus.trial, TenantStatus.active]),
         )
     ).one_or_none()
     if active_context is None:

@@ -51,7 +51,7 @@ def test_configuration_api_returns_versioned_tenant_data_and_catalog(client):
     assert config.json()["tenant_id"] == knowledge.json()["tenant_id"]
     assert config.json()["version"] == knowledge.json()["version"]
     assert config.json()["can_edit"] is True
-    assert config.json()["role"] == "owner"
+    assert config.json()["role"] == "company_admin"
     assert {item["value"] for item in catalog.json()["voices"]} == {
         "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
     }
@@ -101,7 +101,7 @@ def test_member_can_read_but_cannot_write(client):
         username="member",
         email="member@example.test",
         display_name="Member",
-        role=TenantRole.employee,
+        role=TenantRole.company_user,
         is_platform_admin=False,
     )
     app.dependency_overrides[get_user_context] = lambda: member
@@ -192,7 +192,7 @@ def test_server_context_keeps_second_tenant_strictly_separate(client, db):
     db.commit()
     db.refresh(second)
     app.dependency_overrides[get_tenant_context] = lambda: TenantContext(id=second.id, tenant=second)
-    app.dependency_overrides[get_user_context] = lambda: UserContext(id=uuid4(), email="owner@second.test", role=TenantRole.owner)
+    app.dependency_overrides[get_user_context] = lambda: UserContext(id=uuid4(), email="owner@second.test", role=TenantRole.company_admin)
     response = client.get("/api/v1/agent/config")
     assert response.status_code == 200
     assert response.json()["tenant_id"] == str(second.id)

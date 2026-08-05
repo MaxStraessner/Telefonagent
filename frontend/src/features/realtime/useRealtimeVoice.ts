@@ -189,6 +189,7 @@ const initialState: RealtimeViewState = {
 };
 
 export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioElement | null) {
+  const e2eStub = import.meta.env.VITE_REALTIME_E2E_STUB === "true";
   const [view, setView] = useState<RealtimeViewState>(() => ({
     ...initialState,
     state: configured ? "idle" : "not_configured",
@@ -357,6 +358,23 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
       configured,
     }));
     if (startingRef.current || clientRef.current || !configured) return;
+    if (e2eStub) {
+      metricsRef.current = new RealtimeMetricsTracker();
+      metricsRef.current.start();
+      metricsRef.current.connected();
+      addEvent("e2e_stub_connected", JSON.stringify({
+        microphone: false,
+        externalProvider: false,
+      }));
+      setView((current) => ({
+        ...current,
+        state: "connected",
+        muted: false,
+        metrics: metricsRef.current.snapshot(),
+        notice: "Lokaler E2E-Stub verbunden – ohne Mikrofon und externen Provider.",
+      }));
+      return;
+    }
     if (!audioElement) {
       fail(realtimeErrors.audioElementUnavailable());
       return;
@@ -598,6 +616,7 @@ export function useRealtimeVoice(configured: boolean, audioElement: HTMLAudioEle
     audioElement,
     closeResources,
     configured,
+    e2eStub,
     fail,
     sendFinish,
   ]);

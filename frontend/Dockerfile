@@ -4,7 +4,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 ARG VITE_API_BASE_URL=http://localhost:8000/api/v1
+ARG VITE_REALTIME_E2E_STUB=false
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_REALTIME_E2E_STUB=$VITE_REALTIME_E2E_STUB
 RUN npm run build
 
 FROM node:22-alpine
