@@ -146,7 +146,7 @@ Die Beispieldaten enthalten keine personenbezogenen Kundendaten.
 
 ## Bewusst nicht umgesetzt
 
-Nicht vorhanden sind Telefonie/SIP, n8n, ein externer OIDC-Provider, Selbstregistrierung, Passwort-Reset per E-Mail, MFA, Zahlungen und ein automatisiertes produktives Deployment. Benutzer, Rollen und Tenant werden über serverseitige Sitzungen und aktive Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte; bestätigte Kalenderbuchungen werden dagegen tenantgebunden protokolliert.
+Nicht vorhanden sind Telefonie/SIP, n8n, ein externer OIDC-Provider, Selbstregistrierung, Passwort-Reset per E-Mail, MFA und Zahlungen. Benutzer, Rollen und Tenant werden über serverseitige Sitzungen und aktive Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte; bestätigte Kalenderbuchungen werden dagegen tenantgebunden protokolliert.
 
 ## Realtime-Sprachtest
 
@@ -157,6 +157,12 @@ Ein ChatGPT-Abonnement umfasst die OpenAI-API-Nutzung nicht automatisch. Für ec
 ## Kalenderintegration
 
 Provider-Einrichtung, OAuth-Callbacks, Berechtigungen, Verschlüsselung, Buchungsregeln und Abnahmetests stehen in [docs/calendar-integrations.md](docs/calendar-integrations.md). Provider-Secrets und OAuth-Tokens bleiben vollständig serverseitig. Ohne eingerichtete OAuth-Verbindung kann der Agent keine Verfügbarkeit zusagen und keinen Termin als gebucht melden.
+
+## Produktionsdeployment
+
+Der einzige unterstützte Produktionsweg ist in [docs/deployment.md](docs/deployment.md) beschrieben. Nach Tests, Commit, Push, Review und Merge nach GitHub `main` wird vom synchronisierten lokalen `main` ausschließlich `.\ops\deploy.ps1` ausgeführt. Das Skript verwendet den SSH-Alias `telefonagent-prod`, erstellt ein Release pro GitHub-Commit, bewahrt das bestehende Compose-Projekt und Datenbankvolume, sichert die Datenbank vor Migrationen und führt Backend- sowie Frontend-Healthchecks aus.
+
+Die spezialisierten Regeln für Accountsystem-Migration, Restoreprobe und Rückkehr bleiben unverändert in [docs/accountsystem-operations.md](docs/accountsystem-operations.md).
 
 ## Spätere Erweiterungen
 
