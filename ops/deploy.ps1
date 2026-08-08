@@ -205,7 +205,8 @@ printf 'backend_health=ok\n'
 printf 'frontend_health=ok\n'
 '@
 
-$remoteScript | & ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $sshHost "bash -s -- $localCommit"
+$normalizedRemoteScript = $remoteScript -replace "`r`n", "`n"
+$normalizedRemoteScript | & ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes $sshHost "bash -s -- $localCommit"
 if ($LASTEXITCODE -ne 0) {
     throw "Das Standarddeployment ist fehlgeschlagen. Diagnose den bestehenden Weg; verwende keinen alternativen Deploymentmechanismus."
 }
