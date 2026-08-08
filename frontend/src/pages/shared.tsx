@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ErrorState, PageSkeleton } from "../components/AsyncState";
 import { usePlatformData } from "../api/PlatformDataProvider";
+import { ApiError } from "../api/client";
 
 export function DataPage({ children }: { children: ReactNode | ((data: NonNullable<ReturnType<typeof usePlatformData>["data"]>) => ReactNode) }) {
   const state = usePlatformData();
@@ -14,4 +15,9 @@ export function PageHeader({ eyebrow, title, description, action }: { eyebrow?: 
 }
 
 export const industryLabels: Record<string, string> = { hair_salon: "Friseur & Styling" };
+
+export function accountErrorMessage(cause: unknown, fallback: string): string {
+  if (!(cause instanceof ApiError)) return fallback;
+  return Object.values(cause.fieldErrors)[0] ?? cause.message;
+}
 

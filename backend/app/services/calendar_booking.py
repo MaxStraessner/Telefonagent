@@ -101,7 +101,7 @@ class CalendarBookingService:
             )
         claim = SlotSigner(self.settings).verify(payload.slot_id)
         if claim.tenant_id != self.tenant_id or claim.appointment_type_id != payload.appointment_type_id:
-            raise CalendarError("tenant_access_denied", "Der Terminvorschlag gehört nicht zu diesem Account.")
+            raise CalendarError("slot_not_found", "Der Terminvorschlag wurde nicht gefunden.")
         still_available = await self.availability.exact_slot_available(
             payload.appointment_type_id, claim.start, claim.end
         )
@@ -265,7 +265,12 @@ class CalendarBookingService:
             self.db.commit()
         except SQLAlchemyError as exc:
             self.db.rollback()
-            divergent = self.db.get(CalendarBooking, booking.id)
+            divergent = self.db.scalar(
+                select(CalendarBooking).where(
+                    CalendarBooking.id == booking.id,
+                    CalendarBooking.tenant_id == self.tenant_id,
+                )
+            )
             if divergent is not None:
                 divergent.external_event_id = created.event_id
                 divergent.provider_response_reference = created.reference

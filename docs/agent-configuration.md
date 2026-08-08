@@ -6,7 +6,7 @@ Die wirksame Konfiguration folgt genau einem Pfad:
 
 `React-Formular → validierte FastAPI-API → tenantgebundene SQLAlchemy-Modelle → AgentRuntimeConfig → Prompt-Compiler/OpenAI-Realtime-Session`
 
-Der Browser sendet weder `tenant_id` noch Rollen- oder Provider-Zugangsdaten. `ACTIVE_TENANT_SLUG` und `ACTIVE_USER_EMAIL` werden ausschließlich im Backend aufgelöst. `TenantMembership` bestimmt dort die Rolle; nur `owner` und `admin` dürfen schreiben. Diese lokale Installation besitzt bewusst noch keinen Login-Provider. `ACTIVE_USER_EMAIL` ist der serverseitige Identitätsadapter, an den später OIDC oder eine andere authentifizierte Sitzung angeschlossen wird.
+Der Browser sendet weder `tenant_id` noch Rollen- oder Provider-Zugangsdaten. Benutzer und Tenant werden aus einer validierten serverseitigen Sitzung aufgelöst. `TenantMembership` bestimmt die Rolle; nur `owner` und `admin` dürfen schreiben. `employee` darf Konfigurationen lesen und das Browser-Testgespräch verwenden.
 
 Jeder Speichervorgang prüft `expected_version`, erhöht die gemeinsame Konfigurationsversion und schreibt einen Audit-Snapshot mit Mandant, Benutzer und Version. Ein paralleler veralteter Schreibversuch endet mit HTTP 409. Geheimnisse sind nicht Teil der Konfiguration.
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api/client";
+import { useOptionalAuth } from "../api/AuthProvider";
 import { StatusBadge } from "../components/StatusBadge";
 import type { AppointmentTypeWrite, BookingConfiguration, CalendarAppointmentType, CalendarConnectionsOverview, CalendarProviderConfiguration, ExternalCalendar, Service } from "../types/api";
 import { PageHeader } from "./shared";
@@ -14,6 +15,7 @@ function readableError(error: unknown) {
 }
 
 export function CalendarSettingsPage() {
+  const auth = useOptionalAuth();
   const [tab, setTab] = useState<Tab>("providers");
   const [overview, setOverview] = useState<CalendarConnectionsOverview | null>(null);
   const [configuration, setConfiguration] = useState<BookingConfiguration | null>(null);
@@ -44,11 +46,11 @@ export function CalendarSettingsPage() {
     if (oauthResult === "success") {
       setError(null);
       setNotice("Die Kalenderverbindung wurde erfolgreich hergestellt und synchronisiert.");
-      void load();
+      void (auth ? auth.refresh() : Promise.resolve()).then(load);
     } else if (oauthResult === "error") {
       void load().then(() => setError(`Die Kalenderverbindung ist fehlgeschlagen (${params.get("error_code") ?? "oauth_error"}).`));
     }
-  }, [load]);
+  }, [auth, load]);
 
   const calendars = useMemo(() => overview?.connections.flatMap((connection) => connection.calendars.map((calendar) => ({ ...calendar, provider: connection.provider, account: connection.account_email }))) ?? [], [overview]);
 

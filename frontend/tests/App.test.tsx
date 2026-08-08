@@ -12,11 +12,16 @@ const tenant = {
 const services = [{ id: "1", name: "Herrenhaarschnitt", description: "Klassisch", duration_minutes: 30, is_active: true }];
 const staff = [{ id: "1", display_name: "Anna", role_name: "Stylist:in", is_active: true }];
 const status = { environment: "development", backend_version: "0.1.0", realtime_voice_configured: false, telephony_configured: false, calendar_configured: false, database_connected: true, realtime_model: "gpt-realtime-2.1", realtime_voice: "marin" };
+const authSession = {
+  user: { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", username: "owner", email: "owner@example.test", display_name: "Lokale Administration", role: "owner", is_platform_admin: false },
+  tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+  idle_expires_at: "2026-07-24T12:30:00Z", absolute_expires_at: "2026-07-24T23:00:00Z",
+};
 
 function mockSuccess() {
   vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
     const url = String(input);
-    const body = url.endsWith("/tenant") ? tenant : url.endsWith("/services") ? services : url.endsWith("/staff") ? staff : url.endsWith("/appointments") ? [] : url.endsWith("/platform/status") ? status : { status: "healthy", database: "connected" };
+    const body = url.endsWith("/auth/session") ? authSession : url.endsWith("/tenant") ? tenant : url.endsWith("/services") ? services : url.endsWith("/staff") ? staff : url.endsWith("/appointments") ? [] : url.endsWith("/platform/status") ? status : { status: "healthy", database: "connected" };
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
   }));
 }
@@ -27,13 +32,17 @@ afterEach(() => vi.unstubAllGlobals());
 describe("Telefonagent App", () => {
   it("zeigt Ladezustand und rendert danach die Übersicht mit API-Mandant", async () => {
     render(<App />);
-    expect(screen.getByLabelText("Inhalte werden geladen")).toBeInTheDocument();
+    expect(screen.getByText("Sitzung wird geprüft …")).toBeInTheDocument();
     expect(await screen.findByText("Guten Tag bei Salon Haarkunst Test")).toBeInTheDocument();
     expect(screen.getByText("Aus PostgreSQL geladen")).toBeInTheDocument();
   });
 
   it("zeigt einen verständlichen Fehlerzustand mit Wiederholung", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("{}", { status: 503 }))));
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => Promise.resolve(
+      String(input).endsWith("/auth/session")
+        ? new Response(JSON.stringify(authSession), { status: 200, headers: { "Content-Type": "application/json" } })
+        : new Response("{}", { status: 503 }),
+    )));
     render(<App />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Verbindung nicht verfügbar");
     expect(screen.getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();

@@ -19,6 +19,7 @@ from app.models import (
     AgentKnowledgeProfile,
     AgentKnowledgeService,
     AgentTopic,
+    PlatformRole,
     ResponseLength,
     TenantRole,
     TurnDetectionType,
@@ -85,14 +86,18 @@ def load_agent_bundle(db: Session, tenant_id: UUID) -> AgentBundle:
 
 
 def _can_edit(user: UserContext) -> bool:
-    return user.role in {TenantRole.owner, TenantRole.admin}
+    return user.role == TenantRole.company_admin or user.platform_role in {
+        PlatformRole.owner,
+        PlatformRole.admin,
+    }
 
 
 def configuration_response(bundle: AgentBundle, user: UserContext) -> AgentConfigurationResponse:
     config = bundle.configuration
     return AgentConfigurationResponse(
         tenant_id=config.tenant_id, version=config.version, updated_at=config.updated_at,
-        can_edit=_can_edit(user), role=user.role.value,
+        can_edit=_can_edit(user),
+        role=user.role.value if user.role else "platform_admin",
         company_name=config.company_name, assistant_name=config.assistant_name,
         assistant_role=config.assistant_role, transparency_notice=config.transparency_notice,
         address_formality=config.address_formality.value, language=config.language,
@@ -139,7 +144,11 @@ def _check_version(config: AgentConfiguration, expected: int) -> None:
 
 
 def _snapshot(bundle: AgentBundle) -> dict:
-    system_user = UserContext(id=bundle.configuration.updated_by_user_id or UUID(int=0), email="audit", role=TenantRole.owner)
+    system_user = UserContext(
+        id=bundle.configuration.updated_by_user_id or UUID(int=0),
+        email="audit",
+        role=TenantRole.company_admin,
+    )
     return {
         "configuration": configuration_response(bundle, system_user).model_dump(mode="json"),
         "knowledge": knowledge_response(bundle, system_user).model_dump(mode="json"),

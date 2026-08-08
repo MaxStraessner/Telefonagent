@@ -11,7 +11,7 @@ Die Browser-Sprachfunktion sowie tenantgebundene Google- und Microsoft-Kalenderi
 - Datenbank: PostgreSQL 17 mit persistentem Docker-Volume
 - Betrieb: Docker Compose mit Health Checks, Migrations- und Seed-Startsequenz
 
-Der Browser spricht ausschließlich mit `/api/v1`. Das Backend ermittelt den aktiven Mandanten über `ACTIVE_TENANT_SLUG`; der Browser kann keine `tenant_id` vorgeben. Tenant-bezogene Repositoryabfragen erhalten den serverseitig aufgelösten Tenant-Kontext. Details stehen in [docs/architecture.md](docs/architecture.md).
+Der Browser spricht ausschließlich mit `/api/v1`. Das Backend ermittelt Benutzer und aktiven Mandanten aus einer serverseitigen, widerrufbaren Sitzung; der Browser kann keine `tenant_id` vorgeben. Tenantfilter und PostgreSQL Row-Level Security erhalten ausschließlich diesen validierten Kontext. Details stehen in [docs/authentication-and-tenant-isolation.md](docs/authentication-and-tenant-isolation.md).
 
 ## Voraussetzungen
 
@@ -31,7 +31,7 @@ Danach:
 docker compose up --build
 ```
 
-Beim Start wartet das Backend auf den PostgreSQL-Health-Check, führt `alembic upgrade head` aus und legt die Seed-Daten idempotent an. Bestehende Volumes werden dabei nicht gelöscht.
+Beim Start wartet ein einmaliger Migrationsservice auf PostgreSQL und führt `alembic upgrade head` aus. Erst danach startet das Backend; Seed-Daten werden nur mit dem ausdrücklich aktivierten Entwicklungs-Bootstrap idempotent angelegt. Bestehende Volumes werden dabei nicht gelöscht.
 
 Stoppen ohne Datenverlust:
 
@@ -55,8 +55,10 @@ Alle unterstützten Werte sind in `.env.example` dokumentiert. Wichtig:
 
 - `DATABASE_URL` steuert die SQLAlchemy-Verbindung bei direktem Backend-Start.
 - `BACKEND_PORT` und `FRONTEND_PORT` ändern bei Bedarf die veröffentlichten Compose-Ports.
-- `ACTIVE_TENANT_SLUG` wird ausschließlich serverseitig ausgewertet.
-- `ACTIVE_USER_EMAIL` löst für die lokale Installation Benutzer und Mandantenrolle serverseitig auf; produktiv wird dieser Adapter durch eine authentifizierte Sitzung ersetzt.
+- `AUTH_HMAC_SECRET` pseudonymisiert Login-Buckets und muss in Produktion ein eigener, zufälliger Wert mit mindestens 32 Bytes sein.
+- `SESSION_IDLE_MINUTES` und `SESSION_ABSOLUTE_HOURS` begrenzen serverseitige Sitzungen.
+- `DEV_BOOTSTRAP_ENABLED` aktiviert Seed-Daten ausschließlich in der Entwicklung; ohne `DEV_BOOTSTRAP_PASSWORD` entsteht bewusst kein nutzbarer Standardlogin.
+- `INITIAL_SETUP_TOKEN` aktiviert bei einer noch nicht eingerichteten Installation die einmalige Browser-Ersteinrichtung. Der Wert muss geheim bleiben und wird nach dem ersten Owner dauerhaft nicht mehr akzeptiert.
 - `VITE_API_BASE_URL` ist die einzige Frontend-Konfiguration für den API-Pfad und darf keine Geheimnisse enthalten.
 - `OPENAI_API_KEY` wird ausschließlich vom Backend gelesen. Ohne Schlüssel startet die Plattform normal und meldet `realtime_voice_configured: false`.
 - `OPENAI_REALTIME_MODEL` steuert das Plattformmodell. Stimme, Tempo, VAD und Gesprächsverhalten werden versioniert in „KI konfigurieren“ pro Mandant gespeichert.
@@ -107,7 +109,7 @@ docker compose run --rm backend python -m app.seed
 
 ## Seed-Daten
 
-`python -m app.seed` verwendet Upsert-ähnliche Existenzprüfungen und kann mehrfach ausgeführt werden. Er legt an:
+`python -m app.seed` ist nur bei `APP_ENV=development` und `DEV_BOOTSTRAP_ENABLED=true` aktiv, verwendet Upsert-ähnliche Existenzprüfungen und kann mehrfach ausgeführt werden. Er legt an:
 
 - Mandant `Salon Haarkunst Test`, Branche `hair_salon`, Zeitzone `Europe/Berlin`
 - Assistentin `Lina` mit deutscher Begrüßung
@@ -144,17 +146,23 @@ Die Beispieldaten enthalten keine personenbezogenen Kundendaten.
 
 ## Bewusst nicht umgesetzt
 
-Nicht vorhanden sind Telefonie/SIP/Rufnummern, n8n, ein externer Login-/OIDC-Provider, Registrierung, Zahlungen und ein automatisiertes produktives Deployment. Für die lokale Einzelinstallation werden Benutzer und Rollen serverseitig über `ACTIVE_USER_EMAIL` und Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte; bestätigte Kalenderbuchungen werden dagegen tenantgebunden protokolliert.
+Nicht vorhanden sind Telefonie/SIP, n8n, ein externer OIDC-Provider, Selbstregistrierung, Passwort-Reset per E-Mail, MFA und Zahlungen. Benutzer, Rollen und Tenant werden über serverseitige Sitzungen und aktive Mandantenmitgliedschaften aufgelöst. Die Testseite speichert weder Audio noch Transkripte; bestätigte Kalenderbuchungen werden dagegen tenantgebunden protokolliert.
 
 ## Realtime-Sprachtest
 
-Architektur, Sicherheitsmodell, manueller Abnahmetest, typische Fehler und Kostenhinweise stehen in [docs/realtime-voice.md](docs/realtime-voice.md). Der Browser fordert das Mikrofon erst nach einem Klick an. Anschließend mintet FastAPI mit dem serverseitigen Standard-Key ein 60 Sekunden gültiges Client-Secret und der Browser verbindet sich direkt per WebRTC mit OpenAI.
+Architektur, Sicherheitsmodell, manueller Abnahmetest, typische Fehler und Kostenhinweise stehen in [docs/realtime-voice.md](docs/realtime-voice.md). Der Browser fordert das Mikrofon erst nach einem Klick an. Anschließend mintet FastAPI mit dem serverseitigen Standard-Key ein 60 Sekunden gültiges Client-Secret und der Browser verbindet sich direkt per WebRTC mit OpenAI. Der Agents-SDK setzt die eine aktive Sessionkonfiguration und sequenziert Tool-Ergebnis sowie genau eine Folgeantwort; die Anwendung startet keine konkurrierende Recovery-Antwort.
 
 Ein ChatGPT-Abonnement umfasst die OpenAI-API-Nutzung nicht automatisch. Für echte Realtime-Tests sind ein API-Projekt mit Abrechnung und Zugriff auf das konfigurierte Modell und die Stimme erforderlich; dabei entstehen nutzungsabhängige API-Kosten.
 
 ## Kalenderintegration
 
 Provider-Einrichtung, OAuth-Callbacks, Berechtigungen, Verschlüsselung, Buchungsregeln und Abnahmetests stehen in [docs/calendar-integrations.md](docs/calendar-integrations.md). Provider-Secrets und OAuth-Tokens bleiben vollständig serverseitig. Ohne eingerichtete OAuth-Verbindung kann der Agent keine Verfügbarkeit zusagen und keinen Termin als gebucht melden.
+
+## Produktionsdeployment
+
+Der einzige unterstützte Produktionsweg ist in [docs/deployment.md](docs/deployment.md) beschrieben. Nach Tests, Commit, Push, Review und Merge nach GitHub `main` wird vom synchronisierten lokalen `main` ausschließlich `.\ops\deploy.ps1` ausgeführt. Das Skript verwendet den SSH-Alias `telefonagent-prod`, erstellt ein Release pro GitHub-Commit, bewahrt das bestehende Compose-Projekt und Datenbankvolume, sichert die Datenbank vor Migrationen und führt Backend- sowie Frontend-Healthchecks aus.
+
+Die spezialisierten Regeln für Accountsystem-Migration, Restoreprobe und Rückkehr bleiben unverändert in [docs/accountsystem-operations.md](docs/accountsystem-operations.md).
 
 ## Spätere Erweiterungen
 
@@ -168,7 +176,7 @@ Weitere Kalender- und Telefonieanbieter gehören hinter die vorhandenen Backend-
 - Realtime bleibt „Nicht eingerichtet“: `OPENAI_API_KEY` nur in `.env` setzen und den Backend-Container neu erstellen; niemals als `VITE_`-Variable anlegen.
 - Client-Secret wird abgelehnt: API-Projekt, Abrechnung, Modellzugriff und Stimme prüfen; Backend-Logs enthalten bewusst nicht den vollständigen Providerfehler.
 - Mikrofon wird abgelehnt: Browserfreigabe sowie HTTPS beziehungsweise `localhost` als sicheren Kontext prüfen.
-- Seed-Mandant fehlt: Migration ausführen, danach `python -m app.seed`; `ACTIVE_TENANT_SLUG` muss `salon-haarkunst-test` entsprechen.
+- Seed-Mandant fehlt: `APP_ENV=development`, `DEV_BOOTSTRAP_ENABLED=true` und optional ein starkes `DEV_BOOTSTRAP_PASSWORD` setzen, danach `python -m app.seed` ausführen.
 - Kalenderprovider bleibt „Nicht konfiguriert“: vollständige Client-ID, Client-Secret und exakt passende Redirect-URI setzen und Backend neu erstellen.
 - OAuth-Callback wird abgelehnt: Redirect-URI beim Provider und in `.env` bytegenau vergleichen; OAuth-State läuft nach kurzer Zeit ab und kann nur einmal verwendet werden.
 - Kalendertokens können nicht gelesen werden: `CALENDAR_TOKEN_ENCRYPTION_KEY` prüfen; einen zuvor verwendeten Schlüssel nicht ohne Migration austauschen.

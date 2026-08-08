@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sdk = vi.hoisted(() => ({
@@ -12,8 +13,8 @@ const sdk = vi.hoisted(() => ({
   interrupt: vi.fn(),
   requestResponse: vi.fn(),
   sessionOptions: null as unknown,
+  agentOptions: null as unknown,
   emitSessionUpdated: true,
-  appliedStatus: "applied" as "applied" | "mismatch",
   sessionOff: vi.fn(),
   transportOff: vi.fn(),
   emit(type: string, ...args: unknown[]) {
@@ -27,7 +28,9 @@ const sdk = vi.hoisted(() => ({
 vi.mock("@openai/agents/realtime", () => {
   const tool = (options: unknown) => options;
   class RealtimeAgent {
-    constructor(_options: unknown) {}
+    constructor(options: unknown) {
+      sdk.agentOptions = options;
+    }
   }
   class OpenAIRealtimeWebRTC {
     callId = "call_test_123456";
@@ -110,7 +113,19 @@ const agentConfig = {
   maximum_session_minutes: 10, max_output_tokens: 1024, transcription_enabled: true, raw_event_logging: false,
   vad: { type: "server_vad" as const, threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 600, eagerness: null, create_response: true, interrupt_response: true },
 };
-const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", speed: 1, configuration_version: 1, call_session_id: "call-local", tenant_id: tenant.id };
+const clientSecret = { client_secret: "ek_test", expires_at: 1_900_000_000, session_id: "sess_test", model: "gpt-realtime-2.1", voice: "marin", speed: 1, configuration_version: 1, call_session_id: "call-local", call_attempt_id: "22222222-2222-4222-8222-222222222222", tenant_id: tenant.id };
+const availabilityTool = {
+  type: "function" as const,
+  strict: true as const,
+  name: "check_appointment_availability",
+  description: "Prüft einen Termin auf Verfügbarkeit.",
+  parameters: {
+    type: "object" as const,
+    properties: { appointment_type_id: { type: "string" } },
+    required: ["appointment_type_id"],
+    additionalProperties: false as const,
+  },
+};
 const runtimeManifest = {
   schema_version: "1",
   digest: "a".repeat(64),
@@ -127,21 +142,27 @@ const runtimeManifest = {
   configuration_version: agentConfig.configuration_version,
   source_digests: {},
   capability_keys: [],
-  tools: [],
-  tool_names: [],
+  tools: [availabilityTool],
+  tool_names: [availabilityTool.name],
   tools_digest: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
   maximum_session_minutes: agentConfig.maximum_session_minutes,
   max_output_tokens: agentConfig.max_output_tokens,
   transcription_enabled: agentConfig.transcription_enabled,
   raw_event_logging: agentConfig.raw_event_logging,
   vad: { ...agentConfig.vad, interrupt_response: false },
-  recovery: {
-    continuation_ack_timeout_ms: 4_000,
-    recovery_response_timeout_ms: 8_000,
-    maximum_attempts_per_turn: 1,
-  },
   setting_targets: {},
 };
+
+function configuredAvailabilityTool() {
+  const tools = (sdk.agentOptions as {
+    tools?: Array<{
+      execute: (input: unknown, context: unknown, details: unknown) => Promise<unknown>;
+    }>;
+  })?.tools;
+  const configured = tools?.[0];
+  if (!configured) throw new Error("availability tool was not configured");
+  return configured;
+}
 
 function clientCallbacks(): RealtimeClientCallbacks {
   return {
@@ -154,6 +175,7 @@ let trackStop: ReturnType<typeof vi.fn>;
 let getUserMedia: ReturnType<typeof vi.fn>;
 let microphoneTrack: {
   enabled: boolean;
+  readyState: MediaStreamTrackState;
   stop: ReturnType<typeof vi.fn>;
   addEventListener: ReturnType<typeof vi.fn>;
   removeEventListener: ReturnType<typeof vi.fn>;
@@ -164,22 +186,36 @@ function mockBackend() {
   vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     let body: unknown = { status: "healthy", database: "connected" };
-    if (url.endsWith("/tenant")) body = tenant;
+    if (url.endsWith("/auth/session")) body = {
+      user: { id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", username: "owner", email: "owner@example.test", display_name: "Lokale Administration", role: "owner", is_platform_admin: false },
+      tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+      idle_expires_at: "2026-07-24T12:30:00Z", absolute_expires_at: "2026-07-24T23:00:00Z",
+    };
+    else if (url.endsWith("/tenant")) body = tenant;
     else if (url.endsWith("/services") || url.endsWith("/staff") || url.endsWith("/appointments")) body = [];
     else if (url.endsWith("/platform/status")) body = platformStatus;
     else if (url.endsWith("/realtime/session-bootstrap")) {
       expect(init?.method).toBe("POST");
-      body = { secret: clientSecret, manifest: runtimeManifest };
-    } else if (url.endsWith("/applied-configuration")) {
+      const request = JSON.parse(String(init?.body)) as { call_attempt_id: string };
+      body = {
+        secret: { ...clientSecret, call_attempt_id: request.call_attempt_id },
+        manifest: runtimeManifest,
+      };
+    } else if (/\/realtime\/call-attempts\/[^/]+\/(?:connected|finish)$/.test(url)) {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    } else if (url.endsWith("/calendar/tools/check-appointment-availability/session")) {
       expect(init?.method).toBe("POST");
       body = {
-        session_id: clientSecret.call_session_id,
-        status: sdk.appliedStatus,
-        manifest_digest: runtimeManifest.digest,
-        expected: {},
-        applied: {},
-        differences: {},
-        unobserved: ["prompt_digest", "tools_digest", "tool_names"],
+        available: true,
+        appointment_start: "2026-07-27T09:00:00+02:00",
+        appointment_end: "2026-07-27T09:30:00+02:00",
+        blocked_start: "2026-07-27T09:00:00+02:00",
+        blocked_end: "2026-07-27T09:30:00+02:00",
+        slot_id: "slot-test",
+        reason: null,
+        alternatives: [],
+        source: "snapshot",
+        preliminary: false,
       };
     }
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -196,13 +232,14 @@ beforeEach(() => {
   sdk.interrupt.mockReset();
   sdk.requestResponse.mockReset();
   sdk.emitSessionUpdated = true;
-  sdk.appliedStatus = "applied";
+  sdk.agentOptions = null;
   sdk.sessionOff.mockReset();
   sdk.transportOff.mockReset();
   trackStop = vi.fn();
   let endedHandler: (() => void) | undefined;
   microphoneTrack = {
     enabled: true,
+    readyState: "live",
     stop: trackStop,
     addEventListener: vi.fn((type: string, handler: () => void) => { if (type === "ended") endedHandler = handler; }),
     removeEventListener: vi.fn((type: string, handler: () => void) => { if (type === "ended" && endedHandler === handler) endedHandler = undefined; }),
@@ -211,12 +248,24 @@ beforeEach(() => {
   getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] });
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
   vi.stubGlobal("RTCPeerConnection", class {});
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.spyOn(console, "info").mockImplementation(() => undefined);
   Object.defineProperty(HTMLMediaElement.prototype, "pause", { configurable: true, value: vi.fn() });
   Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: vi.fn().mockResolvedValue(undefined) });
   mockBackend();
   localStorage.clear();
+  sessionStorage.clear();
   window.history.pushState({}, "", "/testgespraech");
 });
+
+function fetchCallsEndingWith(path: string) {
+  return vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith(path));
+}
+
+function requestBody(call: Parameters<typeof fetch>[0] | undefined, init?: RequestInit) {
+  void call;
+  return JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -233,7 +282,11 @@ describe("Realtime browser voice flow", () => {
     await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
     expect(await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.")).toBeInTheDocument();
     expect(getUserMedia).toHaveBeenCalledWith({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-    expect(sdk.connect).toHaveBeenCalledWith({ apiKey: "ek_test", model: "gpt-realtime-2.1" });
+    expect(sdk.connect).toHaveBeenCalledWith({
+      apiKey: "ek_test",
+      model: "gpt-realtime-2.1",
+      url: "https://api.openai.com/v1/realtime/calls?model=gpt-realtime-2.1",
+    });
     expect(sdk.requestResponse).toHaveBeenCalledWith(expect.objectContaining({ instructions: expect.stringContaining("Guten Tag, hier ist Lina") }));
 
     act(() => sdk.emit("history_updated", [{ itemId: "u1", type: "message", role: "user", status: "completed", content: [{ type: "input_audio", transcript: "Ich brauche einen Termin" }] }]));
@@ -252,6 +305,182 @@ describe("Realtime browser voice flow", () => {
     expect(microphoneTrack.removeEventListener).toHaveBeenCalledWith("ended", expect.any(Function));
     expect(screen.getByLabelText("Sprachausgabe des Assistenten")).toHaveProperty("srcObject", null);
     expect(screen.getByText("Testgespräch beendet.")).toBeInTheDocument();
+  });
+
+  it("stoppt den Mikrofontrack auch bei wiederholtem Cleanup physisch nur einmal", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(
+      runtimeManifest,
+      clientSecret,
+      {
+        getTracks: () => [microphoneTrack],
+        getAudioTracks: () => [microphoneTrack],
+      } as unknown as MediaStream,
+      document.createElement("audio"),
+    );
+    sdk.close.mockImplementationOnce(() => {
+      trackStop();
+      microphoneTrack.readyState = "ended";
+    });
+
+    client.close();
+    client.close();
+
+    expect(trackStop).toHaveBeenCalledOnce();
+  });
+
+  it("beendet, finalisiert und startet unmittelbar mit einer neuen Attempt-ID neu", async () => {
+    const rendered = render(<App />);
+    await screen.findByText("Gespräch mit Lina");
+
+    await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
+    await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.");
+    await userEvent.click(screen.getByRole("button", { name: "Gespräch beenden" }));
+    await waitFor(() => {
+      const finishes = vi.mocked(fetch).mock.calls.filter(([input]) =>
+        /\/realtime\/call-attempts\/[^/]+\/finish$/.test(String(input))
+      );
+      expect(finishes).toHaveLength(1);
+      expect(requestBody(finishes[0][0], finishes[0][1])).toMatchObject({
+        status: "ended",
+        phase: "conversation",
+      });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /Neues Testgespräch/ }));
+    await waitFor(() => expect(sdk.connect).toHaveBeenCalledTimes(2));
+    await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.");
+    const bootstraps = fetchCallsEndingWith("/realtime/session-bootstrap");
+    expect(bootstraps).toHaveLength(2);
+    const firstAttempt = requestBody(bootstraps[0][0], bootstraps[0][1]).call_attempt_id;
+    const secondAttempt = requestBody(bootstraps[1][0], bootstraps[1][1]).call_attempt_id;
+    expect(firstAttempt).not.toBe(secondAttempt);
+
+    await userEvent.click(screen.getByRole("button", { name: "Gespräch beenden" }));
+    await waitFor(() => {
+      const finishes = vi.mocked(fetch).mock.calls.filter(([input]) =>
+        /\/realtime\/call-attempts\/[^/]+\/finish$/.test(String(input))
+      );
+      expect(finishes).toHaveLength(2);
+    });
+    rendered.unmount();
+    const firstFinishPath = String(
+      vi.mocked(fetch).mock.calls.find(([input]) =>
+        String(input).includes(String(firstAttempt))
+        && String(input).endsWith("/finish")
+      )?.[0],
+    );
+    expect(firstFinishPath).toContain(String(firstAttempt));
+  });
+
+  it.each([400, 401])(
+    "erhält den Signaling-Status %s intern, finalisiert und kann danach neu starten",
+    async (providerStatus) => {
+      sdk.connect.mockRejectedValueOnce(new Error(
+        `Realtime call request failed with status ${providerStatus}: ${JSON.stringify({
+          error: {
+            type: "invalid_request_error",
+            code: `signaling_${providerStatus}`,
+            param: "session",
+            message: "technical provider diagnosis",
+          },
+        })}`,
+      ));
+      render(<App />);
+      await screen.findByText("Gespräch mit Lina");
+      await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("WebRTC-Sprachverbindung");
+      expect(alert).not.toHaveTextContent("technical provider diagnosis");
+      await waitFor(() => {
+        const finish = vi.mocked(fetch).mock.calls.find(([input]) =>
+          /\/realtime\/call-attempts\/[^/]+\/finish$/.test(String(input))
+        );
+        expect(finish).toBeDefined();
+        expect(requestBody(finish?.[0], finish?.[1])).toMatchObject({
+          status: "failed",
+          phase: "signaling",
+          error_code: "realtime_signaling_failed",
+          http_status: providerStatus,
+          retryable: false,
+        });
+      });
+
+      await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
+      await waitFor(() => expect(sdk.connect).toHaveBeenCalledTimes(2));
+      expect(await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.")).toBeInTheDocument();
+    },
+  );
+
+  it("bricht während des Bootstraps ab, ignoriert dessen späte Antwort und startet neu", async () => {
+    const baselineFetch = fetch as ReturnType<typeof vi.fn>;
+    let resolveFirstBootstrap: ((response: Response) => void) | undefined;
+    let bootstrapCount = 0;
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/realtime/session-bootstrap")) {
+        bootstrapCount += 1;
+        if (bootstrapCount === 1) {
+          return new Promise<Response>((resolve) => {
+            resolveFirstBootstrap = resolve;
+          });
+        }
+      }
+      return baselineFetch(input, init);
+    }));
+    render(<App />);
+    await screen.findByText("Gespräch mit Lina");
+    await userEvent.click(screen.getByRole("button", { name: /Testgespräch starten/ }));
+    await screen.findByText("Sprachverbindung wird aufgebaut …");
+    const firstBootstrap = fetchCallsEndingWith("/realtime/session-bootstrap")[0];
+    const firstAttempt = String(requestBody(firstBootstrap[0], firstBootstrap[1]).call_attempt_id);
+
+    await userEvent.click(screen.getByRole("button", { name: "Gespräch beenden" }));
+    await waitFor(() => {
+      const finish = vi.mocked(fetch).mock.calls.find(([input]) =>
+        String(input).includes(firstAttempt) && String(input).endsWith("/finish")
+      );
+      expect(requestBody(finish?.[0], finish?.[1])).toMatchObject({
+        status: "cancelled",
+        phase: "session_bootstrap",
+      });
+    });
+    resolveFirstBootstrap?.(new Response(JSON.stringify({
+      secret: { ...clientSecret, call_attempt_id: firstAttempt },
+      manifest: runtimeManifest,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await act(async () => undefined);
+    expect(sdk.connect).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: /Neues Testgespräch/ }));
+    await waitFor(() => expect(sdk.connect).toHaveBeenCalledOnce());
+    expect(await screen.findByText("Die Verbindung steht. Du kannst jetzt sprechen.")).toBeInTheDocument();
+  });
+
+  it("meldet eine im sessionStorage gefundene Reload-Sitzung genau einmal als verlassen", async () => {
+    const previousAttempt = "33333333-3333-4333-8333-333333333333";
+    sessionStorage.setItem(
+      "telefonagent.realtime.active_call_attempt",
+      previousAttempt,
+    );
+
+    render(<StrictMode><App /></StrictMode>);
+    await screen.findByText("Gespräch mit Lina");
+
+    await waitFor(() => {
+      const finishes = vi.mocked(fetch).mock.calls.filter(([input]) =>
+        String(input).endsWith(`/realtime/call-attempts/${previousAttempt}/finish`)
+      );
+      expect(finishes).toHaveLength(1);
+      expect(requestBody(finishes[0][0], finishes[0][1])).toMatchObject({
+        status: "abandoned",
+        phase: "browser_reload",
+      });
+    });
+    expect(sessionStorage.getItem(
+      "telefonagent.realtime.active_call_attempt",
+    )).toBeNull();
+    expect(fetchCallsEndingWith("/realtime/session-bootstrap")).toHaveLength(0);
   });
 
   it("zeigt Mikrofonanfrage und Verbindungsaufbau als getrennte Zustände", async () => {
@@ -367,7 +596,7 @@ describe("Realtime browser voice flow", () => {
       { name: "check_appointment_availability" },
       { toolCall: { callId: "call-lock-mic" } },
     ));
-    expect(microphoneTrack.enabled).toBe(false);
+    expect(microphoneTrack.enabled).toBe(true);
     client.close();
   });
 
@@ -529,31 +758,151 @@ describe("Realtime browser voice flow", () => {
     client.close();
   });
 
-  it("schließt zwanzig aufeinanderfolgende Antworten erst nach dem jeweiligen echten Buffer-Stopp ab", async () => {
+  it("durchläuft den vollständigen Tool-Happy-Path zwanzigmal ohne doppelte Antwort oder Abbruch", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
     await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    sdk.requestResponse.mockClear();
+    vi.mocked(callbacks.onError).mockClear();
     vi.mocked(callbacks.onPlaybackStatus).mockClear();
     for (let index = 1; index <= 20; index += 1) {
-      const responseId = `r-sequence-${index}`;
+      const toolResponseId = `r-tool-${index}`;
+      const continuationResponseId = `r-sequence-${index}`;
+      const callId = `call-sequence-${index}`;
       act(() => {
-        sdk.emit("transport_event", { type: "response.created", response: { id: responseId } });
-        sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: responseId });
-        sdk.emit("transport_event", { type: "response.output_audio.done", response_id: responseId });
-        sdk.emit("transport_event", { type: "response.done", response: { id: responseId, status: "completed" } });
+        sdk.emit("transport_event", { type: "response.created", response: { id: toolResponseId } });
+        sdk.emit("transport_event", {
+          type: "response.output_item.done",
+          response_id: toolResponseId,
+          item: {
+            type: "function_call",
+            call_id: callId,
+            name: availabilityTool.name,
+            status: "completed",
+          },
+        });
+        sdk.emit("transport_event", {
+          type: "response.done",
+          response: { id: toolResponseId, status: "completed" },
+        });
+        sdk.emit("agent_tool_start", {}, {}, { name: availabilityTool.name }, { toolCall: { callId } });
+      });
+      await configuredAvailabilityTool().execute(
+        { appointment_type_id: `appointment-type-${index}` },
+        {},
+        { toolCall: { callId } },
+      );
+      act(() => {
+        // @openai/agents-realtime has already submitted function_call_output and
+        // queued response.create before emitting agent_tool_end.
+        sdk.emit("agent_tool_end", {}, {}, { name: availabilityTool.name }, "{\"available\":true}", { toolCall: { callId } });
+        sdk.emit("transport_event", { type: "response.created", response: { id: continuationResponseId } });
+        sdk.emit("transport_event", { type: "output_audio_buffer.started", response_id: continuationResponseId });
+        sdk.emit("transport_event", { type: "response.output_audio.done", response_id: continuationResponseId });
+        sdk.emit("transport_event", {
+          type: "response.done",
+          response: { id: continuationResponseId, status: "completed" },
+        });
       });
       expect(microphoneTrack.enabled).toBe(false);
-      act(() => sdk.emit("transport_event", { type: "output_audio_buffer.stopped", response_id: responseId }));
+      act(() => sdk.emit("transport_event", { type: "output_audio_buffer.stopped", response_id: continuationResponseId }));
       expect(microphoneTrack.enabled).toBe(true);
     }
     const completedCalls = vi.mocked(callbacks.onPlaybackStatus).mock.calls.filter(([status]) => status === "completed");
     expect(completedCalls).toHaveLength(20);
     expect(completedCalls.map(([, responseId]) => responseId)).toEqual(Array.from({ length: 20 }, (_, index) => `r-sequence-${index + 1}`));
     expect(vi.mocked(callbacks.onPlaybackStatus).mock.calls.some(([status]) => status === "interrupted")).toBe(false);
+    expect(vi.mocked(callbacks.onEvent).mock.calls.filter(([name]) => name === "tool_continuation_response_created")).toHaveLength(20);
+    expect(vi.mocked(callbacks.onEvent).mock.calls.filter(([name]) => name === "tool_result_submitted")).toHaveLength(20);
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(callbacks.onError).not.toHaveBeenCalled();
     client.close();
   });
 
-  it("diagnostiziert eine unvollständige Antwort und fordert höchstens eine kontrollierte Wiederaufnahme an", async () => {
+  it("serialisiert eine neue Nutzerrunde während eines verzögerten Tools ohne App-seitige Zusatzantwort", async () => {
+    const callbacks = clientCallbacks();
+    const client = new BrowserRealtimeClient(callbacks);
+    await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
+    sdk.requestResponse.mockClear();
+    vi.mocked(callbacks.onError).mockClear();
+
+    const originalFetch = fetch as ReturnType<typeof vi.fn>;
+    let finishToolRequest: (() => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      if (!String(input).endsWith("/calendar/tools/check-appointment-availability/session")) {
+        return originalFetch(input, init);
+      }
+      return new Promise<Response>((resolve) => {
+        finishToolRequest = () => resolve(new Response(JSON.stringify({
+          available: true,
+          appointment_start: "2026-07-27T09:00:00+02:00",
+          appointment_end: "2026-07-27T09:30:00+02:00",
+          blocked_start: "2026-07-27T09:00:00+02:00",
+          blocked_end: "2026-07-27T09:30:00+02:00",
+          slot_id: "slot-delayed",
+          reason: null,
+          alternatives: [],
+          source: "snapshot",
+          preliminary: false,
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      });
+    }));
+
+    act(() => {
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-delayed-tool" } });
+      sdk.emit("transport_event", {
+        type: "response.output_item.done",
+        response_id: "r-delayed-tool",
+        item: {
+          type: "function_call",
+          call_id: "call-delayed-tool",
+          name: availabilityTool.name,
+          status: "completed",
+        },
+      });
+      sdk.emit("transport_event", {
+        type: "response.done",
+        response: { id: "r-delayed-tool", status: "completed" },
+      });
+      sdk.emit("agent_tool_start", {}, {}, { name: availabilityTool.name }, { toolCall: { callId: "call-delayed-tool" } });
+    });
+    const execution = configuredAvailabilityTool().execute(
+      { appointment_type_id: "appointment-type-delayed" },
+      {},
+      { toolCall: { callId: "call-delayed-tool" } },
+    );
+    expect(microphoneTrack.enabled).toBe(true);
+
+    act(() => {
+      sdk.emit("transport_event", { type: "input_audio_buffer.speech_started" });
+      sdk.emit("transport_event", { type: "input_audio_buffer.speech_stopped" });
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-new-user-turn" } });
+      sdk.emit("transport_event", {
+        type: "response.done",
+        response: { id: "r-new-user-turn", status: "completed" },
+      });
+    });
+    finishToolRequest?.();
+    await execution;
+    act(() => {
+      sdk.emit("agent_tool_end", {}, {}, { name: availabilityTool.name }, "{\"available\":true}", { toolCall: { callId: "call-delayed-tool" } });
+      sdk.emit("transport_event", { type: "response.created", response: { id: "r-delayed-continuation" } });
+      sdk.emit("transport_event", {
+        type: "response.done",
+        response: { id: "r-delayed-continuation", status: "completed" },
+      });
+    });
+
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(callbacks.onUserSpeechStopped).toHaveBeenCalledOnce();
+    expect(callbacks.onError).not.toHaveBeenCalled();
+    expect(vi.mocked(callbacks.onEvent).mock.calls.some(([name, detail]) =>
+      name === "tool_continuation_response_created" && detail?.includes("r-delayed-continuation")
+    )).toBe(true);
+    client.close();
+  });
+
+  it("diagnostiziert eine unvollständige Antwort ohne einen konkurrierenden Wiederanlauf zu erzeugen", async () => {
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
     await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
@@ -569,9 +918,8 @@ describe("Realtime browser voice flow", () => {
         response: { id: "r-incomplete-1", status: "incomplete", status_details: { reason: "max_output_tokens" } },
       });
     });
-    expect(sdk.requestResponse).toHaveBeenCalledOnce();
-    expect(sdk.requestResponse).toHaveBeenCalledWith();
-    expect(microphoneTrack.enabled).toBe(false);
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(microphoneTrack.enabled).toBe(true);
     expect(vi.mocked(callbacks.onEvent).mock.calls.some(([name, detail]) =>
       name === "response.done" && detail?.includes('"responseCompletionReason":"incomplete_function_call"')
     )).toBe(true);
@@ -583,8 +931,8 @@ describe("Realtime browser voice flow", () => {
         response: { id: "r-incomplete-2", status: "incomplete", status_details: { reason: "max_output_tokens" } },
       });
     });
-    expect(sdk.requestResponse).toHaveBeenCalledOnce();
-    expect(microphoneTrack.enabled).toBe(false);
+    expect(sdk.requestResponse).not.toHaveBeenCalled();
+    expect(microphoneTrack.enabled).toBe(true);
     client.close();
   });
 
@@ -615,7 +963,6 @@ describe("Realtime browser voice flow", () => {
   });
 
   it("verarbeitet die echte SDK-Folgeabfolge mit Tool-Ergebnis und genau einer Folgeantwort", async () => {
-    vi.useFakeTimers();
     const callbacks = clientCallbacks();
     const client = new BrowserRealtimeClient(callbacks);
     await client.connect(runtimeManifest, clientSecret, { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream, document.createElement("audio"));
@@ -633,20 +980,26 @@ describe("Realtime browser voice flow", () => {
       });
     });
 
-    // This is the order used by @openai/agents-realtime: tool execution ends
-    // after function_call_output and the SDK queues response.create itself.
     act(() => {
-      sdk.emit("agent_tool_start", {}, {}, { name: "check_appointment_availability" }, { toolCall: { callId: "call-calendar" } });
-      sdk.emit("agent_tool_end", {}, {}, { name: "check_appointment_availability" }, "{\"success\":true}", { toolCall: { callId: "call-calendar" } });
+      sdk.emit("agent_tool_start", {}, {}, { name: availabilityTool.name }, { toolCall: { callId: "call-calendar" } });
+    });
+    await configuredAvailabilityTool().execute(
+      { appointment_type_id: "appointment-type-1" },
+      {},
+      { toolCall: { callId: "call-calendar" } },
+    );
+    act(() => {
+      // This is the order used by @openai/agents-realtime: agent_tool_end is
+      // emitted after function_call_output and the sequenced response.create.
+      sdk.emit("agent_tool_end", {}, {}, { name: availabilityTool.name }, "{\"success\":true}", { toolCall: { callId: "call-calendar" } });
       sdk.emit("transport_event", { type: "response.created", response: { id: "r-tool-continuation" } });
       sdk.emit("transport_event", { type: "response.done", response: { id: "r-tool-continuation", status: "completed" } });
     });
 
-    await vi.advanceTimersByTimeAsync(12_000);
     expect(sdk.requestResponse).not.toHaveBeenCalled();
     expect(callbacks.onError).not.toHaveBeenCalled();
     expect(vi.mocked(callbacks.onEvent).mock.calls.some(([name, detail]) =>
-      name === "turn_continuation_created" && detail?.includes("r-tool-continuation")
+      name === "tool_continuation_response_created" && detail?.includes("r-tool-continuation")
     )).toBe(true);
     client.close();
   });
@@ -667,11 +1020,21 @@ describe("Realtime browser voice flow", () => {
         type: "error", response_id: "r-provider-tool",
         error: { type: "invalid_request_error", code: "test_provider_error", param: "response.create", message: "sensitive provider detail" },
       });
+      sdk.emit("error", {
+        error: {
+          type: "error",
+          error: { type: "invalid_request_error", code: "test_provider_error", param: "response.create", message: "sensitive provider detail" },
+        },
+      });
     });
     expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
-      code: "realtime_continuation_failed",
-      details: expect.objectContaining({ reason: "provider_error_during_turn" }),
+      code: "realtime_response_create_rejected",
+      details: expect.objectContaining({
+        providerErrorCode: "test_provider_error",
+        providerErrorParam: "response.create",
+      }),
     }));
+    expect(callbacks.onError).toHaveBeenCalledTimes(1);
     const providerEvent = vi.mocked(callbacks.onEvent).mock.calls.find(([name]) => name === "realtime_provider_error");
     expect(providerEvent?.[1]).toContain("test_provider_error");
     expect(providerEvent?.[1]).not.toContain("sensitive provider detail");
@@ -734,22 +1097,6 @@ describe("Realtime browser voice flow", () => {
     await secondConnection;
     expect(callbacks.onConnected).toHaveBeenCalledOnce();
     expect(microphoneTrack.enabled).toBe(false);
-    client.close();
-  });
-
-  it("startet bei einer kritischen Konfigurationsabweichung weder Begrüßung noch Mikrofon", async () => {
-    sdk.appliedStatus = "mismatch";
-    const callbacks = clientCallbacks();
-    const client = new BrowserRealtimeClient(callbacks);
-    await expect(client.connect(
-      runtimeManifest,
-      clientSecret,
-      { getTracks: () => [microphoneTrack], getAudioTracks: () => [microphoneTrack] } as unknown as MediaStream,
-      document.createElement("audio"),
-    )).rejects.toMatchObject({ code: "realtime_configuration_mismatch" });
-    expect(microphoneTrack.enabled).toBe(false);
-    expect(sdk.requestResponse).not.toHaveBeenCalled();
-    expect(callbacks.onConnected).not.toHaveBeenCalled();
     client.close();
   });
 

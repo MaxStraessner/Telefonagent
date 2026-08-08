@@ -13,18 +13,13 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import TenantContext
 from app.core.config import Settings
 from app.models import BookingConfiguration
-from app.schemas.api import RuntimeManifestResponse, RuntimeRecoveryPolicy
+from app.schemas.api import RuntimeManifestResponse
 from app.services.agent_configuration import AgentBundle, is_open_now, load_agent_bundle
 from app.services.capabilities import active_capabilities, realtime_tools
 from app.services.prompt_compiler import SECTION_NAMES, compile_agent_prompt
 from app.services.tool_projections import ToolProjectionError, canonical_tools_digest
 
 RUNTIME_MANIFEST_SCHEMA_VERSION = "1"
-RECOVERY_POLICY = RuntimeRecoveryPolicy(
-    continuation_ack_timeout_ms=4_000,
-    recovery_response_timeout_ms=8_000,
-    maximum_attempts_per_turn=1,
-)
 SETTING_TARGETS = {
     "company_name": "prompt",
     "assistant_name": "prompt",
@@ -235,7 +230,6 @@ def build_runtime_config(
         "transcription_enabled": settings.openai_realtime_transcription_enabled,
         "raw_event_logging": settings.openai_realtime_log_raw_events,
         "vad": turn_detection,
-        "recovery": RECOVERY_POLICY.model_dump(),
         "setting_targets": SETTING_TARGETS,
     }
     manifest = RuntimeManifestResponse(

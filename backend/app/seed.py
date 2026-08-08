@@ -1,8 +1,11 @@
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings, get_settings
+from app.core.security import UNUSABLE_PASSWORD_HASH, hash_password, normalize_username
 from app.db.session import SessionLocal
 from app.models import (
     AddressFormality,
@@ -14,6 +17,7 @@ from app.models import (
     AgentTopic,
     AppUser,
     Location,
+    PlatformRole,
     ResponseLength,
     Service,
     StaffMember,
@@ -25,11 +29,13 @@ from app.models import (
     TurnDetectionType,
     TurnEagerness,
 )
+from app.services.provisioning import ProvisioningService
 
 logger = logging.getLogger(__name__)
 
 
-def seed_database(db: Session) -> Tenant:
+def seed_database(db: Session, app_settings: Settings | None = None) -> Tenant:
+    app_settings = app_settings or get_settings()
     tenant = db.scalar(select(Tenant).where(Tenant.slug == "salon-haarkunst-test"))
     if tenant is None:
         tenant = Tenant(
@@ -39,32 +45,66 @@ def seed_database(db: Session) -> Tenant:
         db.add(tenant)
         db.flush()
 
-    settings = db.scalar(select(TenantSettings).where(TenantSettings.tenant_id == tenant.id))
-    if settings is None:
-        db.add(TenantSettings(
+    tenant_settings = db.scalar(select(TenantSettings).where(TenantSettings.tenant_id == tenant.id))
+    if tenant_settings is None:
+        tenant_settings = TenantSettings(
             tenant_id=tenant.id, assistant_name="Lina", default_language="de",
             welcome_message="Guten Tag, Sie sprechen mit dem digitalen Terminassistenten von Salon Haarkunst Test. Wie kann ich Ihnen helfen?",
             presentation_mode_enabled=False, diagnostics_enabled=True,
-        ))
+        )
+        db.add(tenant_settings)
 
     owner = db.scalar(select(AppUser).where(AppUser.email == "owner@telefonagent.local"))
     if owner is None:
-        owner = AppUser(email="owner@telefonagent.local", display_name="Lokale Administration", is_active=True)
+        owner = AppUser(
+            username=app_settings.dev_bootstrap_username,
+            normalized_username=normalize_username(app_settings.dev_bootstrap_username),
+            password_hash=UNUSABLE_PASSWORD_HASH,
+            email="owner@telefonagent.local",
+            normalized_email="owner@telefonagent.local",
+            display_name="Lokale Administration",
+            is_active=True,
+            platform_role=PlatformRole.owner,
+            is_platform_admin=True,
+        )
         db.add(owner)
         db.flush()
+    if (
+        app_settings.dev_bootstrap_enabled
+        and app_settings.dev_bootstrap_password
+        and owner.password_hash == UNUSABLE_PASSWORD_HASH
+    ):
+        owner.password_hash = hash_password(app_settings.dev_bootstrap_password)
+        owner.password_changed_at = datetime.now(timezone.utc)
+    elif app_settings.dev_bootstrap_enabled and not app_settings.dev_bootstrap_password:
+        logger.warning(
+            "Entwicklungs-Bootstrap ohne Passwort übersprungen. "
+            "Bitte `python -m app.cli set-password` verwenden."
+        )
     membership = db.scalar(select(TenantMembership).where(
         TenantMembership.tenant_id == tenant.id, TenantMembership.user_id == owner.id,
     ))
     if membership is None:
-        db.add(TenantMembership(tenant_id=tenant.id, user_id=owner.id, role=TenantRole.owner))
+        db.add(
+            TenantMembership(
+                tenant_id=tenant.id,
+                user_id=owner.id,
+                role=TenantRole.company_admin,
+                is_active=True,
+                is_primary_admin=True,
+            )
+        )
+
+    if owner.password_hash != UNUSABLE_PASSWORD_HASH:
+        ProvisioningService(db).mark_initial_setup_completed(tenant, owner)
 
     agent_config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant.id))
     if agent_config is None:
-        welcome = settings.welcome_message if settings else (
+        welcome = tenant_settings.welcome_message if tenant_settings else (
             "Guten Tag, Sie sprechen mit dem digitalen Terminassistenten von Salon Haarkunst Test. Wie kann ich Ihnen helfen?"
         )
-        assistant_name = settings.assistant_name if settings else "Lina"
-        language = settings.default_language if settings else "de"
+        assistant_name = tenant_settings.assistant_name if tenant_settings else "Lina"
+        language = tenant_settings.default_language if tenant_settings else "de"
         db.add(AgentConfiguration(
             tenant_id=tenant.id, company_name=tenant.name, assistant_name=assistant_name,
             assistant_role="digitaler Terminassistent", transparency_notice="Ich bin ein KI-gestützter Sprachassistent.",
@@ -155,8 +195,15 @@ def seed_database(db: Session) -> Tenant:
 
 
 def main() -> None:
+    settings = get_settings()
+    if settings.app_env.lower() != "development" or not settings.dev_bootstrap_enabled:
+        logger.info(
+            "Seed übersprungen. Er ist nur mit APP_ENV=development und "
+            "DEV_BOOTSTRAP_ENABLED=true aktiv."
+        )
+        return
     with SessionLocal() as db:
-        tenant = seed_database(db)
+        tenant = seed_database(db, settings)
         logger.info("Seed abgeschlossen", extra={"tenant_slug": tenant.slug})
 
 

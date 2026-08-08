@@ -76,7 +76,7 @@ def get_connection(db: Session, tenant_id: UUID, connection_id: UUID) -> Calenda
         )
     )
     if connection is None:
-        raise CalendarError("tenant_access_denied", "Die Kalenderverbindung gehört nicht zu diesem Account.")
+        raise CalendarError("calendar_connection_not_found", "Die Kalenderverbindung wurde nicht gefunden.")
     return connection
 
 
@@ -241,7 +241,10 @@ async def disconnect_connection(db: Session, connection: CalendarConnection, set
         )
     calendars = list_connection_calendars(db, connection.tenant_id, connection.id)
     historical_booking = db.scalar(
-        select(CalendarBooking.id).where(CalendarBooking.calendar_connection_id == connection.id).limit(1)
+        select(CalendarBooking.id).where(
+            CalendarBooking.tenant_id == connection.tenant_id,
+            CalendarBooking.calendar_connection_id == connection.id,
+        ).limit(1)
     )
     if historical_booking is None:
         for calendar in calendars:

@@ -23,9 +23,113 @@ export interface Tenant {
   name: string;
   industry: string;
   timezone: string;
-  status: "draft" | "active" | "inactive";
+  status: "trial" | "active" | "suspended" | "archived";
   settings: TenantSettings;
   primary_location: Location | null;
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  email: string | null;
+  display_name: string;
+  role: "company_admin" | "company_user" | null;
+  platform_role: "owner" | "admin" | null;
+  is_platform_admin: boolean;
+  must_change_password: boolean;
+}
+export interface AuthTenant { id: string; slug: string; name: string; }
+export interface AuthMembership {
+  tenant_id: string;
+  role: "company_admin" | "company_user";
+  is_primary_admin: boolean;
+}
+export interface AuthSession {
+  user: AuthUser;
+  tenant: AuthTenant | null;
+  active_company: AuthTenant | null;
+  membership: AuthMembership | null;
+  permissions: string[];
+  mode: "platform" | "company";
+  idle_expires_at: string;
+  absolute_expires_at: string;
+}
+export interface InvitationPreview {
+  email: string;
+  display_name: string;
+  company_name: string | null;
+  role: "company_admin" | "company_user" | "admin";
+  expires_at: string;
+}
+export interface InitialSetupStatus { available: boolean; }
+export interface InitialSetupRequest {
+  setup_code: string; company_name: string; industry: string; timezone: string;
+  display_name: string; username: string; email: string | null; password: string;
+}
+export interface ManagedUser extends AuthUser { is_active: boolean; }
+export interface ManagedUserWrite {
+  username: string; display_name: string; email: string | null;
+  role: "company_admin" | "company_user"; password: string;
+}
+export interface ManagedUserUpdate {
+  display_name: string; email: string | null; role: "company_admin" | "company_user"; is_active: boolean;
+}
+
+export type CompanyStatus = "trial" | "active" | "suspended" | "archived";
+export interface CompanySummary {
+  id: string; slug: string; name: string; legal_name: string | null; status: CompanyStatus;
+  is_demo: boolean; active_user_count: number; has_primary_admin: boolean;
+  onboarding_complete: boolean; created_at: string;
+}
+export interface CompanyDetail extends CompanySummary {
+  industry: string; timezone: string; contact_name: string | null;
+  contact_email: string | null; contact_phone: string | null; default_language: string;
+}
+export interface FirstCompanyAdmin {
+  username: string; display_name: string; email: string | null;
+  delivery: "invitation" | "temporary_password"; temporary_password?: string | null;
+}
+export interface CompanyCreate {
+  slug: string; name: string; legal_name: string | null; industry: string; timezone: string;
+  contact_name: string | null; contact_email: string | null; contact_phone: string | null;
+  status: "trial" | "active"; is_demo: boolean; first_admin: FirstCompanyAdmin;
+}
+export interface CompanyUser {
+  id: string; username: string; display_name: string; email: string | null;
+  role: "company_admin" | "company_user"; is_active: boolean; is_primary_admin: boolean;
+  must_change_password: boolean; last_login_at: string | null;
+}
+export interface CompanyUserInvite {
+  username: string; display_name: string; email: string; role: "company_admin" | "company_user";
+}
+export interface CompanyUserCreate {
+  username: string; display_name: string; email: string | null;
+  role: "company_admin" | "company_user"; password: string;
+}
+export interface AccountInvitation {
+  id: string; email: string; username: string; display_name: string;
+  role: "company_admin" | "company_user" | "admin"; expires_at: string;
+  status: "pending" | "sent" | "accepted" | "revoked" | "expired" | "failed"; created_at: string;
+}
+export interface PlatformDashboard {
+  companies_total: number; companies_trial: number; companies_active: number;
+  companies_suspended: number; companies_archived: number;
+  active_company_users: number; pending_invitations: number;
+}
+export interface PlatformAdmin {
+  id: string; username: string; display_name: string; email: string | null;
+  platform_role: "owner" | "admin"; is_active: boolean; must_change_password: boolean;
+  last_login_at: string | null;
+}
+export interface PlatformAdminCreate {
+  username: string; display_name: string; email: string | null;
+  password: string; current_password: string;
+}
+export interface AuditEntry {
+  id: string; actor_user_id: string | null; tenant_id: string | null; platform_role: string | null;
+  action: string; target_type: string; target_id: string | null; outcome: string;
+  metadata_before: Record<string, unknown> | null; metadata_after: Record<string, unknown> | null;
+  request_id: string | null; created_at: string;
 }
 
 export interface Service { id: string; name: string; description: string; duration_minutes: number; is_active: boolean; }
@@ -55,7 +159,7 @@ export interface RealtimeAgentConfig {
 }
 export interface RealtimeClientSecret {
   client_secret: string; expires_at: number; session_id: string | null; model: string; voice: string;
-  speed: number; configuration_version: number; call_session_id: string; tenant_id: string;
+  speed: number; configuration_version: number; call_session_id: string; call_attempt_id: string; tenant_id: string;
 }
 export interface RuntimeJsonObjectSchema {
   type: "object";
@@ -71,11 +175,6 @@ export interface RuntimeToolDefinition {
   description: string;
   parameters: RuntimeJsonObjectSchema;
 }
-export interface RuntimeRecoveryPolicy {
-  continuation_ack_timeout_ms: number;
-  recovery_response_timeout_ms: number;
-  maximum_attempts_per_turn: number;
-}
 export interface RuntimeManifest {
   schema_version: string; digest: string; tenant_id: string; timezone: string;
   assistant_name: string; language: string; welcome_message: string;
@@ -84,24 +183,20 @@ export interface RuntimeManifest {
   capability_keys: string[]; tools: RuntimeToolDefinition[]; tool_names: string[];
   tools_digest: string; maximum_session_minutes: number; max_output_tokens: number;
   transcription_enabled: boolean; raw_event_logging: boolean; vad: RealtimeVadConfig;
-  recovery: RuntimeRecoveryPolicy;
   setting_targets: Record<string, "prompt" | "session" | "tools" | "ui_only">;
 }
 export interface RealtimeSessionBootstrap {
   secret: RealtimeClientSecret;
   manifest: RuntimeManifest;
 }
-export interface AppliedRealtimeConfiguration {
-  model?: string; voice?: string; speed?: number; language?: string;
-  prompt_digest?: string; tool_names?: string[]; tools_digest?: string;
-  vad?: Record<string, unknown>;
-}
-export interface RuntimeConfigurationDiff {
-  session_id: string; status: "pending" | "applied" | "mismatch";
-  manifest_digest: string; expected: AppliedRealtimeConfiguration;
-  applied: AppliedRealtimeConfiguration | null;
-  differences: Record<string, { expected: unknown; actual: unknown }>;
-  unobserved: string[];
+export interface RealtimeAttemptFinish {
+  status: "ended" | "cancelled" | "failed" | "abandoned";
+  phase: string;
+  error_code?: string | null;
+  http_status?: number | null;
+  provider_request_id?: string | null;
+  retryable?: boolean | null;
+  technical_message?: string | null;
 }
 export interface Health { status: string; database: string; }
 export interface PlatformData {
@@ -113,7 +208,7 @@ export interface AgentListItem { id?: string | null; is_active: boolean; sort_or
 export interface AgentTopic extends AgentListItem { label: string; instructions: string; topic_type: "allowed" | "forbidden"; }
 export interface AgentRule extends AgentListItem { rule_text: string; }
 export interface AgentConfiguration {
-  tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "owner" | "admin" | "member";
+  tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "company_admin" | "company_user" | "platform_admin";
   company_name: string; assistant_name: string; assistant_role: string; transparency_notice: string;
   address_formality: "formal" | "informal"; language: "de";
   standard_greeting: string; outside_hours_greeting: string; test_greeting: string; farewell: string;

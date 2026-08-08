@@ -79,13 +79,10 @@ def test_platform_status_uses_platform_model_and_tenant_database_voice(client):
     assert "server-only" not in str(payload)
 
 
-def test_unknown_active_tenant_is_controlled_error(client):
-    app.dependency_overrides[get_settings] = lambda: Settings(
-        database_url="sqlite:///./test.db", active_tenant_slug="missing"
-    )
-    response = client.get("/api/v1/tenant")
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "active_tenant_unavailable"
+def test_tenant_route_requires_authentication(anonymous_client):
+    response = anonymous_client.get("/api/v1/tenant")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
 
 
 def test_openapi_contains_typed_response_contracts(client):

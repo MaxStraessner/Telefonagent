@@ -31,7 +31,7 @@ Alembic ist alleinige Quelle für die produktive Schemastruktur. Der Container f
 1. Der Browser lädt die Anwendung ohne eingebettete Unternehmensstammdaten.
 2. Der zentrale Provider ruft Tenant, Leistungen, Mitarbeiter, Termine, Health und Plattformstatus ab.
 3. FastAPI öffnet eine requestgebundene SQLAlchemy-Session.
-4. `get_tenant_context` löst `ACTIVE_TENANT_SLUG` serverseitig auf; `get_user_context` löst `ACTIVE_USER_EMAIL` und die gespeicherte Mandantenrolle auf.
+4. `get_authenticated_session` validiert das HttpOnly-Sitzungscookie; `get_tenant_context` und `get_user_context` leiten daraus Tenant, Benutzer und aktive Mitgliedschaft ab und setzen PostgreSQL `app.tenant_id` transaktionslokal.
 5. Repositories und Agent-Services filtern fachliche Abfragen immer mit der ermittelten UUID.
 6. Owner/Admin dürfen Konfiguration schreiben; Mitglieder erhalten einen schreibgeschützten Zugriff.
 7. Pydantic validiert und serialisiert die Antwort; React zeigt Lade-, Erfolgs- oder Fehlerzustand.
@@ -64,13 +64,14 @@ Ablauf:
 
 1. Der Nutzer startet das Gespräch und gibt erst dann sein Mikrofon frei.
 2. FastAPI löst Tenant, Benutzer und Rolle serverseitig auf und kompiliert die aktuelle versionierte Agentenkonfiguration.
-3. FastAPI ruft mit dem ausschließlich serverseitigen `OPENAI_API_KEY` OpenAIs Client-Secret-Endpunkt auf. Ein gehashter Tenantbezug wird als `OpenAI-Safety-Identifier` gesendet.
-4. Der Browser erhält nur das kurzlebige `ek_…`-Secret und nicht geheime Agentenkonfiguration.
-5. `RealtimeAgent`, `RealtimeSession` und `OpenAIRealtimeWebRTC` bauen die direkte Audioverbindung auf.
-6. SDK- und Transportereignisse aktualisieren Zustand, flüchtiges Transkript und Diagnosemetriken.
-7. Beenden, Fehler, Seitenwechsel oder Zeitlimit schließen Sitzung, Transport, Mikrofontracks, Audioelement, Listener und Timer.
+3. FastAPI ruft mit dem ausschließlich serverseitigen `OPENAI_API_KEY` OpenAIs Client-Secret-Endpunkt auf. Der Request mintet nur das kurzlebige Secret und dupliziert keine Sessionkonfiguration.
+4. Der Browser erhält das `ek_…`-Secret und das tenantgebundene, nicht geheime Runtime-Manifest.
+5. `RealtimeAgent`, `RealtimeSession` und `OpenAIRealtimeWebRTC` bauen die direkte Audioverbindung auf; der Agents-SDK ist die einzige Instanz, die Prompt, Tools, Stimme und VAD auf die Sitzung anwendet.
+6. Server-VAD fordert normale Antworten an. Nach einem Function Call sendet ausschließlich der SDK das Ergebnis mit derselben `call_id` und sequenziert genau eine Folgeantwort.
+7. SDK- und Transportereignisse aktualisieren Zustand, flüchtiges Transkript und Diagnosemetriken. Die Anwendung startet weder Recovery-Antworten noch konkurrierende `response.create`-Aufrufe.
+8. Beenden, Fehler, Seitenwechsel oder Zeitlimit schließen Sitzung, Transport, Mikrofontracks, Audioelement, Listener und Timer.
 
-Dauerhafte API-Schlüssel bleiben serverseitig. Audio, Transkripte und Realtime-Ereignisse werden nicht in PostgreSQL persistiert. `call_sessions` speichert ausschließlich tenantgebundene technische Metadaten und die verwendete Konfigurationsversion. Kalenderwerkzeuge werden nur dann in die Realtime-Sitzung eingebunden, wenn die serverseitige Capability aktiv ist; sie rufen ausschließlich schmale, tenantgebundene Backend-Endpunkte auf.
+Dauerhafte API-Schlüssel bleiben serverseitig. Audio, Transkripte und Realtime-Ereignisse werden nicht in PostgreSQL persistiert. `call_sessions` speichert ausschließlich tenantgebundene technische Metadaten und die verwendete Konfigurationsversion. Kalenderwerkzeuge werden nur dann in die Realtime-Sitzung eingebunden, wenn die serverseitige Capability aktiv ist; sie rufen ausschließlich schmale, tenantgebundene Backend-Endpunkte auf. Frontend und Backend deduplizieren Tool-Aufrufe anhand ihrer Tool-Call-ID; fachliche Buchungsidempotenz bleibt eine zusätzliche Schutzschicht.
 
 VAD-Modus, Schwelle, Präfix, Reaktionsbereitschaft, Unterbrechung und optionaler Idle-Timeout stammen aus derselben tenantgebundenen Runtime-Konfiguration. Server-VAD mappt Geduldig/Ausgewogen/Schnell zentral auf 900/600/350 ms; Semantic-VAD verwendet `low`/`medium`/`high`. Details stehen in [agent-configuration.md](agent-configuration.md) und [realtime-voice.md](realtime-voice.md).
 

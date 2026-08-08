@@ -3,17 +3,24 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from alembic import command
 from alembic.config import Config
 
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
-os.environ["ACTIVE_TENANT_SLUG"] = "salon-haarkunst-test"
+os.environ["APP_ENV"] = "test"
+os.environ["AUTH_HMAC_SECRET"] = "test-auth-secret-with-at-least-thirty-two-bytes"
+os.environ["CORS_ORIGINS"] = "http://testserver"
+os.environ["DEV_BOOTSTRAP_ENABLED"] = "true"
+os.environ["DEV_BOOTSTRAP_USERNAME"] = "owner@telefonagent.local"
+os.environ["DEV_BOOTSTRAP_PASSWORD"] = "correct horse battery staple"
 os.environ["CALENDAR_TOKEN_ENCRYPTION_KEY"] = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 
 from app.core.config import get_settings  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models import Tenant  # noqa: E402
 from app.seed import seed_database  # noqa: E402
 
 
@@ -34,6 +41,51 @@ def migrated_database():
 
 @pytest.fixture()
 def client() -> TestClient:
+    client = TestClient(app)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": "owner@telefonagent.local",
+            "password": "correct horse battery staple",
+        },
+        headers={
+            "Origin": "http://testserver",
+            "X-Requested-With": "Telefonagent",
+        },
+    )
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        tenant_id = db.scalar(
+            select(Tenant.id).where(Tenant.slug == "salon-haarkunst-test")
+        )
+    csrf_token = client.cookies.get("telefonagent_csrf")
+    context_response = client.post(
+        "/api/v1/auth/context",
+        json={"company_id": str(tenant_id)},
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": csrf_token,
+        },
+    )
+    assert context_response.status_code == 200, context_response.text
+    original_request = client.request
+
+    def authenticated_request(method: str, url: str, **kwargs):
+        if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+            headers = dict(kwargs.pop("headers", {}) or {})
+            headers.setdefault("Origin", "http://testserver")
+            csrf_token = client.cookies.get("telefonagent_csrf")
+            if csrf_token:
+                headers.setdefault("X-CSRF-Token", csrf_token)
+            kwargs["headers"] = headers
+        return original_request(method, url, **kwargs)
+
+    client.request = authenticated_request  # type: ignore[method-assign]
+    return client
+
+
+@pytest.fixture()
+def anonymous_client() -> TestClient:
     return TestClient(app)
 
 

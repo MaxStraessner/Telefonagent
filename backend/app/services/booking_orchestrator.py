@@ -269,7 +269,12 @@ class AppointmentBookingOrchestrator:
         conversation = self._conversation(payload.session_id)
         context = conversation.context
         if context.appointment_id is not None:
-            existing_booking = self.db.get(CalendarBooking, context.appointment_id)
+            existing_booking = self.db.scalar(
+                select(CalendarBooking).where(
+                    CalendarBooking.id == context.appointment_id,
+                    CalendarBooking.tenant_id == self.tenant_id,
+                )
+            )
             if (
                 existing_booking is not None
                 and existing_booking.status == CalendarBookingStatus.confirmed

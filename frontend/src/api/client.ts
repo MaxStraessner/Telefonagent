@@ -1,4 +1,4 @@
-import type { AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, AppliedRealtimeConfiguration, Appointment, AppointmentTypeWrite, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, ExternalCalendar, Health, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeConfigurationDiff, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -6,14 +6,33 @@ export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string, public readonly fieldErrors: Record<string, string> = {}) { super(message); }
 }
 
-async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown } = {}): Promise<T> {
+function cookieValue(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`;
+  const match = document.cookie.split("; ").find((value) => value.startsWith(prefix));
+  return match ? decodeURIComponent(match.slice(prefix.length)) : null;
+}
+
+function csrfToken(): string | null {
+  return cookieValue("__Host-telefonagent_csrf") ?? cookieValue("telefonagent_csrf");
+}
+
+function withoutServerFields<T extends object>(value: T, fields: ReadonlyArray<keyof T>): Partial<T> {
+  const excluded = new Set<PropertyKey>(fields);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !excluded.has(key))) as Partial<T>;
+}
+
+async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; suppressUnauthorizedEvent?: boolean; loginRequest?: boolean; keepalive?: boolean } = {}): Promise<T> {
   try {
+    const method = options.method ?? "GET";
+    const csrf = method !== "GET" && !options.loginRequest ? csrfToken() : null;
     const response = await fetch(`${API_BASE_URL}${path}`, {
-      signal: options.signal, method: options.method ?? "GET",
-      headers: { Accept: "application/json", ...(options.body === undefined ? {} : { "Content-Type": "application/json" }) },
+      signal: options.signal, method, credentials: "include", keepalive: options.keepalive,
+      headers: { Accept: "application/json", ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...(csrf ? { "X-CSRF-Token": csrf } : {}), ...(options.loginRequest ? { "X-Requested-With": "Telefonagent" } : {}) },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     if (!response.ok) {
+      if (response.status === 401 && !options.suppressUnauthorizedEvent)
+        window.dispatchEvent(new Event("telefonagent:unauthorized"));
       const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string }; detail?: Array<{ loc?: Array<string | number>; msg?: string }> } | null;
       const fieldErrors = Object.fromEntries((body?.detail ?? []).map((item) => [String(item.loc?.slice(1).join(".") ?? "request"), item.msg ?? "Ungültiger Wert"]));
       throw new ApiError(body?.error?.message ?? (body?.detail ? "Bitte prüfen Sie die markierten Eingaben." : "Die Plattformdaten konnten nicht geladen werden."), response.status, body?.error?.code, fieldErrors);
@@ -27,6 +46,55 @@ async function request<T>(path: string, options: { signal?: AbortSignal; method?
 }
 
 export const api = {
+  authSession: (signal?: AbortSignal) => request<AuthSession>("/auth/session", { signal, suppressUnauthorizedEvent: true }),
+  initialSetupStatus: (signal?: AbortSignal) => request<InitialSetupStatus>("/auth/setup-status", { signal, loginRequest: true, suppressUnauthorizedEvent: true }),
+  initialSetup: (value: InitialSetupRequest) => request<AuthSession>("/auth/initial-setup", { method: "POST", body: value, loginRequest: true, suppressUnauthorizedEvent: true }),
+  login: (username: string, password: string) => request<AuthSession>("/auth/login", { method: "POST", body: { username, password }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  logout: () => request<void>("/auth/logout", { method: "POST", suppressUnauthorizedEvent: true }),
+  changePassword: (currentPassword: string, newPassword: string) => request<AuthSession>("/auth/change-password", { method: "POST", body: { current_password: currentPassword, new_password: newPassword } }),
+  forgotPassword: (identifier: string) => request<void>("/auth/forgot-password", { method: "POST", body: { identifier }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  resetPassword: (token: string, newPassword: string) => request<void>("/auth/reset-password", { method: "POST", body: { token, new_password: newPassword }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  invitation: (token: string, signal?: AbortSignal) => request<InvitationPreview>(`/auth/invitations/${encodeURIComponent(token)}`, { signal, loginRequest: true, suppressUnauthorizedEvent: true }),
+  acceptInvitation: (token: string, password: string) => request<void>(`/auth/invitations/${encodeURIComponent(token)}`, { method: "POST", body: { password }, loginRequest: true, suppressUnauthorizedEvent: true }),
+  selectCompanyContext: (companyId: string) => request<AuthSession>("/auth/context", { method: "POST", body: { company_id: companyId } }),
+  clearCompanyContext: () => request<AuthSession>("/auth/context", { method: "DELETE" }),
+  platformDashboard: () => request<PlatformDashboard>("/platform/dashboard"),
+  companies: (search = "", status = "") => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (status) params.set("status", status);
+    const query = params.toString();
+    return request<CompanySummary[]>(`/platform/companies${query ? `?${query}` : ""}`);
+  },
+  company: (id: string) => request<CompanyDetail>(`/platform/companies/${id}`),
+  createCompany: (value: CompanyCreate) => request<CompanyDetail>("/platform/companies", { method: "POST", body: value }),
+  updateCompanyStatus: (id: string, status: CompanyStatus) => request<CompanyDetail>(`/platform/companies/${id}/status`, { method: "POST", body: { status } }),
+  selectPlatformCompany: (id: string) => request<AuthSession>("/auth/context", { method: "POST", body: { company_id: id } }),
+  platformCompanyUsers: (id: string) => request<CompanyUser[]>(`/platform/companies/${id}/users`),
+  createPlatformCompanyUser: (id: string, value: CompanyUserCreate) => request<CompanyUser>(`/platform/companies/${id}/users`, { method: "POST", body: value }),
+  updatePlatformCompanyUser: (companyId: string, userId: string, value: Pick<CompanyUser, "display_name" | "email" | "role" | "is_active">) => request<CompanyUser>(`/platform/companies/${companyId}/users/${userId}`, { method: "PUT", body: value }),
+  transferPlatformPrimaryAdmin: (companyId: string, userId: string) => request<CompanyUser>(`/platform/companies/${companyId}/primary-admin`, { method: "POST", body: { user_id: userId } }),
+  platformCompanyInvitations: (id: string) => request<AccountInvitation[]>(`/platform/companies/${id}/invitations`),
+  invitePlatformCompanyUser: (id: string, value: CompanyUserInvite) => request<AccountInvitation>(`/platform/companies/${id}/invitations`, { method: "POST", body: value }),
+  revokePlatformCompanyInvitation: (companyId: string, invitationId: string) => request<AccountInvitation>(`/platform/companies/${companyId}/invitations/${invitationId}`, { method: "DELETE" }),
+  ownCompany: () => request<CompanyDetail>("/company"),
+  updateOwnCompany: (value: Pick<CompanyDetail, "contact_name" | "contact_email" | "contact_phone" | "timezone">) => request<CompanyDetail>("/company", { method: "PUT", body: value }),
+  ownCompanyUsers: () => request<CompanyUser[]>("/company/users"),
+  inviteOwnCompanyUser: (value: CompanyUserInvite) => request<AccountInvitation>("/company/invitations", { method: "POST", body: value }),
+  updateOwnCompanyUser: (userId: string, value: Pick<CompanyUser, "display_name" | "email" | "role" | "is_active">) => request<CompanyUser>(`/company/users/${userId}`, { method: "PUT", body: value }),
+  transferOwnPrimaryAdmin: (userId: string) => request<CompanyUser>("/company/primary-admin", { method: "POST", body: { user_id: userId } }),
+  ownCompanyInvitations: () => request<AccountInvitation[]>("/company/invitations"),
+  revokeOwnCompanyInvitation: (invitationId: string) => request<AccountInvitation>(`/company/invitations/${invitationId}`, { method: "DELETE" }),
+  platformAdmins: () => request<PlatformAdmin[]>("/platform/admins"),
+  createPlatformAdmin: (value: PlatformAdminCreate) => request<PlatformAdmin>("/platform/admins", { method: "POST", body: value }),
+  invitePlatformAdmin: (value: { username: string; display_name: string; email: string; current_password: string }) => request<AccountInvitation>("/platform/admins/invitations", { method: "POST", body: value }),
+  updatePlatformAdmin: (id: string, value: { display_name: string; email: string | null; is_active: boolean; current_password: string }) => request<PlatformAdmin>(`/platform/admins/${id}`, { method: "PUT", body: value }),
+  platformAudit: (companyId = "") => request<AuditEntry[]>(`/platform/audit${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ""}`),
+  ownCompanyAudit: () => request<AuditEntry[]>("/company/audit"),
+  managedUsers: () => request<ManagedUser[]>("/auth/users"),
+  createManagedUser: (value: ManagedUserWrite) => request<ManagedUser>("/auth/users", { method: "POST", body: value }),
+  updateManagedUser: (id: string, value: ManagedUserUpdate) => request<ManagedUser>(`/auth/users/${id}`, { method: "PUT", body: value }),
+  resetManagedUserPassword: (id: string, password: string) => request<void>(`/auth/users/${id}/reset-password`, { method: "POST", body: { password } }),
   tenant: (signal?: AbortSignal) => request<Tenant>("/tenant", { signal }),
   services: (signal?: AbortSignal) => request<Service[]>("/services", { signal }),
   createService: (value: Omit<Service, "id">) => request<Service>("/services", { method: "POST", body: value }),
@@ -38,26 +106,21 @@ export const api = {
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
   realtimeAgentConfig: (signal?: AbortSignal) => request<RealtimeAgentConfig>("/realtime/agent-config", { signal }),
   realtimeClientSecret: (signal?: AbortSignal) => request<RealtimeClientSecret>("/realtime/client-secret", { signal, method: "POST" }),
-  realtimeSessionBootstrap: (signal?: AbortSignal) => request<RealtimeSessionBootstrap>("/realtime/session-bootstrap", { signal, method: "POST" }),
-  reportAppliedRealtimeConfiguration: (
-    sessionId: string,
-    manifestDigest: string,
-    applied: AppliedRealtimeConfiguration,
-  ) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/applied-configuration`, {
-    method: "POST",
-    body: { manifest_digest: manifestDigest, applied },
-  }),
-  realtimeRuntimeDiff: (sessionId: string, signal?: AbortSignal) => request<RuntimeConfigurationDiff>(`/realtime/sessions/${sessionId}/runtime-diff`, { signal }),
+  realtimeSessionBootstrap: (callAttemptId: string, signal?: AbortSignal) => request<RealtimeSessionBootstrap>("/realtime/session-bootstrap", { signal, method: "POST", body: { call_attempt_id: callAttemptId } }),
+  realtimeAttemptConnected: (callAttemptId: string) => request<void>(`/realtime/call-attempts/${encodeURIComponent(callAttemptId)}/connected`, { method: "POST" }),
+  realtimeAttemptFinish: (callAttemptId: string, value: RealtimeAttemptFinish, keepalive = false) => request<void>(`/realtime/call-attempts/${encodeURIComponent(callAttemptId)}/finish`, { method: "POST", body: value, keepalive, suppressUnauthorizedEvent: keepalive }),
   agentConfiguration: (signal?: AbortSignal) => request<AgentConfiguration>("/agent/config", { signal }),
-  saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...value, expected_version: value.version } }),
+  saveAgentConfiguration: (value: AgentConfiguration) => request<AgentConfiguration>("/agent/config", { method: "PUT", body: { ...withoutServerFields(value, ["tenant_id", "version", "updated_at", "can_edit", "role"]), expected_version: value.version } }),
   agentKnowledge: (signal?: AbortSignal) => request<AgentKnowledge>("/agent/knowledge", { signal }),
-  saveAgentKnowledge: (value: AgentKnowledge) => request<AgentKnowledge>("/agent/knowledge", { method: "PUT", body: { ...value, expected_version: value.version } }),
+  saveAgentKnowledge: (value: AgentKnowledge) => request<AgentKnowledge>("/agent/knowledge", { method: "PUT", body: { ...withoutServerFields(value, ["tenant_id", "version", "can_edit"]), expected_version: value.version } }),
   agentCatalog: (signal?: AbortSignal) => request<AgentCatalog>("/agent/catalog", { signal }),
   agentTestSession: (signal?: AbortSignal) => request<RuntimeSummary>("/agent/test-session", { signal, method: "POST" }),
   agentPromptPreview: (signal?: AbortSignal) => request<PromptPreview>("/agent/prompt-preview", { signal }),
   voicePreview: async (value: Pick<AgentConfiguration, "pronunciation_style" | "regional_accent" | "pronunciation_instructions"> & { voice: string; speed: number; text: string }) => {
-    const response = await fetch(`${API_BASE_URL}/agent/voice-preview`, { method: "POST", headers: { Accept: "audio/mpeg", "Content-Type": "application/json" }, body: JSON.stringify(value) });
+    const csrf = csrfToken();
+    const response = await fetch(`${API_BASE_URL}/agent/voice-preview`, { method: "POST", credentials: "include", headers: { Accept: "audio/mpeg", "Content-Type": "application/json", ...(csrf ? { "X-CSRF-Token": csrf } : {}) }, body: JSON.stringify(value) });
     if (!response.ok) {
+      if (response.status === 401) window.dispatchEvent(new Event("telefonagent:unauthorized"));
       const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
       throw new ApiError(body?.error?.message ?? "Die Stimmprobe konnte nicht geladen werden.", response.status, body?.error?.code);
     }

@@ -24,9 +24,15 @@ from app.db.base import Base
 
 
 class TenantStatus(str, enum.Enum):
-    draft = "draft"
+    trial = "trial"
     active = "active"
-    inactive = "inactive"
+    suspended = "suspended"
+    archived = "archived"
+
+
+class PlatformRole(str, enum.Enum):
+    owner = "owner"
+    admin = "admin"
 
 
 class AppointmentStatus(str, enum.Enum):
@@ -49,9 +55,8 @@ class CallChannel(str, enum.Enum):
 
 
 class TenantRole(str, enum.Enum):
-    owner = "owner"
-    admin = "admin"
-    member = "member"
+    company_admin = "company_admin"
+    company_user = "company_user"
 
 
 class AddressFormality(str, enum.Enum):
@@ -143,7 +148,12 @@ class Tenant(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200))
     industry: Mapped[str] = mapped_column(String(100))
     timezone: Mapped[str] = mapped_column(String(64))
-    status: Mapped[TenantStatus] = mapped_column(Enum(TenantStatus, native_enum=False), default=TenantStatus.draft)
+    status: Mapped[TenantStatus] = mapped_column(Enum(TenantStatus, native_enum=False), default=TenantStatus.trial)
+    legal_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    contact_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    contact_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     settings: Mapped["TenantSettings | None"] = relationship(back_populates="tenant", uselist=False)
     locations: Mapped[list["Location"]] = relationship(back_populates="tenant")
 
@@ -151,9 +161,21 @@ class Tenant(Base, TimestampMixin):
 class AppUser(Base, TimestampMixin):
     __tablename__ = "app_users"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(150))
+    normalized_username: Mapped[str] = mapped_column(String(150), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(500), default="!unusable!")
+    email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True, nullable=True)
+    normalized_email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(150))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    platform_role: Mapped[PlatformRole | None] = mapped_column(
+        Enum(PlatformRole, native_enum=False), nullable=True
+    )
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Transitional compatibility; removed after the v2 account rollout.
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TenantMembership(Base, TimestampMixin):
@@ -162,8 +184,120 @@ class TenantMembership(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
-    role: Mapped[TenantRole] = mapped_column(Enum(TenantRole, native_enum=False), default=TenantRole.member)
+    role: Mapped[TenantRole] = mapped_column(
+        Enum(TenantRole, native_enum=False), default=TenantRole.company_user
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_primary_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     user: Mapped[AppUser] = relationship()
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_user_session_token_hash"),
+        Index("ix_user_sessions_user_active", "user_id", "revoked_at"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    csrf_token_hash: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    active_tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tenants.id"), index=True, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class AuthenticationRateLimit(Base, TimestampMixin):
+    __tablename__ = "authentication_rate_limits"
+    __table_args__ = (
+        UniqueConstraint("scope", "key_hash", name="uq_auth_rate_limit_scope_key"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    scope: Mapped[str] = mapped_column(String(20))
+    key_hash: Mapped[str] = mapped_column(String(64))
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InitialAppSetup(Base, TimestampMixin):
+    __tablename__ = "initial_app_setup"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
+
+
+class Invitation(Base, TimestampMixin):
+    __tablename__ = "invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), index=True, nullable=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    email: Mapped[str] = mapped_column(String(320))
+    normalized_email: Mapped[str] = mapped_column(String(320), index=True)
+    username: Mapped[str] = mapped_column(String(150))
+    display_name: Mapped[str] = mapped_column(String(150))
+    tenant_role: Mapped[TenantRole | None] = mapped_column(
+        Enum(TenantRole, native_enum=False), nullable=True
+    )
+    platform_role: Mapped[PlatformRole | None] = mapped_column(
+        Enum(PlatformRole, native_enum=False), nullable=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_status: Mapped[str] = mapped_column(String(30), default="pending")
+
+
+class PasswordResetToken(Base, TimestampMixin):
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("app_users.id"), index=True, nullable=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=True)
+    platform_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    action: Mapped[str] = mapped_column(String(100), index=True)
+    target_type: Mapped[str] = mapped_column(String(50))
+    target_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(30), default="success")
+    metadata_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class TenantInboundRoute(Base, TimestampMixin):
+    __tablename__ = "tenant_inbound_routes"
+    __table_args__ = (
+        UniqueConstraint("route_type", "normalized_identifier", name="uq_tenant_inbound_route"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    route_type: Mapped[str] = mapped_column(String(30))
+    normalized_identifier: Mapped[str] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class TenantSettings(Base, TimestampMixin):
@@ -514,10 +648,16 @@ class Appointment(Base, TimestampMixin):
 
 class CallSession(Base):
     __tablename__ = "call_sessions"
+    __table_args__ = (
+        UniqueConstraint("call_attempt_id", name="uq_call_sessions_call_attempt_id"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    call_attempt_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     channel: Mapped[CallChannel] = mapped_column(Enum(CallChannel, native_enum=False))
     status: Mapped[str] = mapped_column(String(50))
+    provider_session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     configuration_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     runtime_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     runtime_manifest_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -527,7 +667,12 @@ class CallSession(Base):
     runtime_state: Mapped[str] = mapped_column(String(50), default="idle")
     bootstrap_status: Mapped[str] = mapped_column(String(50), default="not_started")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_phase: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failure_retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -542,7 +687,7 @@ class ToolExecution(Base):
     tool_name: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50))
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    continuation_mode: Mapped[str] = mapped_column(String(50), default="sdk_automatic")
+    continuation_mode: Mapped[str] = mapped_column(String(50), default="agents_sdk")
     result_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     continuation_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     continuation_response_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
