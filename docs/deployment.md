@@ -32,11 +32,21 @@ Historisch wurde die Anwendung zunächst manuell unter `/docker/telefonagent/app
 
 ## Aktueller SSH-Istzustand
 
-Der bisherige administrative Zugriff erfolgte als `root` und benötigte ein Passwort. Lokal existiert derzeit keine `~/.ssh/config`. Der vorhandene ältere Schlüssel `codex_nuam_kasse_hostinger` wird vom Telefonagent-VPS für `root` nicht akzeptiert. Die Hostschlüssel für IP und Hostname sind bereits in `known_hosts` verankert.
+Die einmalige SSH-Einrichtung ist abgeschlossen und am 8. August 2026 erfolgreich verifiziert:
 
-Der normale Deploymentprozess soll künftig keinen Root-Login und kein Passwort benötigen. Dafür ist einmalig die folgende Einrichtung erforderlich; sie ist bewusst **nicht** Teil von `ops/deploy.ps1`.
+- Der Benutzer `telefonagent-deploy` ist auf `srv1769417.hstgr.cloud` eingerichtet.
+- Der projektspezifische Ed25519-Schlüssel `telefonagent_hostinger_ed25519` ist lokal vorhanden; ausschließlich dessen öffentlicher Schlüssel ist für den Deploymentbenutzer autorisiert.
+- Der lokale SSH-Alias `telefonagent-prod` verweist auf den VPS und verwendet `telefonagent-deploy` sowie den projektspezifischen Schlüssel.
+- `ssh -o BatchMode=yes telefonagent-prod true` funktioniert ohne Passwort.
+- Lese-, Schreib- und Verzeichniszugriff auf `/docker/telefonagent` sowie die für Releases und Backups benötigten Unterverzeichnisse wurden erfolgreich geprüft.
+- Docker-Zugriff über die bestehende Docker-Gruppe wurde für `telefonagent-deploy` erfolgreich geprüft. Die Docker-Gruppe ist technisch root-äquivalent; dieser Benutzer darf deshalb ausschließlich für das Telefonagent-Deployment verwendet werden.
+- `.\ops\deploy.ps1 -ValidateOnly` wurde erfolgreich ausgeführt.
 
-## Einmalige SSH-Einrichtung
+Normale Deployments benötigen weder einen Root-Login noch ein Passwort. `root` bleibt ausschließlich administrativer beziehungsweise Notfallzugang außerhalb des normalen Deploymentprozesses. Die folgenden Einrichtungsschritte müssen bei normalen Deployments nicht erneut ausgeführt werden.
+
+## Wiederherstellung oder Neueinrichtung des Deploymentzugangs
+
+Dieser Abschnitt ist nur erforderlich, wenn der Deploymentbenutzer, Schlüssel oder lokale SSH-Alias verloren gegangen ist oder bewusst ersetzt werden soll. Er ist nicht Teil eines normalen Deployments und nicht Teil von `ops/deploy.ps1`.
 
 1. Einen projektspezifischen Ed25519-Schlüssel `telefonagent_hostinger_ed25519` lokal erzeugen. Den privaten Schlüssel niemals in dieses Repository kopieren.
 2. Einmal über die Hostinger-Konsole beziehungsweise den bestehenden administrativen Zugang den Benutzer `telefonagent-deploy` anlegen.
@@ -52,10 +62,10 @@ Der normale Deploymentprozess soll künftig keinen Root-Login und kein Passwort 
      IdentitiesOnly yes
    ```
 
-6. `ssh -o BatchMode=yes telefonagent-prod true` muss anschließend ohne Passwort erfolgreich sein.
+6. `ssh -o BatchMode=yes telefonagent-prod true` muss anschließend ohne Passwort erfolgreich sein. Danach auch Schreibzugriff auf `/docker/telefonagent` und `docker info` als `telefonagent-deploy` prüfen.
 7. Für lokale GitHub-Pushes muss `gh auth status` erfolgreich sein. Falls der gespeicherte Login ungültig ist, einmal `gh auth login -h github.com` durchführen. Das betrifft nur den lokalen Push; der VPS liest das öffentliche Repository ohne Zugangsdaten.
 
-Das Root-Passwort wird danach im normalen Prozess nicht mehr verwendet. Es bleibt ausschließlich ein Notfall-/Administrationszugang außerhalb dieses Deployments.
+Das Root-Passwort wird im normalen Prozess nicht verwendet. Es bleibt ausschließlich ein Notfall-/Administrationszugang außerhalb dieses Deployments.
 
 ## Was `ops/deploy.ps1` tut
 
