@@ -20,8 +20,16 @@ function Invoke-NativeCapture {
         [Parameter(Mandatory = $true)][string[]]$ArgumentList
     )
 
-    $output = & $FilePath @ArgumentList 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $FilePath @ArgumentList 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
         throw "$FilePath $($ArgumentList -join ' ') ist fehlgeschlagen: $($output -join [Environment]::NewLine)"
     }
     return ($output -join [Environment]::NewLine).Trim()
