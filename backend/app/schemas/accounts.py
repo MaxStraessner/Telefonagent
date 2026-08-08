@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.security import normalize_username, validate_new_password
@@ -17,7 +18,7 @@ class StrictAccountWrite(BaseModel):
 class FirstCompanyAdmin(StrictAccountWrite):
     username: str = Field(min_length=1, max_length=150)
     display_name: str = Field(min_length=1, max_length=150)
-    email: str = Field(min_length=3, max_length=320)
+    email: str | None = Field(default=None, max_length=320)
     delivery: Literal["invitation", "temporary_password"] = "invitation"
     temporary_password: str | None = None
 
@@ -28,7 +29,7 @@ class FirstCompanyAdmin(StrictAccountWrite):
             raise ValueError("Benutzername darf nicht leer sein.")
         return value.strip()
 
-    @field_validator("display_name", "email")
+    @field_validator("display_name")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         value = value.strip()
@@ -42,8 +43,12 @@ class FirstCompanyAdmin(StrictAccountWrite):
             if not self.temporary_password:
                 raise ValueError("Für ein Startpasswort ist ein Passwort erforderlich.")
             self.temporary_password = validate_new_password(self.temporary_password)
-        elif self.temporary_password is not None:
-            raise ValueError("Einladungen dürfen kein Startpasswort enthalten.")
+        else:
+            if self.temporary_password is not None:
+                raise ValueError("Einladungen dürfen kein Startpasswort enthalten.")
+            if not self.email:
+                raise ValueError("Für eine Einladung ist eine E-Mail-Adresse erforderlich.")
+        self.email = str(self.email).strip() if self.email else None
         return self
 
 
@@ -151,6 +156,19 @@ class CompanyUserInvite(StrictAccountWrite):
     _email = field_validator("email")(FirstCompanyAdmin.validate_required_text.__func__)
 
 
+class CompanyUserCreate(StrictAccountWrite):
+    username: str = Field(min_length=1, max_length=150)
+    display_name: str = Field(min_length=1, max_length=150)
+    email: str | None = Field(default=None, max_length=320)
+    role: CompanyRoleValue = "company_user"
+    password: str = Field(min_length=1, max_length=128)
+
+    _username = field_validator("username")(FirstCompanyAdmin.validate_username.__func__)
+    _display = field_validator("display_name")(FirstCompanyAdmin.validate_required_text.__func__)
+    _email = field_validator("email", mode="before")(CompanyCreate.optional_text.__func__)
+    _password = field_validator("password")(validate_new_password)
+
+
 class CompanyUserUpdate(StrictAccountWrite):
     display_name: str = Field(min_length=1, max_length=150)
     email: str | None = Field(default=None, max_length=320)
@@ -199,6 +217,19 @@ class PlatformAdminInvite(StrictAccountWrite):
     _email = field_validator("email")(FirstCompanyAdmin.validate_required_text.__func__)
 
 
+class PlatformAdminCreate(StrictAccountWrite):
+    username: str = Field(min_length=1, max_length=150)
+    display_name: str = Field(min_length=1, max_length=150)
+    email: str | None = Field(default=None, max_length=320)
+    password: str = Field(min_length=1, max_length=128)
+    current_password: str = Field(min_length=1, max_length=128)
+
+    _username = field_validator("username")(FirstCompanyAdmin.validate_username.__func__)
+    _display = field_validator("display_name")(FirstCompanyAdmin.validate_required_text.__func__)
+    _email = field_validator("email", mode="before")(CompanyCreate.optional_text.__func__)
+    _password = field_validator("password")(validate_new_password)
+
+
 class PlatformAdminUpdate(StrictAccountWrite):
     display_name: str = Field(min_length=1, max_length=150)
     email: str | None = Field(default=None, max_length=320)
@@ -216,6 +247,7 @@ class PlatformAdminResponse(BaseModel):
     email: str | None
     platform_role: Literal["owner", "admin"]
     is_active: bool
+    must_change_password: bool
     last_login_at: datetime | None
 
 

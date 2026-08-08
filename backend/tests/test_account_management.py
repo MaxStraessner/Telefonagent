@@ -3,6 +3,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 
 from app.api.v1.auth import get_mail_adapter
+from app.core.security import verify_password
 from app.main import app
 from app.models import AppUser, AuditLog, PlatformRole, Tenant, TenantMembership, TenantRole, TenantStatus
 from app.services.mail import MailDeliveryError, OutboundMail
@@ -273,3 +274,175 @@ def test_primary_and_last_company_admin_are_protected_until_explicit_transfer(
         )
     )
     assert primary_count == 1
+
+
+def test_platform_admin_creates_direct_company_users_without_email(
+    client, anonymous_client, db
+):
+    company_payload = _company_payload("direct-users", delivery="temporary_password")
+    company_payload["first_admin"]["email"] = None
+    created = client.post("/api/v1/platform/companies", json=company_payload)
+    assert created.status_code == 201, created.text
+    assert created.json()["onboarding_complete"] is True
+    company_id = created.json()["id"]
+
+    credentials = {
+        "direct-company-admin": ("company_admin", "direct admin starting password"),
+        "direct-company-member": ("company_user", "direct member starting password"),
+    }
+    created_users = []
+    for username, (role, password) in credentials.items():
+        response = client.post(
+            f"/api/v1/platform/companies/{company_id}/users",
+            json={
+                "username": username,
+                "display_name": username.replace("-", " ").title(),
+                "email": None,
+                "role": role,
+                "password": password,
+            },
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["role"] == role
+        assert response.json()["email"] is None
+        assert response.json()["must_change_password"] is True
+        created_users.append(response.json())
+
+    listed = client.get(f"/api/v1/platform/companies/{company_id}/users")
+    assert listed.status_code == 200
+    assert {item["username"] for item in listed.json()}.issuperset(credentials)
+
+    duplicate = client.post(
+        f"/api/v1/platform/companies/{company_id}/users",
+        json={
+            "username": "direct-company-member",
+            "display_name": "Duplicate",
+            "email": None,
+            "role": "company_user",
+            "password": "another sufficiently long password",
+        },
+    )
+    assert duplicate.status_code == 409
+    invalid_role = client.post(
+        f"/api/v1/platform/companies/{company_id}/users",
+        json={
+            "username": "direct-invalid-role",
+            "display_name": "Invalid Role",
+            "email": None,
+            "role": "owner",
+            "password": "another sufficiently long password",
+        },
+    )
+    assert invalid_role.status_code == 422
+
+    tenant_id = UUID(company_id)
+    for username, (role, password) in credentials.items():
+        user = db.scalar(select(AppUser).where(AppUser.username == username))
+        assert user is not None
+        assert user.password_hash != password
+        assert user.password_hash.startswith("$argon2")
+        assert verify_password(password, user.password_hash)[0] is True
+        assert user.must_change_password is True
+        assert user.platform_role is None
+        membership = db.scalar(
+            select(TenantMembership).where(
+                TenantMembership.tenant_id == tenant_id,
+                TenantMembership.user_id == user.id,
+            )
+        )
+        assert membership is not None and membership.role == TenantRole(role)
+
+    audit_count = db.scalar(
+        select(func.count(AuditLog.id)).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.action == "company.user.created",
+        )
+    )
+    assert audit_count == 3
+    latest_audit = db.scalar(
+        select(AuditLog)
+        .where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.action == "company.user.created",
+        )
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert latest_audit is not None
+    assert "password" not in str(latest_audit.metadata_after).lower()
+
+    login = anonymous_client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": "direct-company-admin",
+            "password": credentials["direct-company-admin"][1],
+        },
+        headers=ORIGIN_HEADERS,
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
+    assert anonymous_client.get("/api/v1/platform/companies").status_code == 403
+    changed = anonymous_client.post(
+        "/api/v1/auth/change-password",
+        json={
+            "current_password": credentials["direct-company-admin"][1],
+            "new_password": "direct admin changed password",
+        },
+        headers=_csrf_headers(anonymous_client),
+    )
+    assert changed.status_code == 200, changed.text
+    assert anonymous_client.get("/api/v1/company").status_code == 200
+    assert anonymous_client.get("/api/v1/platform/companies").status_code == 403
+
+
+def test_owner_creates_direct_platform_admin_with_reauthentication(
+    client, anonymous_client, db
+):
+    payload = {
+        "username": "direct-platform-admin",
+        "display_name": "Direct Platform Admin",
+        "email": None,
+        "password": "direct platform starting password",
+        "current_password": OWNER_PASSWORD,
+    }
+    wrong = client.post(
+        "/api/v1/platform/admins",
+        json={**payload, "current_password": "wrong owner password"},
+    )
+    assert wrong.status_code == 403
+
+    created = client.post("/api/v1/platform/admins", json=payload)
+    assert created.status_code == 201, created.text
+    assert created.json()["platform_role"] == "admin"
+    assert created.json()["email"] is None
+    assert created.json()["must_change_password"] is True
+
+    user = db.scalar(select(AppUser).where(AppUser.username == payload["username"]))
+    assert user is not None and user.platform_role == PlatformRole.admin
+    assert verify_password(payload["password"], user.password_hash)[0] is True
+    audit = db.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "platform.admin.created")
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert "password" not in str(audit.metadata_after).lower()
+
+    login = anonymous_client.post(
+        "/api/v1/auth/login",
+        json={"username": payload["username"], "password": payload["password"]},
+        headers=ORIGIN_HEADERS,
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
+    assert anonymous_client.get("/api/v1/platform/companies").status_code == 403
+    changed = anonymous_client.post(
+        "/api/v1/auth/change-password",
+        json={
+            "current_password": payload["password"],
+            "new_password": "direct platform changed password",
+        },
+        headers=_csrf_headers(anonymous_client),
+    )
+    assert changed.status_code == 200, changed.text
+    assert anonymous_client.get("/api/v1/platform/companies").status_code == 200
+    assert anonymous_client.get("/api/v1/platform/admins").status_code == 403

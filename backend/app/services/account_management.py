@@ -23,8 +23,10 @@ from app.schemas.accounts import (
     CompanyCreate,
     CompanyOperationalUpdate,
     CompanyUpdate,
+    CompanyUserCreate,
     CompanyUserInvite,
     CompanyUserUpdate,
+    PlatformAdminCreate,
     PlatformAdminInvite,
     PlatformAdminUpdate,
 )
@@ -98,21 +100,14 @@ class AccountManagementService:
         self._set_tenant_context(tenant.id)
 
         if payload.first_admin.delivery == "temporary_password":
-            admin = self._new_user(
+            admin, _membership = self._create_direct_company_user(
+                tenant,
                 username=payload.first_admin.username,
                 display_name=payload.first_admin.display_name,
                 email=payload.first_admin.email,
                 password=payload.first_admin.temporary_password or "",
-                must_change_password=True,
-            )
-            self.db.add(
-                TenantMembership(
-                    tenant_id=tenant.id,
-                    user=admin,
-                    role=TenantRole.company_admin,
-                    is_active=True,
-                    is_primary_admin=True,
-                )
+                role=TenantRole.company_admin,
+                is_primary_admin=True,
             )
             ProvisioningService(self.db).ensure_tenant_baseline(tenant, admin)
         else:
@@ -148,6 +143,54 @@ class AccountManagementService:
                 "Unternehmen, Benutzername oder E-Mail-Adresse ist bereits vergeben."
             ) from exc
         return tenant
+
+    def create_company_user(
+        self, tenant: Tenant, payload: CompanyUserCreate
+    ) -> tuple[AppUser, TenantMembership]:
+        try:
+            user, membership = self._create_direct_company_user(
+                tenant,
+                username=payload.username,
+                display_name=payload.display_name,
+                email=payload.email,
+                password=payload.password,
+                role=TenantRole(payload.role),
+                is_primary_admin=False,
+            )
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise AccountConflictError(
+                "Benutzername oder E-Mail-Adresse ist bereits vergeben."
+            ) from exc
+        return user, membership
+
+    def create_platform_admin(self, payload: PlatformAdminCreate) -> AppUser:
+        self._verify_actor_password(payload.current_password)
+        try:
+            user = self._new_user(
+                username=payload.username,
+                display_name=payload.display_name,
+                email=payload.email,
+                password=payload.password,
+                must_change_password=True,
+            )
+            user.platform_role = PlatformRole.admin
+            user.is_platform_admin = True
+            self._record(
+                None,
+                "platform.admin.created",
+                "app_user",
+                user.id,
+                after=self._platform_user_snapshot(user),
+            )
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise AccountConflictError(
+                "Benutzername oder E-Mail-Adresse ist bereits vergeben."
+            ) from exc
+        return user
 
     def update_company(self, tenant: Tenant, payload: CompanyUpdate) -> Tenant:
         before = self._company_snapshot(tenant)
@@ -516,27 +559,23 @@ class AccountManagementService:
         *,
         username: str,
         display_name: str,
-        email: str,
+        email: str | None,
         password: str,
         must_change_password: bool,
     ) -> AppUser:
         normalized_username = normalize_username(username)
-        normalized_email = normalize_username(email)
-        conflict = self.db.scalar(
-            select(AppUser.id).where(
-                or_(
-                    AppUser.normalized_username == normalized_username,
-                    AppUser.normalized_email == normalized_email,
-                )
-            )
-        )
+        normalized_email = normalize_username(email) if email else None
+        conflict_conditions = [AppUser.normalized_username == normalized_username]
+        if normalized_email:
+            conflict_conditions.append(AppUser.normalized_email == normalized_email)
+        conflict = self.db.scalar(select(AppUser.id).where(or_(*conflict_conditions)))
         if conflict:
             raise AccountConflictError("Benutzername oder E-Mail-Adresse ist bereits vergeben.")
         user = AppUser(
             username=username.strip(),
             normalized_username=normalized_username,
             display_name=display_name.strip(),
-            email=email.strip(),
+            email=email.strip() if email else None,
             normalized_email=normalized_email,
             password_hash=hash_password(password),
             password_changed_at=self._now(),
@@ -546,6 +585,43 @@ class AccountManagementService:
         self.db.add(user)
         self.db.flush()
         return user
+
+    def _create_direct_company_user(
+        self,
+        tenant: Tenant,
+        *,
+        username: str,
+        display_name: str,
+        email: str | None,
+        password: str,
+        role: TenantRole,
+        is_primary_admin: bool,
+    ) -> tuple[AppUser, TenantMembership]:
+        self._set_tenant_context(tenant.id)
+        user = self._new_user(
+            username=username,
+            display_name=display_name,
+            email=email,
+            password=password,
+            must_change_password=True,
+        )
+        membership = TenantMembership(
+            tenant_id=tenant.id,
+            user=user,
+            role=role,
+            is_active=True,
+            is_primary_admin=is_primary_admin,
+        )
+        self.db.add(membership)
+        self.db.flush()
+        self._record(
+            tenant.id,
+            "company.user.created",
+            "app_user",
+            user.id,
+            after=self._membership_snapshot(user, membership),
+        )
+        return user, membership
 
     def _verify_actor_password(self, password: str) -> None:
         valid, _ = verify_password(password, self.actor.password_hash)

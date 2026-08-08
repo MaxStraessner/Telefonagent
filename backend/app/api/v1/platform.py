@@ -25,10 +25,12 @@ from app.schemas.accounts import (
     CompanyStatusUpdate,
     CompanySummary,
     CompanyUpdate,
+    CompanyUserCreate,
     CompanyUserInvite,
     CompanyUserResponse,
     CompanyUserUpdate,
     InvitationResponse,
+    PlatformAdminCreate,
     PlatformAdminInvite,
     PlatformAdminResponse,
     PlatformAdminUpdate,
@@ -182,6 +184,7 @@ def platform_admin_response(user: AppUser) -> PlatformAdminResponse:
         email=user.email,
         platform_role=user.platform_role.value,
         is_active=user.is_active,
+        must_change_password=user.must_change_password,
         last_login_at=user.last_login_at,
     )
 
@@ -311,6 +314,30 @@ def company_users(
     return [company_user_response(*row) for row in rows]
 
 
+@router.post(
+    "/companies/{company_id}/users",
+    response_model=CompanyUserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_company_user(
+    company_id: UUID,
+    payload: CompanyUserCreate,
+    request: Request,
+    context: AccessContext = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    mailer: MailAdapter = Depends(get_mail_adapter),
+) -> CompanyUserResponse:
+    try:
+        user, membership = _service(request, context, db, settings, mailer).create_company_user(
+            _company_or_404(db, company_id), payload
+        )
+    except (AccountConflictError, AccountInvariantError) as exc:
+        db.rollback()
+        raise _account_error(exc) from exc
+    return company_user_response(user, membership)
+
+
 @router.put("/companies/{company_id}/users/{user_id}", response_model=CompanyUserResponse)
 def update_company_user(
     company_id: UUID,
@@ -415,6 +442,23 @@ def platform_admins(
 ) -> list[PlatformAdminResponse]:
     users = db.scalars(select(AppUser).where(AppUser.platform_role.in_([PlatformRole.owner, PlatformRole.admin])).order_by(AppUser.display_name)).all()
     return [platform_admin_response(user) for user in users]
+
+
+@router.post("/admins", response_model=PlatformAdminResponse, status_code=status.HTTP_201_CREATED)
+def create_platform_admin(
+    payload: PlatformAdminCreate,
+    request: Request,
+    context: AccessContext = Depends(require_platform_owner),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    mailer: MailAdapter = Depends(get_mail_adapter),
+) -> PlatformAdminResponse:
+    try:
+        user = _service(request, context, db, settings, mailer).create_platform_admin(payload)
+    except (AccountConflictError, AccountReauthenticationError) as exc:
+        db.rollback()
+        raise _account_error(exc) from exc
+    return platform_admin_response(user)
 
 
 @router.post("/admins/invitations", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)

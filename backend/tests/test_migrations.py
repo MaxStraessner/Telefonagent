@@ -1,11 +1,12 @@
 from uuid import uuid4
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import sessionmaker
 
 from alembic import command
 from alembic.config import Config
 from app.core.config import get_settings
-from app.db.session import SessionLocal, engine
+from app.db.session import engine
 from app.seed import seed_database
 
 
@@ -25,14 +26,28 @@ def test_migration_created_all_tables():
     } <= tables
 
 
-def test_migrations_can_roundtrip_and_seed_existing_demo_configuration():
+def test_migrations_can_roundtrip_and_seed_existing_demo_configuration(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "migration-roundtrip.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", database_url)
+    get_settings.cache_clear()
     config = Config("alembic.ini")
-    command.downgrade(config, "base")
-    assert "agent_configurations" not in set(inspect(engine).get_table_names())
     command.upgrade(config, "head")
-    with SessionLocal() as db:
+    isolated_engine = create_engine(database_url)
+    command.downgrade(config, "base")
+    assert "agent_configurations" not in set(
+        inspect(isolated_engine).get_table_names()
+    )
+    command.upgrade(config, "head")
+    isolated_session = sessionmaker(bind=isolated_engine)
+    with isolated_session() as db:
         tenant = seed_database(db)
         assert tenant.settings.assistant_name == "Lina"
+    isolated_engine.dispose()
+    get_settings.cache_clear()
 
 
 def test_realtime_lifecycle_migration_reconciles_legacy_active_rows(

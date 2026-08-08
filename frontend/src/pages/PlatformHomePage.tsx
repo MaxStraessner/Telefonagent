@@ -8,8 +8,8 @@ export function PlatformHomePage() {
   const [data, setData] = useState<PlatformDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { api.platformDashboard().then(setData).catch((cause) => setError(cause instanceof ApiError ? cause.message : "Dashboard konnte nicht geladen werden.")); }, []);
-  return <div className="page">
-    <PageHeader eyebrow="Plattform" title="Dashboard" description="Unternehmen, Onboarding und Zugriffsstatus auf einen Blick." />
+  return <div className="page platform-page">
+    <PageHeader eyebrow="Plattform" title="Dashboard" description="Unternehmen, Onboarding und Zugriffsstatus auf einen Blick." action={<Link className="primary-button" to="/plattform/unternehmen/neu">Unternehmen anlegen</Link>} />
     {error && <p className="form-error" role="alert">{error}</p>}
     {!data ? <p>Lade Kennzahlen …</p> : <div className="stats-grid">
       <article className="stat-card"><span>Unternehmen</span><strong>{data.companies_total}</strong></article>
@@ -19,6 +19,6 @@ export function PlatformHomePage() {
       <article className="stat-card"><span>Aktive Benutzer</span><strong>{data.active_company_users}</strong></article>
       <article className="stat-card"><span>Offene Einladungen</span><strong>{data.pending_invitations}</strong></article>
     </div>}
-    <div className="page-actions"><Link className="primary-button" to="/plattform/unternehmen/neu">Unternehmen anlegen</Link><Link to="/plattform/unternehmen">Alle Unternehmen</Link></div>
+    <div className="page-actions"><Link className="table-link" to="/plattform/unternehmen">Alle Unternehmen anzeigen</Link></div>
   </div>;
 }

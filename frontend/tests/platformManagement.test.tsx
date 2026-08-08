@@ -58,7 +58,7 @@ it("zeigt den aktiven Supportkontext dauerhaft und bietet das Verlassen an", asy
   expect(screen.getByRole("link", { name: "Plattformadmins" })).toBeInTheDocument();
 });
 
-it("sendet der zweistufige Unternehmenswizard atomar mit Einladung", async () => {
+it("legt Unternehmen im zweistufigen Wizard mit direktem Startkonto ohne E-Mail an", async () => {
   window.history.replaceState({}, "", "/plattform/unternehmen/neu");
   const NativeRequest = Request;
   vi.stubGlobal("Request", class extends NativeRequest {
@@ -70,8 +70,7 @@ it("sendet der zweistufige Unternehmenswizard atomar mit Einladung", async () =>
     if (url.endsWith("/auth/session")) return Promise.resolve(json(platformSession("owner")));
     if (url.endsWith("/platform/companies") && init?.method === "POST") {
       const body = JSON.parse(String(init.body));
-      expect(body.first_admin).toMatchObject({ delivery: "invitation", username: "erste-admin", email: "erste@example.test" });
-      expect(body.first_admin.temporary_password).toBeUndefined();
+      expect(body.first_admin).toMatchObject({ delivery: "temporary_password", username: "erste-admin", email: null, temporary_password: "sicheres startpasswort" });
       return Promise.resolve(json(company, 201));
     }
     if (url.endsWith("/platform/companies/company-new")) return Promise.resolve(json(company));
@@ -81,15 +80,99 @@ it("sendet der zweistufige Unternehmenswizard atomar mit Einladung", async () =>
   vi.stubGlobal("fetch", fetchMock);
   render(<App />);
   await userEvent.type(await screen.findByLabelText("Anzeigename"), "Neue GmbH");
-  await userEvent.type(screen.getByLabelText("Rechtlicher Name"), "Neue GmbH");
-  await userEvent.type(screen.getByLabelText("Slug"), "neue-gmbh");
+  await userEvent.type(screen.getByLabelText(/^Rechtlicher Name/), "Neue GmbH");
+  await userEvent.type(screen.getByLabelText(/^Slug/), "neue-gmbh");
   await userEvent.click(screen.getByRole("button", { name: "Weiter" }));
   await userEvent.type(screen.getByLabelText("Name"), "Erste Admin");
   await userEvent.type(screen.getByLabelText("Benutzername"), "erste-admin");
-  await userEvent.type(screen.getByLabelText("E-Mail"), "erste@example.test");
-  await userEvent.click(screen.getByRole("button", { name: "Unternehmen und Einladung anlegen" }));
+  await userEvent.type(screen.getByLabelText(/^Startpasswort/), "sicheres startpasswort");
+  await userEvent.click(screen.getByRole("button", { name: "Unternehmen und Startkonto anlegen" }));
   expect(await screen.findByRole("heading", { name: "Neue GmbH" })).toBeInTheDocument();
   await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
+});
+
+it("erstellt einen Unternehmensbenutzer ohne E-Mail und zeigt ihn sofort in der Liste", async () => {
+  window.history.replaceState({}, "", "/plattform/unternehmen/company-1");
+  const NativeRequest = Request;
+  vi.stubGlobal("Request", class extends NativeRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) { super(input, { ...init, signal: undefined }); }
+  });
+  const company = { id: "company-1", slug: "example", name: "Example GmbH", legal_name: "Example GmbH", status: "active", is_demo: false, active_user_count: 0, has_primary_admin: false, onboarding_complete: false, created_at: "2026-08-05T12:00:00Z", industry: "services", timezone: "Europe/Berlin", contact_name: null, contact_email: null, contact_phone: null, default_language: "de" };
+  const created = { id: "user-new", username: "neue-admin", display_name: "Neue Admin", email: null, role: "company_admin", is_active: true, is_primary_admin: false, must_change_password: true, last_login_at: null };
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/auth/session")) return Promise.resolve(json(platformSession("owner")));
+    if (url.endsWith("/platform/companies/company-1") && (!init?.method || init.method === "GET")) return Promise.resolve(json(company));
+    if (url.endsWith("/platform/companies/company-1/users") && init?.method === "POST") {
+      const body = JSON.parse(String(init.body));
+      expect(body).toEqual({ username: "neue-admin", display_name: "Neue Admin", email: null, role: "company_admin", password: "sicheres startpasswort" });
+      return Promise.resolve(json(created, 201));
+    }
+    if (url.endsWith("/platform/companies/company-1/users")) return Promise.resolve(json([]));
+    if (url.endsWith("/platform/companies/company-1/invitations")) return Promise.resolve(json([]));
+    throw new Error(`Unexpected URL ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  expect(await screen.findByRole("heading", { name: "Benutzer erstellen" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Administrator" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Mitarbeiter" })).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText("Name"), "Neue Admin");
+  await userEvent.type(screen.getByLabelText("Benutzername"), "neue-admin");
+  await userEvent.selectOptions(screen.getByLabelText("Rolle"), "company_admin");
+  await userEvent.type(screen.getByLabelText(/^Startpasswort/), "sicheres startpasswort");
+  await userEvent.click(screen.getByRole("button", { name: "Benutzer erstellen" }));
+  expect(await screen.findByText("Benutzer wurde erstellt.")).toBeInTheDocument();
+  expect(screen.getByText("Neue Admin")).toBeInTheDocument();
+  expect(screen.getByText("neue-admin")).toBeInTheDocument();
+  expect(screen.getByText("Passwortwechsel erforderlich")).toBeInTheDocument();
+});
+
+it("zeigt Konflikte der direkten Benutzeranlage verständlich an", async () => {
+  window.history.replaceState({}, "", "/plattform/unternehmen/company-1");
+  const company = { id: "company-1", slug: "example", name: "Example GmbH", legal_name: null, status: "active", is_demo: false, active_user_count: 0, has_primary_admin: false, onboarding_complete: false, created_at: "2026-08-05T12:00:00Z", industry: "services", timezone: "Europe/Berlin", contact_name: null, contact_email: null, contact_phone: null, default_language: "de" };
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/auth/session")) return Promise.resolve(json(platformSession("owner")));
+    if (url.endsWith("/platform/companies/company-1") && (!init?.method || init.method === "GET")) return Promise.resolve(json(company));
+    if (url.endsWith("/platform/companies/company-1/users") && init?.method === "POST") return Promise.resolve(json({ error: { code: "account_conflict", message: "Dieser Benutzername ist bereits vergeben." } }, 409));
+    if (url.endsWith("/platform/companies/company-1/users") || url.endsWith("/platform/companies/company-1/invitations")) return Promise.resolve(json([]));
+    throw new Error(`Unexpected URL ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await userEvent.type(await screen.findByLabelText("Name"), "Doppelte Person");
+  await userEvent.type(screen.getByLabelText("Benutzername"), "doppelt");
+  await userEvent.type(screen.getByLabelText(/^Startpasswort/), "sicheres startpasswort");
+  await userEvent.click(screen.getByRole("button", { name: "Benutzer erstellen" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Dieser Benutzername ist bereits vergeben.");
+});
+
+it("legt einen Plattformadmin direkt und ohne E-Mail an", async () => {
+  window.history.replaceState({}, "", "/plattform/administratoren");
+  const owner = { id: "owner", username: "owner", display_name: "Platform Owner", email: null, platform_role: "owner", is_active: true, must_change_password: false, last_login_at: null };
+  const created = { id: "admin-new", username: "platform-admin", display_name: "Platform Admin", email: null, platform_role: "admin", is_active: true, must_change_password: true, last_login_at: null };
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/auth/session")) return Promise.resolve(json(platformSession("owner")));
+    if (url.endsWith("/platform/admins") && init?.method === "POST") {
+      const body = JSON.parse(String(init.body));
+      expect(body).toEqual({ username: "platform-admin", display_name: "Platform Admin", email: null, password: "sicheres startpasswort", current_password: "owner passwort korrekt" });
+      return Promise.resolve(json(created, 201));
+    }
+    if (url.endsWith("/platform/admins")) return Promise.resolve(json([owner]));
+    throw new Error(`Unexpected URL ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await userEvent.type(await screen.findByLabelText("Name"), "Platform Admin");
+  await userEvent.type(screen.getByLabelText("Benutzername"), "platform-admin");
+  await userEvent.type(screen.getByLabelText(/^Startpasswort/), "sicheres startpasswort");
+  await userEvent.type(screen.getByLabelText("Owner-Passwort zur Reauthentifizierung"), "owner passwort korrekt");
+  await userEvent.click(screen.getByRole("button", { name: "Plattformadmin erstellen" }));
+  expect(await screen.findByText("Plattformadministrator wurde erstellt.")).toBeInTheDocument();
+  expect(screen.getByText("platform-admin")).toBeInTheDocument();
+  expect(screen.getByText("Passwortwechsel erforderlich")).toBeInTheDocument();
 });
 
 it("verwirft beim Kontextwechsel alle alten Unternehmensdaten", async () => {

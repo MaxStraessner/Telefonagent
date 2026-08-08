@@ -86,7 +86,7 @@ export interface CompanyDetail extends CompanySummary {
   contact_email: string | null; contact_phone: string | null; default_language: string;
 }
 export interface FirstCompanyAdmin {
-  username: string; display_name: string; email: string;
+  username: string; display_name: string; email: string | null;
   delivery: "invitation" | "temporary_password"; temporary_password?: string | null;
 }
 export interface CompanyCreate {
@@ -102,6 +102,10 @@ export interface CompanyUser {
 export interface CompanyUserInvite {
   username: string; display_name: string; email: string; role: "company_admin" | "company_user";
 }
+export interface CompanyUserCreate {
+  username: string; display_name: string; email: string | null;
+  role: "company_admin" | "company_user"; password: string;
+}
 export interface AccountInvitation {
   id: string; email: string; username: string; display_name: string;
   role: "company_admin" | "company_user" | "admin"; expires_at: string;
@@ -114,7 +118,12 @@ export interface PlatformDashboard {
 }
 export interface PlatformAdmin {
   id: string; username: string; display_name: string; email: string | null;
-  platform_role: "owner" | "admin"; is_active: boolean; last_login_at: string | null;
+  platform_role: "owner" | "admin"; is_active: boolean; must_change_password: boolean;
+  last_login_at: string | null;
+}
+export interface PlatformAdminCreate {
+  username: string; display_name: string; email: string | null;
+  password: string; current_password: string;
 }
 export interface AuditEntry {
   id: string; actor_user_id: string | null; tenant_id: string | null; platform_role: string | null;

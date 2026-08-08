@@ -1,4 +1,4 @@
-import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyUser, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -71,6 +71,7 @@ export const api = {
   updateCompanyStatus: (id: string, status: CompanyStatus) => request<CompanyDetail>(`/platform/companies/${id}/status`, { method: "POST", body: { status } }),
   selectPlatformCompany: (id: string) => request<AuthSession>("/auth/context", { method: "POST", body: { company_id: id } }),
   platformCompanyUsers: (id: string) => request<CompanyUser[]>(`/platform/companies/${id}/users`),
+  createPlatformCompanyUser: (id: string, value: CompanyUserCreate) => request<CompanyUser>(`/platform/companies/${id}/users`, { method: "POST", body: value }),
   updatePlatformCompanyUser: (companyId: string, userId: string, value: Pick<CompanyUser, "display_name" | "email" | "role" | "is_active">) => request<CompanyUser>(`/platform/companies/${companyId}/users/${userId}`, { method: "PUT", body: value }),
   transferPlatformPrimaryAdmin: (companyId: string, userId: string) => request<CompanyUser>(`/platform/companies/${companyId}/primary-admin`, { method: "POST", body: { user_id: userId } }),
   platformCompanyInvitations: (id: string) => request<AccountInvitation[]>(`/platform/companies/${id}/invitations`),
@@ -85,6 +86,7 @@ export const api = {
   ownCompanyInvitations: () => request<AccountInvitation[]>("/company/invitations"),
   revokeOwnCompanyInvitation: (invitationId: string) => request<AccountInvitation>(`/company/invitations/${invitationId}`, { method: "DELETE" }),
   platformAdmins: () => request<PlatformAdmin[]>("/platform/admins"),
+  createPlatformAdmin: (value: PlatformAdminCreate) => request<PlatformAdmin>("/platform/admins", { method: "POST", body: value }),
   invitePlatformAdmin: (value: { username: string; display_name: string; email: string; current_password: string }) => request<AccountInvitation>("/platform/admins/invitations", { method: "POST", body: value }),
   updatePlatformAdmin: (id: string, value: { display_name: string; email: string | null; is_active: boolean; current_password: string }) => request<PlatformAdmin>(`/platform/admins/${id}`, { method: "PUT", body: value }),
   platformAudit: (companyId = "") => request<AuditEntry[]>(`/platform/audit${companyId ? `?company_id=${encodeURIComponent(companyId)}` : ""}`),
