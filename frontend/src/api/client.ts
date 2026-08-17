@@ -1,9 +1,15 @@
-import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant } from "../types/api";
+import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyTelephony, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant, TwilioNumber } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status?: number, public readonly code?: string, public readonly fieldErrors: Record<string, string> = {}) { super(message); }
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+    public readonly fieldErrors: Record<string, string> = {},
+    public readonly details: Record<string, unknown> = {},
+  ) { super(message); }
 }
 
 function cookieValue(name: string): string | null {
@@ -33,9 +39,10 @@ async function request<T>(path: string, options: { signal?: AbortSignal; method?
     if (!response.ok) {
       if (response.status === 401 && !options.suppressUnauthorizedEvent)
         window.dispatchEvent(new Event("telefonagent:unauthorized"));
-      const body = await response.json().catch(() => null) as { error?: { code?: string; message?: string }; detail?: Array<{ loc?: Array<string | number>; msg?: string }> } | null;
+      const body = await response.json().catch(() => null) as { error?: Record<string, unknown> & { code?: string; message?: string }; detail?: Array<{ loc?: Array<string | number>; msg?: string }> } | null;
       const fieldErrors = Object.fromEntries((body?.detail ?? []).map((item) => [String(item.loc?.slice(1).join(".") ?? "request"), item.msg ?? "Ungültiger Wert"]));
-      throw new ApiError(body?.error?.message ?? (body?.detail ? "Bitte prüfen Sie die markierten Eingaben." : "Die Plattformdaten konnten nicht geladen werden."), response.status, body?.error?.code, fieldErrors);
+      const details = Object.fromEntries(Object.entries(body?.error ?? {}).filter(([key]) => key !== "code" && key !== "message"));
+      throw new ApiError(body?.error?.message ?? (body?.detail ? "Bitte prüfen Sie die markierten Eingaben." : "Die Plattformdaten konnten nicht geladen werden."), response.status, body?.error?.code, fieldErrors, details);
     }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;
@@ -67,6 +74,11 @@ export const api = {
     return request<CompanySummary[]>(`/platform/companies${query ? `?${query}` : ""}`);
   },
   company: (id: string) => request<CompanyDetail>(`/platform/companies/${id}`),
+  twilioNumbers: () => request<TwilioNumber[]>("/platform/telephony/twilio/numbers"),
+  companyTelephony: (id: string) => request<CompanyTelephony>(`/platform/companies/${id}/telephony`),
+  assignCompanyTwilioNumber: (id: string, phoneNumber: string, transfer = false) => request<CompanyTelephony>(`/platform/companies/${id}/telephony/twilio`, { method: "PUT", body: { phone_number: phoneNumber, transfer } }),
+  removeCompanyTwilioNumber: (id: string) => request<CompanyTelephony>(`/platform/companies/${id}/telephony/twilio`, { method: "DELETE" }),
+  syncCompanyTwilioNumber: (id: string) => request<CompanyTelephony>(`/platform/companies/${id}/telephony/twilio/sync`, { method: "POST" }),
   createCompany: (value: CompanyCreate) => request<CompanyDetail>("/platform/companies", { method: "POST", body: value }),
   updateCompanyStatus: (id: string, status: CompanyStatus) => request<CompanyDetail>(`/platform/companies/${id}/status`, { method: "POST", body: { status } }),
   selectPlatformCompany: (id: string) => request<AuthSession>("/auth/context", { method: "POST", body: { company_id: id } }),

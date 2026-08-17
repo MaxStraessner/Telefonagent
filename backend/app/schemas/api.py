@@ -85,6 +85,7 @@ class RuntimeManifestResponse(BaseModel):
     assistant_name: str
     language: str
     welcome_message: str
+    initial_response_instructions: str
     instructions: str
     prompt_digest: str
     model: str

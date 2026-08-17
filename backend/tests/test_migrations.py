@@ -24,6 +24,16 @@ def test_migration_created_all_tables():
         "booking_configurations", "calendar_business_hours", "calendar_appointment_types",
         "calendar_bookings",
     } <= tables
+    route_columns = {item["name"] for item in inspect(engine).get_columns("tenant_inbound_routes")}
+    assert {
+        "provider", "provider_resource_id", "provider_sync_status",
+        "provider_synced_url", "provider_synced_at", "provider_error_code",
+    } <= route_columns
+    call_uniques = {
+        tuple(item["column_names"])
+        for item in inspect(engine).get_unique_constraints("call_sessions")
+    }
+    assert ("channel", "provider_session_id") in call_uniques
 
 
 def test_migrations_can_roundtrip_and_seed_existing_demo_configuration(

@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     openai_realtime_transcription_enabled: bool = True
     openai_realtime_log_raw_events: bool = False
     openai_safety_identifier_salt: str = "telefonagent-local-installation"
-    telephony_configured: bool = False
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    twilio_stream_token_secret: str | None = None
     calendar_configured: bool = False
     calendar_token_encryption_key: str | None = None
     google_calendar_client_id: str | None = None
@@ -102,6 +104,15 @@ class Settings(BaseSettings):
     def any_calendar_provider_configured(self) -> bool:
         return self.google_calendar_configured or self.microsoft_calendar_configured
 
+    @property
+    def telephony_configured(self) -> bool:
+        return bool(
+            self.twilio_account_sid
+            and self.twilio_auth_token
+            and self.twilio_stream_token_secret
+            and self.openai_api_key
+        )
+
     @field_validator(
         "migration_database_url",
         "calendar_token_encryption_key",
@@ -116,6 +127,9 @@ class Settings(BaseSettings):
         "smtp_username",
         "smtp_password",
         "smtp_from_address",
+        "twilio_account_sid",
+        "twilio_auth_token",
+        "twilio_stream_token_secret",
         mode="before",
     )
     @classmethod
@@ -203,6 +217,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
+        if (
+            self.twilio_stream_token_secret
+            and len(self.twilio_stream_token_secret.encode("utf-8")) < 32
+        ):
+            raise ValueError(
+                "TWILIO_STREAM_TOKEN_SECRET muss mindestens 32 Bytes lang sein."
+            )
         if self.is_production:
             component = self.app_component.strip().lower()
             if component not in {"runtime", "migration", "maintenance"}:
@@ -239,6 +260,12 @@ class Settings(BaseSettings):
                 raise ValueError("Alle CORS_ORIGINS müssen in Produktion HTTPS verwenden.")
             if self.initial_setup_token and len(self.initial_setup_token.encode("utf-8")) < 32:
                 raise ValueError("INITIAL_SETUP_TOKEN muss in Produktion mindestens 32 Bytes lang sein.")
+            if self.twilio_account_sid or self.twilio_auth_token or self.twilio_stream_token_secret:
+                if not self.telephony_configured:
+                    raise ValueError(
+                        "Twilio-Telefonie erfordert TWILIO_ACCOUNT_SID, "
+                        "TWILIO_AUTH_TOKEN, TWILIO_STREAM_TOKEN_SECRET und OPENAI_API_KEY."
+                    )
             if not self.smtp_host or not self.smtp_from_address:
                 raise ValueError(
                     "SMTP_HOST und SMTP_FROM_ADDRESS müssen in Produktion gesetzt sein."

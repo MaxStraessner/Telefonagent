@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../api/AuthProvider";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import type {
   AccountInvitation,
   CompanyDetail,
+  CompanyTelephony,
   CompanyStatus,
   CompanyUser,
   CompanyUserCreate,
+  TwilioNumber,
 } from "../types/api";
 import { accountErrorMessage, PageHeader } from "./shared";
 
@@ -26,6 +28,13 @@ const statusLabels: Record<CompanyStatus, string> = {
   archived: "Archiviert",
 };
 
+const telephonyStatusLabels = {
+  pending: "Synchronisierung ausstehend",
+  synced: "Synchronisiert",
+  blocked: "Blockiert",
+  error: "Synchronisierung fehlgeschlagen",
+} as const;
+
 function accountStatus(user: CompanyUser) {
   if (!user.is_active) return "Deaktiviert";
   return user.must_change_password ? "Passwortwechsel erforderlich" : "Aktiv";
@@ -38,6 +47,12 @@ export function PlatformCompanyDetailPage() {
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [users, setUsers] = useState<CompanyUser[]>([]);
   const [invitations, setInvitations] = useState<AccountInvitation[]>([]);
+  const [telephony, setTelephony] = useState<CompanyTelephony | null>(null);
+  const [twilioNumbers, setTwilioNumbers] = useState<TwilioNumber[]>([]);
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [transferConflict, setTransferConflict] = useState<{ companyName: string } | null>(null);
+  const [telephonyBusy, setTelephonyBusy] = useState(false);
+  const [telephonyError, setTelephonyError] = useState<string | null>(null);
   const [form, setForm] = useState(emptyUser);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,12 +68,107 @@ export function PlatformCompanyDetailPage() {
       setCompany(nextCompany);
       setUsers(nextUsers);
       setInvitations(nextInvites);
+      const [nextTelephony, nextNumbers] = await Promise.allSettled([
+        api.companyTelephony(companyId),
+        api.twilioNumbers(),
+      ]);
+      if (nextTelephony.status === "fulfilled") {
+        setTelephony(nextTelephony.value);
+        setPhoneNumber(nextTelephony.value.phone_number ?? "");
+      }
+      if (nextNumbers.status === "fulfilled") {
+        setTwilioNumbers(nextNumbers.value);
+        setTelephonyError(null);
+      } else {
+        setTelephonyError(accountErrorMessage(nextNumbers.reason, "Twilio-Nummern konnten nicht geladen werden."));
+      }
     } catch (cause) {
       setError(accountErrorMessage(cause, "Unternehmensdaten konnten nicht geladen werden."));
     }
   }, [companyId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  async function saveTelephony() {
+    if (!phoneNumber.trim()) return;
+    setTelephonyBusy(true);
+    setTelephonyError(null);
+    setTransferConflict(null);
+    setMessage(null);
+    try {
+      const next = await api.assignCompanyTwilioNumber(companyId, phoneNumber.trim());
+      setTelephony(next);
+      setPhoneNumber(next.phone_number ?? "");
+      setMessage(next.sync_status === "synced" ? "Twilio-Nummer wurde zugeordnet und synchronisiert." : "Twilio-Zuordnung wurde gespeichert; die Synchronisierung benötigt Aufmerksamkeit.");
+      setTwilioNumbers(await api.twilioNumbers());
+    } catch (cause) {
+      setTelephonyError(accountErrorMessage(cause, "Twilio-Nummer konnte nicht zugeordnet werden."));
+      if (cause instanceof ApiError && cause.code === "number_already_assigned") {
+        setTransferConflict({
+          companyName: typeof cause.details.assigned_company_name === "string"
+            ? cause.details.assigned_company_name
+            : "einem anderen Unternehmen",
+        });
+      }
+    } finally {
+      setTelephonyBusy(false);
+    }
+  }
+
+  async function transferTelephony() {
+    if (!transferConflict || !phoneNumber.trim()) return;
+    if (!window.confirm(`Twilio-Nummer wirklich von ${transferConflict.companyName} auf ${company?.name ?? "dieses Unternehmen"} übertragen?`)) return;
+    setTelephonyBusy(true);
+    setTelephonyError(null);
+    setMessage(null);
+    try {
+      const next = await api.assignCompanyTwilioNumber(companyId, phoneNumber.trim(), true);
+      setTelephony(next);
+      setPhoneNumber(next.phone_number ?? "");
+      setTransferConflict(null);
+      setMessage(next.sync_status === "synced" ? "Twilio-Nummer wurde übertragen und synchronisiert." : "Twilio-Nummer wurde übertragen; die Synchronisierung benötigt Aufmerksamkeit.");
+      setTwilioNumbers(await api.twilioNumbers());
+    } catch (cause) {
+      setTelephonyError(accountErrorMessage(cause, "Twilio-Nummer konnte nicht übertragen werden."));
+    } finally {
+      setTelephonyBusy(false);
+    }
+  }
+
+  async function removeTelephony() {
+    if (!telephony?.phone_number) return;
+    if (!window.confirm(`Zuordnung der Twilio-Nummer ${telephony.phone_number} entfernen? Die Nummer bleibt im Twilio-Konto bestehen.`)) return;
+    setTelephonyBusy(true);
+    setTelephonyError(null);
+    setTransferConflict(null);
+    setMessage(null);
+    try {
+      const next = await api.removeCompanyTwilioNumber(companyId);
+      setTelephony(next);
+      setPhoneNumber("");
+      setMessage("Die Twilio-Zuordnung wurde entfernt. Die Nummer bleibt im Twilio-Konto bestehen.");
+      setTwilioNumbers(await api.twilioNumbers());
+    } catch (cause) {
+      setTelephonyError(accountErrorMessage(cause, "Twilio-Zuordnung konnte nicht entfernt werden."));
+    } finally {
+      setTelephonyBusy(false);
+    }
+  }
+
+  async function syncTelephony() {
+    setTelephonyBusy(true);
+    setTelephonyError(null);
+    setMessage(null);
+    try {
+      const next = await api.syncCompanyTwilioNumber(companyId);
+      setTelephony(next);
+      setMessage(next.sync_status === "synced" ? "Twilio-Webhook wurde erneut synchronisiert." : "Synchronisierung abgeschlossen; bitte Statushinweis prüfen.");
+    } catch (cause) {
+      setTelephonyError(accountErrorMessage(cause, "Twilio-Webhook konnte nicht synchronisiert werden."));
+    } finally {
+      setTelephonyBusy(false);
+    }
+  }
 
   async function changeStatus(target: CompanyStatus) {
     if (!window.confirm(`Status wirklich auf „${statusLabels[target]}“ ändern? Aktive Sitzungen können widerrufen werden.`)) return;
@@ -150,6 +260,22 @@ export function PlatformCompanyDetailPage() {
       </label>
     </div>
     {!usable && <div className="warning-banner">Dieser Status erlaubt nur Verwaltungszugriff. Fachfunktionen, OAuth, Buchungen und Testgespräche bleiben gesperrt.</div>}
+
+    <section className="card admin-card telephony-card">
+      <div className="card-heading"><div><p className="card-kicker">Zusätzlicher Transport</p><h2>Twilio-Telefonie</h2><p>Eine vorhandene Voice-Nummer wird mit dem zentralen Realtime-Agenten dieses Unternehmens verbunden.</p></div>{telephony?.sync_status && <span className={`account-status ${telephony.sync_status === "synced" ? "active" : telephony.sync_status === "pending" ? "pending" : "inactive"}`}>{telephonyStatusLabels[telephony.sync_status]}</span>}</div>
+      {telephonyError && <p className="form-error" role="status">{telephonyError}</p>}
+      <div className="form-grid">
+        <label className="form-field form-field-wide"><span>Twilio-Nummer im E.164-Format</span><input type="tel" aria-label="Twilio-Nummer" list="twilio-number-suggestions" placeholder="+493012345678" value={phoneNumber} disabled={telephonyBusy || company.status !== "active"} onChange={(event) => { setPhoneNumber(event.target.value); setTransferConflict(null); }} /><datalist id="twilio-number-suggestions">{twilioNumbers.filter((number) => number.voice_capable).map((number) => <option key={number.sid} value={number.phone_number}>{number.friendly_name || "Twilio"}{number.assigned_company_name ? ` · ${number.assigned_company_name}` : ""}</option>)}</datalist><small>Die Nummer wird serverseitig im zentralen Twilio-Konto geprüft. Es wird keine Nummer gekauft oder freigegeben.</small></label>
+      </div>
+      {transferConflict && <div className="warning-banner"><p>Diese Nummer ist bereits {transferConflict.companyName} zugeordnet.</p><button type="button" disabled={telephonyBusy} onClick={() => void transferTelephony()}>Nummer bewusst auf dieses Unternehmen übertragen</button></div>}
+      <dl className="detail-list telephony-details">
+        <div><dt>Aktuelle Nummer</dt><dd>{telephony?.phone_number ?? "Nicht zugeordnet"}</dd></div>
+        <div><dt>Erwartete Voice URL</dt><dd><code>{telephony?.expected_voice_url ?? "Wird geladen …"}</code></dd></div>
+        <div><dt>Zuletzt synchronisiert</dt><dd>{telephony?.provider_synced_at ? new Date(telephony.provider_synced_at).toLocaleString("de-DE") : "Noch nicht"}</dd></div>
+        <div><dt>Hinweiscode</dt><dd>{telephony?.error_code ?? "–"}</dd></div>
+      </dl>
+      <div className="form-actions form-actions-end"><button type="button" disabled={telephonyBusy || company.status !== "active" || !phoneNumber.trim()} onClick={() => void saveTelephony()}>{telephonyBusy ? "Bitte warten …" : "Nummer speichern"}</button><button type="button" disabled={telephonyBusy || !telephony?.phone_number_sid} onClick={() => void removeTelephony()}>Nummer entfernen</button><button className="primary-button" type="button" disabled={telephonyBusy || !telephony?.phone_number_sid} onClick={() => void syncTelephony()}>Erneut synchronisieren</button></div>
+    </section>
 
     <div className="management-grid">
       <section className="card admin-card detail-card">

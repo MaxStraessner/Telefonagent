@@ -37,6 +37,11 @@ from app.schemas.accounts import (
     PlatformDashboardResponse,
     PrimaryAdminTransfer,
 )
+from app.schemas.telephony import (
+    CompanyTelephonyResponse,
+    TwilioAssignmentRequest,
+    TwilioNumberResponse,
+)
 from app.services.account_management import (
     AccountConflictError,
     AccountDeliveryError,
@@ -48,6 +53,11 @@ from app.services.account_management import (
     invitation_query,
 )
 from app.services.mail import MailAdapter
+from app.services.twilio import (
+    TwilioServiceError,
+    TwilioTelephonyService,
+    require_twilio_provider,
+)
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -86,6 +96,21 @@ def _company_or_404(db: Session, company_id: UUID) -> Tenant:
     if tenant is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail={"code": "company_not_found", "message": "Unternehmen nicht gefunden."})
     return tenant
+
+
+def _telephony_error(exc: TwilioServiceError) -> HTTPException:
+    if exc.code in {"twilio_not_configured", "provider_sync_failed", "provider_number_unavailable", "provider_numbers_unavailable"}:
+        response_status = status.HTTP_503_SERVICE_UNAVAILABLE
+    elif exc.code in {"telephony_not_assigned", "phone_number_not_found"}:
+        response_status = status.HTTP_404_NOT_FOUND
+    elif exc.code == "invalid_phone_number":
+        response_status = status.HTTP_422_UNPROCESSABLE_ENTITY
+    else:
+        response_status = status.HTTP_409_CONFLICT
+    return HTTPException(
+        response_status,
+        detail={"code": exc.code, "message": exc.message, **exc.details},
+    )
 
 
 def _membership_or_404(db: Session, company_id: UUID, user_id: UUID) -> tuple[AppUser, TenantMembership]:
@@ -296,6 +321,130 @@ def set_company_status(
     except AccountInvariantError as exc:
         raise _account_error(exc) from exc
     return company_detail(db, tenant)
+
+
+@router.get("/telephony/twilio/numbers", response_model=list[TwilioNumberResponse])
+def twilio_numbers(
+    _context: AccessContext = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> list[TwilioNumberResponse]:
+    try:
+        return TwilioTelephonyService(
+            db, settings, require_twilio_provider(settings)
+        ).list_numbers()
+    except TwilioServiceError as exc:
+        raise _telephony_error(exc) from exc
+
+
+@router.get(
+    "/companies/{company_id}/telephony",
+    response_model=CompanyTelephonyResponse,
+)
+def company_telephony(
+    company_id: UUID,
+    _context: AccessContext = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CompanyTelephonyResponse:
+    return TwilioTelephonyService(db, settings).status(
+        _company_or_404(db, company_id)
+    )
+
+
+@router.put(
+    "/companies/{company_id}/telephony/twilio",
+    response_model=CompanyTelephonyResponse,
+)
+def assign_company_twilio_number(
+    company_id: UUID,
+    payload: TwilioAssignmentRequest,
+    context: AccessContext = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CompanyTelephonyResponse:
+    tenant = _company_or_404(db, company_id)
+    try:
+        response = TwilioTelephonyService(
+            db, settings, require_twilio_provider(settings)
+        ).assign(tenant, payload.phone_number, transfer=payload.transfer)
+    except TwilioServiceError as exc:
+        raise _telephony_error(exc) from exc
+    db.add(AuditLog(
+        actor_user_id=context.authenticated.user.id,
+        tenant_id=tenant.id,
+        platform_role=context.platform_role.value if context.platform_role else None,
+        action=(
+            "telephony.twilio.transfer"
+            if payload.transfer
+            else "telephony.twilio.assign"
+        ),
+        target_type="tenant_inbound_route",
+        target_id=response.phone_number_sid,
+        outcome="success",
+        metadata_after={"sync_status": response.sync_status, "error_code": response.error_code},
+    ))
+    db.commit()
+    return response
+
+
+@router.delete(
+    "/companies/{company_id}/telephony/twilio",
+    response_model=CompanyTelephonyResponse,
+)
+def remove_company_twilio_number(
+    company_id: UUID,
+    context: AccessContext = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CompanyTelephonyResponse:
+    tenant = _company_or_404(db, company_id)
+    service = TwilioTelephonyService(db, settings)
+    previous = service.status(tenant)
+    response = service.remove(tenant)
+    db.add(AuditLog(
+        actor_user_id=context.authenticated.user.id,
+        tenant_id=tenant.id,
+        platform_role=context.platform_role.value if context.platform_role else None,
+        action="telephony.twilio.remove",
+        target_type="tenant_inbound_route",
+        target_id=previous.phone_number_sid,
+        outcome="success",
+        metadata_before={"phone_number": previous.phone_number},
+    ))
+    db.commit()
+    return response
+
+
+@router.post(
+    "/companies/{company_id}/telephony/twilio/sync",
+    response_model=CompanyTelephonyResponse,
+)
+def sync_company_twilio_number(
+    company_id: UUID,
+    context: AccessContext = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CompanyTelephonyResponse:
+    tenant = _company_or_404(db, company_id)
+    try:
+        response = TwilioTelephonyService(
+            db, settings, require_twilio_provider(settings)
+        ).sync(tenant)
+    except TwilioServiceError as exc:
+        raise _telephony_error(exc) from exc
+    db.add(AuditLog(
+        actor_user_id=context.authenticated.user.id,
+        tenant_id=tenant.id,
+        platform_role=context.platform_role.value if context.platform_role else None,
+        action="telephony.twilio.sync",
+        target_type="tenant_inbound_route",
+        target_id=response.phone_number_sid,
+        outcome="success",
+        metadata_after={"sync_status": response.sync_status, "error_code": response.error_code},
+    ))
+    db.commit()
+    return response
 
 
 @router.get("/companies/{company_id}/users", response_model=list[CompanyUserResponse])

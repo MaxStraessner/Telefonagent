@@ -17,6 +17,7 @@ from app.core.security import (
     sha256_token,
     verify_password,
 )
+from app.db.session import bind_tenant_context
 from app.models import (
     AppUser,
     AuditLog,
@@ -335,10 +336,14 @@ class AuthenticationService:
         return AuthenticatedSession(session, user, membership, tenant), secrets
 
     def _set_tenant_context(self, tenant_id: UUID | None) -> None:
-        if self.db.bind and self.db.bind.dialect.name == "postgresql":
+        if tenant_id is not None:
+            bind_tenant_context(self.db, tenant_id)
+        else:
+            self.db.info.pop("tenant_id", None)
+        if tenant_id is None and self.db.bind and self.db.bind.dialect.name == "postgresql":
             self.db.execute(
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id) if tenant_id else ""},
+                {"tenant_id": ""},
             )
 
     def _set_user_context(self, user_id: UUID) -> None:

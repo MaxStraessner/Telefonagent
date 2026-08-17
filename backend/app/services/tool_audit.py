@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from time import perf_counter
 from uuid import UUID
@@ -9,6 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.models import BookingConversation, CallSession, ToolExecution
 from app.services.conversation_events import log_conversation_event
+
+tool_continuation_mode: ContextVar[str] = ContextVar(
+    "tool_continuation_mode", default="agents_sdk"
+)
 
 
 class ToolAudit:
@@ -45,7 +50,7 @@ class ToolAudit:
             call_id=call_id,
             tool_name=tool_name,
             status="running",
-            continuation_mode="agents_sdk",
+            continuation_mode=tool_continuation_mode.get(),
             booking_state_before=before_booking,
             runtime_state_before=before_runtime,
             runtime_state_after="tool_running",

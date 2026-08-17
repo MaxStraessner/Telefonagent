@@ -214,6 +214,10 @@ def build_runtime_config(
         "assistant_name": config.assistant_name,
         "language": config.language,
         "welcome_message": greeting,
+        "initial_response_instructions": (
+            "Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als "
+            f"Grundlage: {greeting}"
+        ),
         "instructions": prompt,
         "prompt_digest": _digest(prompt),
         "model": settings.openai_realtime_model,
