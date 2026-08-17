@@ -91,6 +91,7 @@ repository_dir="$app_root/repository.git"
 backups_dir="$app_root/backups"
 project="telefonagent"
 backend_container="telefonagent-backend-1"
+frontend_container="telefonagent-frontend-1"
 database_container="telefonagent-database-1"
 backend_health="http://127.0.0.1:18001/api/v1/health"
 frontend_health="http://127.0.0.1:18081/"
@@ -112,6 +113,7 @@ command -v curl >/dev/null || fail "curl_missing"
 docker compose version >/dev/null 2>&1 || fail "docker_compose_plugin_missing"
 docker info >/dev/null 2>&1 || fail "docker_access_missing"
 docker inspect "$backend_container" >/dev/null 2>&1 || fail "active_backend_not_found"
+docker inspect "$frontend_container" >/dev/null 2>&1 || fail "active_frontend_not_found"
 docker inspect "$database_container" >/dev/null 2>&1 || fail "active_database_not_found"
 
 current_config="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$backend_container")"
@@ -132,11 +134,38 @@ require_env_value() {
 require_env_value POSTGRES_PASSWORD
 require_env_value AUTH_HMAC_SECRET
 require_env_value MIGRATION_DATABASE_URL
+require_env_value RUNTIME_DATABASE_USER
+require_env_value RUNTIME_DATABASE_PASSWORD
 require_env_value FRONTEND_URL
 require_env_value APP_BASE_URL
+require_env_value PUBLIC_HOST
+require_env_value TRAEFIK_NETWORK
+require_env_value BACKEND_BIND_ADDRESS
+require_env_value FRONTEND_BIND_ADDRESS
+require_env_value MAIL_ENABLED
 grep -Eq '^APP_ENV=production$' "$current_dir/.env" || fail "app_env_not_production"
 grep -Eq '^DEV_BOOTSTRAP_ENABLED=false$' "$current_dir/.env" || fail "development_bootstrap_not_disabled"
 grep -Eq '^ALLOW_DEVELOPMENT_TENANT_FALLBACK=false$' "$current_dir/.env" || fail "development_tenant_fallback_not_disabled"
+grep -Eq '^BACKEND_BIND_ADDRESS=127\.0\.0\.1$' "$current_dir/.env" || fail "backend_not_bound_to_loopback"
+grep -Eq '^FRONTEND_BIND_ADDRESS=127\.0\.0\.1$' "$current_dir/.env" || fail "frontend_not_bound_to_loopback"
+
+env_value() {
+  key="$1"
+  sed -n "s/^${key}=//p" "$current_dir/.env" | tail -n 1
+}
+
+runtime_user="$(env_value RUNTIME_DATABASE_USER)"
+public_host="$(env_value PUBLIC_HOST)"
+traefik_network="$(env_value TRAEFIK_NETWORK)"
+case "$runtime_user" in *[!a-zA-Z0-9_]*|'') fail "invalid_runtime_database_user" ;; esac
+case "$public_host" in *[!a-zA-Z0-9.-]*|'') fail "invalid_public_host" ;; esac
+case "$traefik_network" in *[!a-zA-Z0-9_.-]*|'') fail "invalid_traefik_network" ;; esac
+[ "$(env_value APP_BASE_URL)" = "https://$public_host" ] || fail "app_base_url_public_host_mismatch"
+[ "$(env_value FRONTEND_URL)" = "https://$public_host" ] || fail "frontend_url_public_host_mismatch"
+docker network inspect "$traefik_network" >/dev/null 2>&1 || fail "traefik_network_missing"
+
+role_flags="$(docker exec "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --command="$1"' sh "SELECT rolsuper::text || '|' || rolbypassrls::text FROM pg_roles WHERE rolname = '$runtime_user'")"
+[ "$role_flags" = "false|false" ] || fail "runtime_database_role_missing_or_privileged"
 
 mkdir -p "$releases_dir" "$backups_dir"
 
@@ -158,6 +187,7 @@ if [ ! -d "$release_dir" ]; then
   git --git-dir="$repository_dir" archive "$revision" | tar -x -C "$release_dir"
 fi
 [ -f "$release_dir/docker-compose.yml" ] || fail "release_compose_missing"
+[ -f "$release_dir/docker-compose.prod.yml" ] || fail "release_production_compose_missing"
 if [ ! -f "$release_dir/.env" ]; then
   install -m 600 "$current_dir/.env" "$release_dir/.env"
 fi
@@ -177,12 +207,33 @@ cleanup_dump
 trap - EXIT
 
 compose() {
-  docker compose --project-name "$project" --env-file "$release_dir/.env" -f "$release_dir/docker-compose.yml" "$@"
+  docker compose \
+    --project-name "$project" \
+    --env-file "$release_dir/.env" \
+    -f "$release_dir/docker-compose.yml" \
+    -f "$release_dir/docker-compose.prod.yml" \
+    "$@"
 }
 
 compose config --quiet
 compose build
-compose up -d
+docker stop "$backend_container" "$frontend_container" >/dev/null
+compose run --rm migrate
+
+database_name="$(docker exec "$database_container" printenv POSTGRES_DB)"
+case "$database_name" in *[!a-zA-Z0-9_]*|'') fail "invalid_database_name" ;; esac
+docker exec -i "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set=ON_ERROR_STOP=1' <<SQL
+GRANT CONNECT ON DATABASE "$database_name" TO "$runtime_user";
+GRANT USAGE ON SCHEMA public TO "$runtime_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "$runtime_user";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "$runtime_user";
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "$runtime_user";
+SQL
+
+owned_tables="$(docker exec "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --command="$1"' sh "SELECT count(*) FROM pg_class table_info JOIN pg_roles owner_role ON owner_role.oid = table_info.relowner WHERE owner_role.rolname = '$runtime_user' AND table_info.relkind IN ('r', 'p')")"
+[ "$owned_tables" = "0" ] || fail "runtime_database_role_owns_tables"
+
+compose up -d database backend frontend
 
 healthy=false
 for _ in $(seq 1 45); do

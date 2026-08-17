@@ -1,0 +1,31 @@
+services:
+  backend:
+    networks:
+      - default
+      - reverse_proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK}
+      traefik.http.routers.telefonagent-api.entrypoints: websecure
+      traefik.http.routers.telefonagent-api.rule: Host(`${PUBLIC_HOST}`) && PathPrefix(`/api`)
+      traefik.http.routers.telefonagent-api.tls: "true"
+      traefik.http.routers.telefonagent-api.tls.certresolver: mytlschallenge
+      traefik.http.services.telefonagent-api.loadbalancer.server.port: "8000"
+
+  frontend:
+    networks:
+      - default
+      - reverse_proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK}
+      traefik.http.routers.telefonagent-web.entrypoints: websecure
+      traefik.http.routers.telefonagent-web.rule: Host(`${PUBLIC_HOST}`)
+      traefik.http.routers.telefonagent-web.tls: "true"
+      traefik.http.routers.telefonagent-web.tls.certresolver: mytlschallenge
+      traefik.http.services.telefonagent-web.loadbalancer.server.port: "5173"
+
+networks:
+  reverse_proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK}

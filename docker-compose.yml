@@ -23,11 +23,14 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_COMPONENT: migration
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-telefonagent}:${POSTGRES_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
+      DATABASE_URL: postgresql+psycopg://${RUNTIME_DATABASE_USER:-telefonagent}:${RUNTIME_DATABASE_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
       MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
       AUTH_HMAC_SECRET: ${AUTH_HMAC_SECRET:-development-only-change-this-auth-secret}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
       CORS_ORIGINS: ${FRONTEND_URL:-http://localhost:5173}
+      MAIL_ENABLED: ${MAIL_ENABLED:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
       ALLOW_DEVELOPMENT_TENANT_FALLBACK: "false"
     depends_on:
       database:
@@ -42,7 +45,7 @@ services:
       APP_ENV: ${APP_ENV:-development}
       APP_COMPONENT: runtime
       APP_NAME: ${APP_NAME:-Telefonagent}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-telefonagent}:${POSTGRES_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
+      DATABASE_URL: postgresql+psycopg://${RUNTIME_DATABASE_USER:-telefonagent}:${RUNTIME_DATABASE_PASSWORD:-telefonagent_local}@database:5432/${POSTGRES_DB:-telefonagent}
       AUTH_HMAC_SECRET: ${AUTH_HMAC_SECRET:-development-only-change-this-auth-secret}
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
       SESSION_ABSOLUTE_HOURS: ${SESSION_ABSOLUTE_HOURS:-12}
@@ -60,6 +63,7 @@ services:
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
       CORS_ORIGINS: ${FRONTEND_URL:-http://localhost:5173}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAIL_ENABLED: ${MAIL_ENABLED:-true}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
@@ -85,7 +89,7 @@ services:
       MICROSOFT_CALENDAR_REDIRECT_URI: ${MICROSOFT_CALENDAR_REDIRECT_URI:-http://localhost:8000/api/v1/calendar/oauth/microsoft/callback}
       MICROSOFT_CALENDAR_TENANT: ${MICROSOFT_CALENDAR_TENANT:-common}
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_BIND_ADDRESS:-0.0.0.0}:${BACKEND_PORT:-8000}:8000"
     depends_on:
       database:
         condition: service_healthy
@@ -104,11 +108,19 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+    environment:
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ${PUBLIC_HOST:-localhost}
     ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - "${FRONTEND_BIND_ADDRESS:-0.0.0.0}:${FRONTEND_PORT:-5173}:5173"
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

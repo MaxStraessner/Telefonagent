@@ -16,6 +16,32 @@ lokale Änderung
 
 Andere Verfahren wie manuelles SCP, ein Hostinger-Docker-Projekt-Update, ein Upload aus einem Arbeitsverzeichnis oder eine Root-Passwort-Sitzung sind kein Deploymentweg für dieses Repository.
 
+## Produktionsrouting und Datenbankrollen
+
+Die Basisdatei `docker-compose.yml` bleibt der lokale Standard. Produktion
+ergänzt ausschließlich `docker-compose.prod.yml`. Diese Überlagerung verbindet
+Backend und Frontend mit dem bereits vorhandenen externen Traefik-Netz, ohne den
+n8n-Compose-Stack zu verändern. Traefik terminiert TLS und leitet `/api` an das
+Backend sowie alle übrigen Pfade an das Frontend weiter; WebSocket-Upgrades für
+Twilio Media Streams laufen über denselben Backend-Router.
+
+Die Produktions-`.env` setzt mindestens `PUBLIC_HOST`, `TRAEFIK_NETWORK`,
+`BACKEND_BIND_ADDRESS=127.0.0.1` und
+`FRONTEND_BIND_ADDRESS=127.0.0.1`. Dadurch bleiben die Diagnoseports nur auf der
+VPS selbst erreichbar. PostgreSQL wird weiterhin überhaupt nicht veröffentlicht.
+
+`RUNTIME_DATABASE_USER` und `RUNTIME_DATABASE_PASSWORD` gehören zu einer
+vorbereiteten Login-Rolle ohne `SUPERUSER`, `BYPASSRLS` oder Tabellenbesitz.
+`MIGRATION_DATABASE_URL` bleibt ausschließlich beim einmaligen Migrationsservice.
+Das Deployment führt `alembic upgrade head` explizit vor dem Backendstart aus,
+erneuert danach nur die erforderlichen DML-/Sequenz-/Funktionsrechte der
+Runtime-Rolle und verweigert privilegierte Runtime-Rollen.
+
+Wenn noch keine SMTP-Zugangsdaten verfügbar sind, darf Produktion ausdrücklich
+mit `MAIL_ENABLED=false` starten. Einladungen und Passwort-Recovery bleiben dann
+kontrolliert deaktiviert; HTTPS, sichere Cookies, HMAC und alle übrigen
+Produktionsprüfungen werden dadurch nicht abgeschwächt.
+
 ## Verifizierter Istzustand am 8. August 2026
 
 - GitHub-Remote: `https://github.com/MaxStraessner/Telefonagent.git`.
@@ -79,8 +105,8 @@ Das Skript akzeptiert keinen alternativen Branch oder Zielserver. Es:
 6. lädt exakt den GitHub-Commit in `/docker/telefonagent/releases/<commit>`;
 7. übernimmt die vorhandene Produktions-`.env` intern mit Modus `0600`, ohne Werte auszugeben;
 8. erstellt vor der Migration einen verifizierten PostgreSQL-Custom-Dump unter `/docker/telefonagent/backups`;
-9. validiert Compose, baut Images und startet weiterhin das Projekt `telefonagent`;
-10. lässt den vorhandenen Migrationsservice `alembic upgrade head` ausführen;
+9. validiert Basis- und Produktions-Compose, baut Images und stoppt kurz Backend sowie Frontend;
+10. führt den Migrationsservice mit `alembic upgrade head` aus und prüft anschließend die unprivilegierte Runtime-Rolle;
 11. prüft Backend und Frontend über `127.0.0.1:18001` und `127.0.0.1:18081`;
 12. setzt erst nach erfolgreichen Checks `/docker/telefonagent/current` auf das neue Release.
 

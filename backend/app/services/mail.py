@@ -53,6 +53,10 @@ class SmtpMailAdapter:
 
 
 def build_mail_adapter(settings: Settings) -> MailAdapter:
-    if settings.smtp_host and settings.smtp_from_address:
+    if (
+        settings.mail_enabled
+        and settings.smtp_host
+        and settings.smtp_from_address
+    ):
         return SmtpMailAdapter(settings)
     return DisabledMailAdapter()
