@@ -222,13 +222,17 @@ compose run --rm migrate
 
 database_name="$(docker exec "$database_container" printenv POSTGRES_DB)"
 case "$database_name" in *[!a-zA-Z0-9_]*|'') fail "invalid_database_name" ;; esac
-docker exec -i "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set=ON_ERROR_STOP=1' <<SQL
-GRANT CONNECT ON DATABASE "$database_name" TO "$runtime_user";
-GRANT USAGE ON SCHEMA public TO "$runtime_user";
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "$runtime_user";
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "$runtime_user";
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "$runtime_user";
-SQL
+run_database_command() {
+  statement="$1"
+  docker exec "$database_container" sh -c \
+    'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --set=ON_ERROR_STOP=1 --command="$1"' \
+    sh "$statement"
+}
+run_database_command "GRANT CONNECT ON DATABASE \"$database_name\" TO \"$runtime_user\";"
+run_database_command "GRANT USAGE ON SCHEMA public TO \"$runtime_user\";"
+run_database_command "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"$runtime_user\";"
+run_database_command "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO \"$runtime_user\";"
+run_database_command "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO \"$runtime_user\";"
 
 owned_tables="$(docker exec "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --command="$1"' sh "SELECT count(*) FROM pg_class table_info JOIN pg_roles owner_role ON owner_role.oid = table_info.relowner WHERE owner_role.rolname = '$runtime_user' AND table_info.relkind IN ('r', 'p')")"
 [ "$owned_tables" = "0" ] || fail "runtime_database_role_owns_tables"
