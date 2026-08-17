@@ -7,6 +7,10 @@
 3. Den Dump mit `ops/accountsystem/verify-restore.ps1` ausschließlich in eine Datenbank mit dem geschützten Präfix `telefonagent_restore_` oder `telefonagent_accountsystem_` zurückspielen. Im Compose-Betrieb ebenfalls `-DatabaseContainer telefonagent-database-1` verwenden.
 4. Auf der Restore-Kopie `alembic current`, Bestandszähler und Passwort-Hash-Digests erfassen; danach `alembic upgrade 0014` ausführen und erneut vergleichen.
 5. Anwendung mit getrennten Rollen starten: `DATABASE_URL` verwendet die Runtime-Rolle ohne Ownership/BYPASSRLS. Nur der Migrationsprozess erhält `APP_COMPONENT=migration` und `MIGRATION_DATABASE_URL`; der Backend-Runtimeprozess erhält die privilegierte URL ausdrücklich nicht.
+   Die Runtime-Rolle wird einmalig vor dem ersten Deployment als unprivilegierte
+   Login-Rolle angelegt. `ops/deploy.ps1` erstellt sie bewusst nicht aus
+   Anwendungsdaten, verweigert aber `SUPERUSER`/`BYPASSRLS` und Tabellenbesitz
+   und erteilt nach jeder Migration ausschließlich die benötigten Laufzeitrechte.
 6. Exakt einen aktiven Plattforminhaber prüfen. Falls erforderlich, nur den reauthentifizierten Wartungsbefehl `promote-platform-owner --username …` verwenden.
 7. SMTP, HTTPS, HMAC-Geheimnis, CORS und Kalender-Tokenverschlüsselung prüfen. Roh-Tokens oder Schlüssel dürfen nicht in Diagnoseausgaben erscheinen.
 

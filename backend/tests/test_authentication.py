@@ -301,6 +301,17 @@ def test_production_security_configuration_fails_closed():
     assert settings.session_cookie_name == "__Host-telefonagent_session"
     assert settings.csrf_cookie_name == "__Host-telefonagent_csrf"
     assert settings.is_production
+    mail_disabled = Settings(
+        app_env="production",
+        app_component="migration",
+        database_url="postgresql+psycopg://runtime:test@database/app",
+        migration_database_url="postgresql+psycopg://migrator:test@database/app",
+        auth_hmac_secret="production-auth-secret-with-more-than-thirty-two-bytes",
+        app_base_url="https://api.example.test",
+        cors_origins="https://app.example.test",
+        mail_enabled=False,
+    )
+    assert not mail_disabled.mail_enabled
     with pytest.raises(ValidationError):
         Settings(
             app_env="production",

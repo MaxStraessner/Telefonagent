@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     dev_bootstrap_username: str = "owner@telefonagent.local"
     dev_bootstrap_password: str | None = None
     initial_setup_token: str | None = None
+    mail_enabled: bool = True
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
@@ -266,9 +267,12 @@ class Settings(BaseSettings):
                         "Twilio-Telefonie erfordert TWILIO_ACCOUNT_SID, "
                         "TWILIO_AUTH_TOKEN, TWILIO_STREAM_TOKEN_SECRET und OPENAI_API_KEY."
                     )
-            if not self.smtp_host or not self.smtp_from_address:
+            if self.mail_enabled and (
+                not self.smtp_host or not self.smtp_from_address
+            ):
                 raise ValueError(
-                    "SMTP_HOST und SMTP_FROM_ADDRESS müssen in Produktion gesetzt sein."
+                    "Bei aktivierter Mailzustellung müssen SMTP_HOST und "
+                    "SMTP_FROM_ADDRESS in Produktion gesetzt sein."
                 )
         return self
 
