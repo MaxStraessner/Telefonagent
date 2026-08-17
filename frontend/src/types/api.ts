@@ -85,6 +85,17 @@ export interface CompanyDetail extends CompanySummary {
   industry: string; timezone: string; contact_name: string | null;
   contact_email: string | null; contact_phone: string | null; default_language: string;
 }
+export type TwilioSyncStatus = "pending" | "synced" | "blocked" | "error";
+export interface TwilioNumber {
+  sid: string; phone_number: string; friendly_name: string; voice_capable: boolean;
+  assigned_company_id: string | null; assigned_company_name: string | null;
+  routing_status: TwilioSyncStatus | "available";
+}
+export interface CompanyTelephony {
+  provider: "twilio" | null; phone_number: string | null; phone_number_sid: string | null;
+  sync_status: TwilioSyncStatus | null; expected_voice_url: string;
+  provider_synced_url: string | null; provider_synced_at: string | null; error_code: string | null;
+}
 export interface FirstCompanyAdmin {
   username: string; display_name: string; email: string | null;
   delivery: "invitation" | "temporary_password"; temporary_password?: string | null;
@@ -177,7 +188,7 @@ export interface RuntimeToolDefinition {
 }
 export interface RuntimeManifest {
   schema_version: string; digest: string; tenant_id: string; timezone: string;
-  assistant_name: string; language: string; welcome_message: string;
+  assistant_name: string; language: string; welcome_message: string; initial_response_instructions: string;
   instructions: string; prompt_digest: string; model: string; voice: string;
   speed: number; configuration_version: number; source_digests: Record<string, string>;
   capability_keys: string[]; tools: RuntimeToolDefinition[]; tool_names: string[];

@@ -148,6 +148,74 @@ it("zeigt Konflikte der direkten Benutzeranlage verständlich an", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Dieser Benutzername ist bereits vergeben.");
 });
 
+it("ordnet eine vorhandene Twilio-Nummer zu und zeigt den Syncstatus", async () => {
+  window.history.replaceState({}, "", "/plattform/unternehmen/company-1");
+  const company = { id: "company-1", slug: "example", name: "Example GmbH", legal_name: null, status: "active", is_demo: false, active_user_count: 0, has_primary_admin: false, onboarding_complete: false, created_at: "2026-08-05T12:00:00Z", industry: "services", timezone: "Europe/Berlin", contact_name: null, contact_email: null, contact_phone: null, default_language: "de" };
+  const emptyTelephony = { provider: null, phone_number: null, phone_number_sid: null, sync_status: null, expected_voice_url: "https://tunnel.example/api/v1/twilio/voice", provider_synced_url: null, provider_synced_at: null, error_code: null };
+  const syncedTelephony = { ...emptyTelephony, provider: "twilio", phone_number: "+493012345678", phone_number_sid: "PNbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sync_status: "synced", provider_synced_url: emptyTelephony.expected_voice_url, provider_synced_at: "2026-08-08T12:00:00Z" };
+  const number = { sid: "PNbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", phone_number: "+493012345678", friendly_name: "Berlin Test", voice_capable: true, assigned_company_id: null as string | null, assigned_company_name: null, routing_status: "available" };
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/auth/session")) return Promise.resolve(json(platformSession("owner")));
+    if (url.endsWith("/platform/companies/company-1") && (!init?.method || init.method === "GET")) return Promise.resolve(json(company));
+    if (url.endsWith("/platform/companies/company-1/users") || url.endsWith("/platform/companies/company-1/invitations")) return Promise.resolve(json([]));
+    if (url.endsWith("/platform/companies/company-1/telephony") && (!init?.method || init.method === "GET")) return Promise.resolve(json(emptyTelephony));
+    if (url.endsWith("/platform/telephony/twilio/numbers")) return Promise.resolve(json([number]));
+    if (url.endsWith("/platform/companies/company-1/telephony/twilio") && init?.method === "PUT") {
+      expect(JSON.parse(String(init.body))).toEqual({ phone_number: number.phone_number, transfer: false });
+      number.assigned_company_id = "company-1";
+      number.routing_status = "synced";
+      return Promise.resolve(json(syncedTelephony));
+    }
+    if (url.endsWith("/platform/companies/company-1/telephony/twilio") && init?.method === "DELETE") return Promise.resolve(json(emptyTelephony));
+    throw new Error(`Unexpected URL ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+
+  await userEvent.type(await screen.findByLabelText("Twilio-Nummer"), number.phone_number);
+  await userEvent.click(screen.getByRole("button", { name: "Nummer speichern" }));
+
+  expect(await screen.findByText("Synchronisiert")).toBeInTheDocument();
+  expect(screen.getByText("+493012345678")).toBeInTheDocument();
+  expect(screen.getByText("Twilio-Nummer wurde zugeordnet und synchronisiert.")).toBeInTheDocument();
+
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  await userEvent.click(screen.getByRole("button", { name: "Nummer entfernen" }));
+  expect(await screen.findByText("Die Twilio-Zuordnung wurde entfernt. Die Nummer bleibt im Twilio-Konto bestehen.")).toBeInTheDocument();
+});
+
+it("überträgt eine bereits zugeordnete Twilio-Nummer nur nach bewusster Bestätigung", async () => {
+  window.history.replaceState({}, "", "/plattform/unternehmen/company-1");
+  const company = { id: "company-1", slug: "example", name: "Example GmbH", legal_name: null, status: "active", is_demo: false, active_user_count: 0, has_primary_admin: false, onboarding_complete: false, created_at: "2026-08-05T12:00:00Z", industry: "services", timezone: "Europe/Berlin", contact_name: null, contact_email: null, contact_phone: null, default_language: "de" };
+  const emptyTelephony = { provider: null, phone_number: null, phone_number_sid: null, sync_status: null, expected_voice_url: "https://tunnel.example/api/v1/twilio/voice", provider_synced_url: null, provider_synced_at: null, error_code: null };
+  const syncedTelephony = { ...emptyTelephony, provider: "twilio", phone_number: "+493012345678", phone_number_sid: "PNbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", sync_status: "synced", provider_synced_url: emptyTelephony.expected_voice_url, provider_synced_at: "2026-08-08T12:00:00Z" };
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/auth/session")) return Promise.resolve(json(platformSession("owner")));
+    if (url.endsWith("/platform/companies/company-1") && (!init?.method || init.method === "GET")) return Promise.resolve(json(company));
+    if (url.endsWith("/platform/companies/company-1/users") || url.endsWith("/platform/companies/company-1/invitations")) return Promise.resolve(json([]));
+    if (url.endsWith("/platform/companies/company-1/telephony") && (!init?.method || init.method === "GET")) return Promise.resolve(json(emptyTelephony));
+    if (url.endsWith("/platform/telephony/twilio/numbers")) return Promise.resolve(json([]));
+    if (url.endsWith("/platform/companies/company-1/telephony/twilio") && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body));
+      if (!body.transfer) return Promise.resolve(json({ error: { code: "number_already_assigned", message: "Die Twilio-Nummer ist bereits Andere GmbH zugeordnet.", assigned_company_id: "company-2", assigned_company_name: "Andere GmbH" } }, 409));
+      expect(body).toEqual({ phone_number: "+493012345678", transfer: true });
+      return Promise.resolve(json(syncedTelephony));
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("confirm", vi.fn(() => true));
+  render(<App />);
+
+  await userEvent.type(await screen.findByLabelText("Twilio-Nummer"), "+493012345678");
+  await userEvent.click(screen.getByRole("button", { name: "Nummer speichern" }));
+  expect(await screen.findByText("Diese Nummer ist bereits Andere GmbH zugeordnet.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Nummer bewusst auf dieses Unternehmen übertragen" }));
+  expect(await screen.findByText("Twilio-Nummer wurde übertragen und synchronisiert.")).toBeInTheDocument();
+});
+
 it("legt einen Plattformadmin direkt und ohne E-Mail an", async () => {
   window.history.replaceState({}, "", "/plattform/administratoren");
   const owner = { id: "owner", username: "owner", display_name: "Platform Owner", email: null, platform_role: "owner", is_active: true, must_change_password: false, last_login_at: null };

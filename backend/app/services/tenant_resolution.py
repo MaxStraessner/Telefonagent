@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext
 from app.core.config import Settings
+from app.db.session import bind_tenant_context
 from app.models import Tenant, TenantInboundRoute, TenantStatus
 
 
@@ -38,10 +39,7 @@ class InboundRouteTenantResolver:
                 raise TenantResolutionError(
                     "Eingehende Route ist unbekannt oder mehrdeutig."
                 )
-            self.db.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
-            )
+            bind_tenant_context(self.db, tenant_id)
         rows = list(
             self.db.execute(
                 select(TenantInboundRoute, Tenant)

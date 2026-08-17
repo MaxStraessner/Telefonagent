@@ -23,6 +23,7 @@ from app.schemas.api import (
     RealtimeSessionBootstrapResponse,
 )
 from app.services.agent_runtime import AgentRuntimeConfig, build_runtime_config
+from app.services.call_lifecycle import CallLifecycleService
 
 logger = logging.getLogger(__name__)
 OPENAI_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
@@ -407,19 +408,9 @@ def _record_runtime(
     call_session: CallSession,
     runtime: AgentRuntimeConfig,
 ) -> None:
-    manifest = runtime.manifest
-    call_session.configuration_version = runtime.version
-    call_session.runtime_manifest_digest = manifest.digest
-    call_session.runtime_manifest_snapshot = {
-        "model": manifest.model,
-        "voice": manifest.voice,
-        "speed": manifest.speed,
-        "language": manifest.language,
-        "prompt_digest": manifest.prompt_digest,
-        "tool_names": manifest.tool_names,
-        "tools_digest": manifest.tools_digest,
-        "vad": manifest.vad.model_dump(mode="json", exclude_none=True),
-    }
+    CallLifecycleService(db, call_session.tenant_id).record_runtime(
+        call_session, runtime
+    )
     call_session.configuration_status = "sdk_pending"
     db.commit()
 

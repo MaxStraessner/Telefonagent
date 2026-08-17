@@ -28,10 +28,12 @@ Copy-Item .env.example .env
 Danach:
 
 ```powershell
-docker compose up --build
+docker compose build
+docker compose run --rm migrate
+docker compose up -d
 ```
 
-Beim Start wartet ein einmaliger Migrationsservice auf PostgreSQL und führt `alembic upgrade head` aus. Erst danach startet das Backend; Seed-Daten werden nur mit dem ausdrücklich aktivierten Entwicklungs-Bootstrap idempotent angelegt. Bestehende Volumes werden dabei nicht gelöscht.
+Migrationen werden vor dem Start gezielt und temporär ausgeführt; `--rm` lässt keinen Migrationscontainer zurück. Der normale Start umfasst ausschließlich Datenbank, Backend und Frontend. Seed-Daten werden nur mit dem ausdrücklich aktivierten Entwicklungs-Bootstrap idempotent angelegt. Bestehende Volumes werden dabei nicht gelöscht.
 
 Stoppen ohne Datenverlust:
 
@@ -103,7 +105,7 @@ Set-Location backend
 Alternativ lassen sich Migration und Seed gezielt in Compose ausführen:
 
 ```powershell
-docker compose run --rm backend alembic upgrade head
+docker compose run --rm migrate
 docker compose run --rm backend python -m app.seed
 ```
 

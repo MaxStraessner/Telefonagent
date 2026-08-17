@@ -41,6 +41,16 @@ class FakeAsyncClient:
         type(self).last_payload = json
         if self.error:
             raise self.error
+        if self.response.status_code == 200:
+            payload = self.response.json()
+            if (payload.get("session") or {}).get("id") == "sess_test":
+                payload["session"]["id"] = f"sess_{headers['X-Client-Request-Id']}"
+                return httpx.Response(
+                    200,
+                    json=payload,
+                    headers=self.response.headers,
+                    request=self.response.request,
+                )
         return self.response
 
 
@@ -94,7 +104,7 @@ def test_client_secret_is_short_lived_and_session_config_stays_with_sdk(monkeypa
 
     assert response.status_code == 200
     assert response.json()["client_secret"] == "ek_test_ephemeral"
-    assert response.json()["session_id"] == "sess_test"
+    assert response.json()["session_id"].startswith("sess_")
     assert set(response.json()) == {"client_secret", "expires_at", "session_id", "model", "voice", "speed", "configuration_version", "call_session_id", "call_attempt_id", "tenant_id"}
     assert "server-only-test-key" not in response.text
     assert FakeAsyncClient.last_payload["expires_after"] == {"anchor": "created_at", "seconds": 60}
@@ -135,7 +145,7 @@ def test_session_bootstrap_returns_one_digest_bound_runtime_manifest(monkeypatch
     db.refresh(call_session)
     assert call_session.status == "provisioned"
     assert call_session.call_attempt_id == call_attempt_id
-    assert call_session.provider_session_id == "sess_test"
+    assert call_session.provider_session_id == secret["session_id"]
     assert call_session.provider_request_id == "req_test_provider"
     assert call_session.runtime_manifest_digest == manifest["digest"]
     assert call_session.runtime_manifest_snapshot["prompt_digest"] == manifest["prompt_digest"]

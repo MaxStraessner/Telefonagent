@@ -134,6 +134,7 @@ const runtimeManifest = {
   assistant_name: agentConfig.assistant_name,
   language: agentConfig.language,
   welcome_message: agentConfig.welcome_message,
+  initial_response_instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${agentConfig.welcome_message}`,
   instructions: agentConfig.instructions,
   prompt_digest: "b".repeat(64),
   model: agentConfig.model,

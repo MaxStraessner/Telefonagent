@@ -404,7 +404,7 @@ export class BrowserRealtimeClient {
     this.assistantGenerating = true;
     this.updateMicrophone();
     transport.requestResponse({
-      instructions: `Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: ${runtimeManifest.welcome_message}`,
+      instructions: runtimeManifest.initial_response_instructions,
     });
   }
 

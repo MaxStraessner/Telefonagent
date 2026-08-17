@@ -292,12 +292,22 @@ class TenantInboundRoute(Base, TimestampMixin):
     __tablename__ = "tenant_inbound_routes"
     __table_args__ = (
         UniqueConstraint("route_type", "normalized_identifier", name="uq_tenant_inbound_route"),
+        UniqueConstraint("tenant_id", "route_type", name="uq_tenant_inbound_route_tenant_type"),
+        UniqueConstraint(
+            "provider", "provider_resource_id", name="uq_tenant_inbound_route_provider_resource"
+        ),
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     route_type: Mapped[str] = mapped_column(String(30))
     normalized_identifier: Mapped[str] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    provider: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    provider_resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_sync_status: Mapped[str] = mapped_column(String(20), default="pending")
+    provider_synced_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 class TenantSettings(Base, TimestampMixin):
@@ -650,6 +660,9 @@ class CallSession(Base):
     __tablename__ = "call_sessions"
     __table_args__ = (
         UniqueConstraint("call_attempt_id", name="uq_call_sessions_call_attempt_id"),
+        UniqueConstraint(
+            "channel", "provider_session_id", name="uq_call_sessions_channel_provider_session"
+        ),
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)

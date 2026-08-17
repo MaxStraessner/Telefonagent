@@ -18,6 +18,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
 from app.api.v1.company import router as company_router
 from app.api.v1.platform import router as platform_router
+from app.api.v1.twilio import router as twilio_router
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models import AgentConfiguration, Service
@@ -51,6 +52,7 @@ router.include_router(agent_router)
 router.include_router(calendar_router)
 router.include_router(platform_router)
 router.include_router(company_router)
+router.include_router(twilio_router)
 
 
 def database_is_connected(db: Session) -> bool:

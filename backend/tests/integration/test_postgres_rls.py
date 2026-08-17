@@ -29,6 +29,11 @@ USER_A = "30000000-0000-4000-8000-000000000001"
 PLATFORM_USER = "30000000-0000-4000-8000-000000000002"
 MEMBERSHIP_A = "40000000-0000-4000-8000-000000000001"
 INBOUND_ROUTE_A = "50000000-0000-4000-8000-000000000001"
+INBOUND_ROUTE_B = "50000000-0000-4000-8000-000000000002"
+TELEPHONE_CALL_A = "80000000-0000-4000-8000-000000000001"
+TELEPHONE_CALL_B = "80000000-0000-4000-8000-000000000002"
+TWILIO_CALL_SID_A = "CA" + "a" * 32
+TWILIO_CALL_SID_B = "CA" + "b" * 32
 OAUTH_STATE_A = "60000000-0000-4000-8000-000000000001"
 INVITATION_A = "70000000-0000-4000-8000-000000000001"
 INVITATION_TOKEN_HASH = "a" * 64
@@ -207,6 +212,44 @@ def postgres_rls_fixture():
             ),
             {"id": INBOUND_ROUTE_A, "tenant_id": TENANT_A},
         )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_inbound_routes (
+                    id, tenant_id, route_type, normalized_identifier, is_active,
+                    provider, provider_resource_id, provider_sync_status
+                ) VALUES (
+                    CAST(:id AS uuid), CAST(:tenant_id AS uuid),
+                    'phone_number', '+4930654321', true,
+                    'twilio', :phone_sid, 'synced'
+                )
+                ON CONFLICT (id) DO NOTHING
+                """
+            ),
+            {
+                "id": INBOUND_ROUTE_B,
+                "tenant_id": TENANT_B,
+                "phone_sid": "PN" + "b" * 32,
+            },
+        )
+        for call_id, tenant_id, call_sid in (
+            (TELEPHONE_CALL_A, TENANT_A, TWILIO_CALL_SID_A),
+            (TELEPHONE_CALL_B, TENANT_B, TWILIO_CALL_SID_B),
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO call_sessions (
+                        id, tenant_id, channel, status, provider_session_id
+                    ) VALUES (
+                        CAST(:id AS uuid), CAST(:tenant_id AS uuid),
+                        'telephone', 'provisioned', :call_sid
+                    )
+                    ON CONFLICT (id) DO NOTHING
+                    """
+                ),
+                {"id": call_id, "tenant_id": tenant_id, "call_sid": call_sid},
+            )
         connection.execute(
             text(
                 """
@@ -426,4 +469,32 @@ def test_security_definer_resolvers_establish_tenant_without_bypassing_rls():
                 )
             )
         ) == TENANT_A
+    engine.dispose()
+
+
+def test_twilio_resolvers_keep_two_numbers_and_call_sids_tenant_isolated():
+    engine = create_engine(RUNTIME_URL)
+    with Session(engine, expire_on_commit=False) as db:
+        alpha = InboundRouteTenantResolver(db).resolve(
+            "phone_number", "+49 30 123456"
+        )
+        assert str(alpha.id) == TENANT_A
+    with Session(engine, expire_on_commit=False) as db:
+        beta = InboundRouteTenantResolver(db).resolve(
+            "phone_number", "+49 30 654321"
+        )
+        assert str(beta.id) == TENANT_B
+    with engine.begin() as connection:
+        assert str(
+            connection.scalar(
+                text("SELECT resolve_telephone_call_tenant(:call_sid)"),
+                {"call_sid": TWILIO_CALL_SID_A},
+            )
+        ) == TENANT_A
+        assert str(
+            connection.scalar(
+                text("SELECT resolve_telephone_call_tenant(:call_sid)"),
+                {"call_sid": TWILIO_CALL_SID_B},
+            )
+        ) == TENANT_B
     engine.dispose()

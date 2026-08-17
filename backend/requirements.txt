@@ -11,3 +11,6 @@ httpx==0.28.1
 cryptography==46.0.5
 pwdlib[argon2]==0.3.0
 ruff==0.12.5
+twilio==9.10.9
+python-multipart==0.0.20
+websockets==16.1.1

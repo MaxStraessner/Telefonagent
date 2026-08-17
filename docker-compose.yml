@@ -19,6 +19,7 @@ services:
   migrate:
     build: ./backend
     command: ["alembic", "upgrade", "head"]
+    profiles: ["migration"]
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_COMPONENT: migration
@@ -68,9 +69,13 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2.1}
       OPENAI_REALTIME_MAX_SESSION_MINUTES: ${OPENAI_REALTIME_MAX_SESSION_MINUTES:-10}
+      OPENAI_REALTIME_MAX_OUTPUT_TOKENS: ${OPENAI_REALTIME_MAX_OUTPUT_TOKENS:-1024}
       OPENAI_REALTIME_TRANSCRIPTION_ENABLED: ${OPENAI_REALTIME_TRANSCRIPTION_ENABLED:-true}
       OPENAI_REALTIME_LOG_RAW_EVENTS: ${OPENAI_REALTIME_LOG_RAW_EVENTS:-false}
       OPENAI_SAFETY_IDENTIFIER_SALT: ${OPENAI_SAFETY_IDENTIFIER_SALT:-telefonagent-local-installation}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_STREAM_TOKEN_SECRET: ${TWILIO_STREAM_TOKEN_SECRET:-}
       CALENDAR_TOKEN_ENCRYPTION_KEY: ${CALENDAR_TOKEN_ENCRYPTION_KEY:-}
       GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
       GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
@@ -84,8 +89,6 @@ services:
     depends_on:
       database:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s
