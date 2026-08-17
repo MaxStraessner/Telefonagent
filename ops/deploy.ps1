@@ -218,7 +218,7 @@ compose() {
 compose config --quiet
 compose build
 docker stop "$backend_container" "$frontend_container" >/dev/null
-compose run --rm migrate
+compose run --rm -T migrate </dev/null
 
 database_name="$(docker exec "$database_container" printenv POSTGRES_DB)"
 case "$database_name" in *[!a-zA-Z0-9_]*|'') fail "invalid_database_name" ;; esac
