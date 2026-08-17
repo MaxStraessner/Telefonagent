@@ -249,7 +249,7 @@ for _ in $(seq 1 45); do
 done
 [ "$healthy" = true ] || fail "health_check_failed"
 
-compose exec -T backend alembic current
+compose exec -T backend alembic current </dev/null
 compose ps
 ln -sfn "$release_dir" "$app_root/current"
 
