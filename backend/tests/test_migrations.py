@@ -34,6 +34,13 @@ def test_migration_created_all_tables():
         for item in inspect(engine).get_unique_constraints("call_sessions")
     }
     assert ("channel", "provider_session_id") in call_uniques
+    call_columns = {item["name"] for item in inspect(engine).get_columns("call_sessions")}
+    assert {
+        "phone_number_id", "caller_phone", "caller_name", "duration_seconds",
+        "inbox_status", "transcript", "summary", "category", "result",
+        "action_required", "action_items", "priority", "analysis_status",
+        "analysis_attempts", "analysis_error_code", "analyzed_at", "updated_at",
+    } <= call_columns
 
 
 def test_migrations_can_roundtrip_and_seed_existing_demo_configuration(

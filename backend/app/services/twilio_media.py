@@ -229,6 +229,8 @@ class TwilioMediaBridge:
         self.connector = connector
         self.playback = PlaybackState()
         self.latest_user_utterance: str | None = None
+        self.transcript: list[dict[str, str]] = []
+        self.twilio_stopped = False
         self.outbound: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(OUTBOUND_QUEUE_SIZE)
 
     async def run(self) -> None:
@@ -244,19 +246,18 @@ class TwilioMediaBridge:
                         "type": "response.create",
                         "response": {"instructions": self.runtime.manifest.initial_response_instructions},
                     }))
-                    tasks = {
-                        asyncio.create_task(self._send_twilio()),
-                        asyncio.create_task(self._receive_twilio(openai)),
-                        asyncio.create_task(self._receive_openai(openai)),
-                    }
+                    sender = asyncio.create_task(self._send_twilio())
+                    twilio_receiver = asyncio.create_task(self._receive_twilio(openai))
+                    openai_receiver = asyncio.create_task(self._receive_openai(openai))
+                    tasks = {sender, twilio_receiver, openai_receiver}
                     done, pending = await asyncio.wait(
                         tasks, return_when=asyncio.FIRST_COMPLETED
                     )
+                    for task in done:
+                        task.result()
                     for task in pending:
                         task.cancel()
                     await asyncio.gather(*pending, return_exceptions=True)
-                    for task in done:
-                        task.result()
         except TimeoutError as exc:
             raise TwilioMediaError("maximum_session_duration_reached") from exc
 
@@ -329,6 +330,7 @@ class TwilioMediaBridge:
                 elif kind == "stop":
                     if str(event.get("streamSid") or "") != self.stream_sid:
                         raise TwilioMediaError("stream_context_mismatch")
+                    self.twilio_stopped = True
                     return
                 else:
                     raise TwilioMediaError("unsupported_twilio_event")
@@ -338,29 +340,51 @@ class TwilioMediaBridge:
     async def _receive_openai(self, openai: Any) -> None:
         while True:
             event = _decode_event(await openai.recv())
-            kind = event["type"]
-            if kind == "response.output_audio.delta":
-                audio = _validate_audio(event.get("delta"))
-                mark_name = self.playback.add_audio(event.get("item_id"), audio)
-                await self.outbound.put({"event": "media", "streamSid": self.stream_sid, "media": {"payload": audio}})
-                await self.outbound.put({"event": "mark", "streamSid": self.stream_sid, "mark": {"name": mark_name}})
-            elif kind == "input_audio_buffer.speech_started":
-                item_id, audio_end_ms = self.playback.clear()
-                await self.outbound.put({"event": "clear", "streamSid": self.stream_sid})
-                if item_id:
-                    await openai.send(json.dumps({
-                        "type": "conversation.item.truncate",
-                        "item_id": item_id,
-                        "content_index": 0,
-                        "audio_end_ms": audio_end_ms,
-                    }))
-            elif kind == "conversation.item.input_audio_transcription.completed":
-                transcript = str(event.get("transcript") or "").strip()
-                self.latest_user_utterance = transcript[:300] or None
-            elif kind == "response.function_call_arguments.done":
-                await self._execute_tool(openai, event)
-            elif kind == "error":
-                raise _openai_rejection("openai_stream_error", event)
+            await self._handle_openai_event(openai, event)
+
+    def _append_transcript(self, speaker: str, value: object) -> None:
+        text = " ".join(str(value or "").split())
+        if not text:
+            return
+        turn = {"speaker": speaker, "text": text}
+        if self.transcript and self.transcript[-1] == turn:
+            return
+        self.transcript.append(turn)
+
+    async def _handle_openai_event(self, openai: Any, event: dict[str, Any]) -> None:
+        kind = event["type"]
+        if kind == "response.output_audio.delta":
+            if self.twilio_stopped:
+                return
+            audio = _validate_audio(event.get("delta"))
+            mark_name = self.playback.add_audio(event.get("item_id"), audio)
+            await self.outbound.put({"event": "media", "streamSid": self.stream_sid, "media": {"payload": audio}})
+            await self.outbound.put({"event": "mark", "streamSid": self.stream_sid, "mark": {"name": mark_name}})
+        elif kind == "input_audio_buffer.speech_started":
+            if self.twilio_stopped:
+                return
+            item_id, audio_end_ms = self.playback.clear()
+            await self.outbound.put({"event": "clear", "streamSid": self.stream_sid})
+            if item_id:
+                await openai.send(json.dumps({
+                    "type": "conversation.item.truncate",
+                    "item_id": item_id,
+                    "content_index": 0,
+                    "audio_end_ms": audio_end_ms,
+                }))
+        elif kind == "conversation.item.input_audio_transcription.completed":
+            transcript = str(event.get("transcript") or "").strip()
+            self.latest_user_utterance = transcript[:300] or None
+            self._append_transcript("customer", transcript)
+        elif kind in {
+            "response.output_audio_transcript.done",
+            "response.audio_transcript.done",
+        }:
+            self._append_transcript("agent", event.get("transcript"))
+        elif kind == "response.function_call_arguments.done":
+            await self._execute_tool(openai, event)
+        elif kind == "error":
+            raise _openai_rejection("openai_stream_error", event)
 
     async def _execute_tool(self, openai: Any, event: dict[str, Any]) -> None:
         call_id = str(event.get("call_id") or "")

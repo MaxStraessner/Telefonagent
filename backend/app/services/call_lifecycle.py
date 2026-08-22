@@ -35,6 +35,9 @@ class CallLifecycleService:
         channel: CallChannel,
         provider_session_id: str,
         runtime: AgentRuntimeConfig,
+        *,
+        phone_number_id: UUID | None = None,
+        caller_phone: str | None = None,
     ) -> tuple[CallSession, bool]:
         existing = self.find_provider_call(channel, provider_session_id)
         if existing is not None:
@@ -46,6 +49,12 @@ class CallLifecycleService:
             provider_session_id=provider_session_id,
             status="provisioned",
             started_at=now,
+            phone_number_id=phone_number_id,
+            caller_phone=caller_phone,
+            inbox_status="open" if channel == CallChannel.telephone else "done",
+            analysis_status=(
+                "pending" if channel == CallChannel.telephone else "not_requested"
+            ),
             bootstrap_status="completed",
             runtime_state="connecting",
         )
@@ -104,17 +113,34 @@ class CallLifecycleService:
         status: str = "ended",
         phase: str = "stream_cleanup",
         error_code: str | None = None,
+        transcript: list[dict[str, str]] | None = None,
     ) -> None:
         call = self.db.scalar(select(CallSession).where(
             CallSession.id == call_id,
             CallSession.tenant_id == self.tenant_id,
         ).with_for_update())
-        if call is None or call.status in TERMINAL_CALL_STATUSES:
+        if call is None:
             self.db.rollback()
             return
-        call.status = status
-        call.ended_at = datetime.now(timezone.utc)
-        call.failure_phase = phase
-        call.error_code = error_code
-        call.runtime_state = status
+        now = datetime.now(timezone.utc)
+        if call.status not in TERMINAL_CALL_STATUSES:
+            call.status = status
+            call.ended_at = now
+            call.failure_phase = phase
+            call.error_code = error_code
+            call.runtime_state = status
+        if transcript is not None:
+            call.transcript = transcript
+        if call.ended_at is not None:
+            start = call.started_at or call.connected_at
+            if start is not None:
+                ended_at = call.ended_at
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if ended_at.tzinfo is None:
+                    ended_at = ended_at.replace(tzinfo=timezone.utc)
+                call.duration_seconds = max(
+                    0, int((ended_at - start).total_seconds())
+                )
+        call.updated_at = now
         self.db.commit()

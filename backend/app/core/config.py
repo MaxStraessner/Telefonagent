@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     openai_realtime_max_output_tokens: int = 1024
     openai_realtime_transcription_enabled: bool = True
     openai_realtime_log_raw_events: bool = False
+    openai_call_analysis_model: str = "gpt-5.4-nano"
+    openai_call_analysis_timeout_seconds: float = 20.0
     openai_safety_identifier_salt: str = "telefonagent-local-installation"
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
@@ -163,6 +165,21 @@ class Settings(BaseSettings):
     def validate_realtime_model(cls, value: object) -> str:
         model = str(value or "").strip()
         return model or "gpt-realtime-2.1"
+
+    @field_validator("openai_call_analysis_model", mode="before")
+    @classmethod
+    def validate_call_analysis_model(cls, value: object) -> str:
+        model = str(value or "").strip()
+        return model or "gpt-5.4-nano"
+
+    @field_validator("openai_call_analysis_timeout_seconds", mode="before")
+    @classmethod
+    def validate_call_analysis_timeout(cls, value: object) -> float:
+        try:
+            timeout = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 20.0
+        return timeout if 3 <= timeout <= 60 else 20.0
 
     @field_validator("openai_api_key", mode="before")
     @classmethod

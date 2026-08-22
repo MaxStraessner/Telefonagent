@@ -74,13 +74,17 @@ def redact_technical_message(value: object, *, maximum: int = 500) -> str:
     return message[:maximum]
 
 
-def build_safety_identifier(context: TenantContext, settings: Settings) -> str:
+def build_safety_identifier_for_tenant(tenant_id: UUID, settings: Settings) -> str:
     digest = hmac.new(
         settings.openai_safety_identifier_salt.encode("utf-8"),
-        str(context.id).encode("utf-8"),
+        str(tenant_id).encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     return f"tenant_{digest[:32]}"
+
+
+def build_safety_identifier(context: TenantContext, settings: Settings) -> str:
+    return build_safety_identifier_for_tenant(context.id, settings)
 
 
 def agent_config(
