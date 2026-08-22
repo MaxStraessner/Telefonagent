@@ -7,6 +7,7 @@ import { useAuth } from "../api/AuthProvider";
 
 const navigation = [
   ["/", "Übersicht", "home", null], ["/testgespraech", "Testgespräch", "call", null],
+  ["/anrufe", "Anrufe", "call", null],
   ["/ki-konfigurieren", "KI konfigurieren", "mic", "company.manage"],
   ["/kalender", "Kalenderintegration", "calendar", "company.manage"],
   ["/termine", "Termine", "calendar", null], ["/leistungen", "Leistungen", "services", "company.manage"],

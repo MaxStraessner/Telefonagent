@@ -21,6 +21,8 @@ import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { InvitationAcceptPage } from "./pages/InvitationAcceptPage";
 import { PasswordChangePage } from "./pages/PasswordChangePage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
+import { CallsPage } from "./pages/CallsPage";
+import { CallDetailPage } from "./pages/CallDetailPage";
 
 const AuditPage = lazy(() => import("./pages/AuditPage").then((module) => ({ default: module.AuditPage })));
 const CompaniesPage = lazy(() => import("./pages/CompaniesPage").then((module) => ({ default: module.CompaniesPage })));
@@ -77,6 +79,7 @@ function buildRouter() { return createBrowserRouter([
   ]},
   { path: "/", element: <ProtectedShell />, children: [
     { index: true, element: <OverviewPage /> }, { path: "testgespraech", element: <ConversationPage /> },
+    { path: "anrufe", element: <CallsPage /> }, { path: "anrufe/:callId", element: <CallDetailPage /> },
     { path: "ki-konfigurieren", element: <PermissionRoute permission="company.manage"><AgentSettingsPage /></PermissionRoute> },
     { path: "kalender", element: <PermissionRoute permission="company.manage"><CalendarSettingsPage /></PermissionRoute> },
     { path: "termine", element: <AppointmentsPage /> }, { path: "leistungen", element: <PermissionRoute permission="company.manage"><ServicesPage /></PermissionRoute> },
