@@ -210,6 +210,21 @@ export interface RealtimeAttemptFinish {
   technical_message?: string | null;
 }
 export interface Health { status: string; database: string; }
+export type CallStatus = "open" | "done";
+export type CallPriority = "normal" | "important" | "urgent";
+export type CallCategory = "appointment" | "callback" | "price_request" | "general_question" | "complaint" | "new_customer" | "existing_customer" | "other";
+export type CallAnalysisStatus = "not_requested" | "pending" | "processing" | "completed" | "failed";
+export interface CallTranscriptTurn { speaker: "agent" | "customer"; text: string; }
+export interface CallListItem {
+  id: string; started_at: string; caller_name: string | null; caller_phone: string | null;
+  category: CallCategory | null; result: string | null; action_required: boolean;
+  priority: CallPriority; status: CallStatus; duration_seconds: number | null;
+  analysis_status: CallAnalysisStatus;
+}
+export interface CallDetail extends CallListItem {
+  ended_at: string | null; external_call_id: string | null; phone_number_id: string | null;
+  transcript: CallTranscriptTurn[]; summary: string | null; action_items: string[];
+}
 export interface PlatformData {
   tenant: Tenant; services: Service[]; staff: StaffMember[]; appointments: Appointment[];
   platformStatus: PlatformStatus; health: Health;

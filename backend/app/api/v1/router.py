@@ -16,6 +16,7 @@ from app.api.dependencies import (
 from app.api.v1.agent import router as agent_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
+from app.api.v1.calls import router as calls_router
 from app.api.v1.company import router as company_router
 from app.api.v1.platform import router as platform_router
 from app.api.v1.twilio import router as twilio_router
@@ -50,6 +51,7 @@ router = APIRouter()
 router.include_router(auth_router)
 router.include_router(agent_router)
 router.include_router(calendar_router)
+router.include_router(calls_router)
 router.include_router(platform_router)
 router.include_router(company_router)
 router.include_router(twilio_router)

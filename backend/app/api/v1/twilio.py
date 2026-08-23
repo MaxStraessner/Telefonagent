@@ -14,6 +14,7 @@ from app.core.config import Settings, get_settings
 from app.db.session import bind_tenant_context, get_db
 from app.models import CallChannel, CallSession, Tenant, TenantInboundRoute, TenantStatus
 from app.services.agent_runtime import build_runtime_config
+from app.services.call_analysis import analyze_call_safely
 from app.services.call_lifecycle import CallLifecycleError, CallLifecycleService
 from app.services.conversation_tools import ConversationToolDispatcher
 from app.services.tenant_resolution import InboundRouteTenantResolver, TenantResolutionError
@@ -160,10 +161,28 @@ async def inbound_voice(
     try:
         to_number = validate_e164(to_number)
         context = InboundRouteTenantResolver(db).resolve("phone_number", to_number)
+        route = db.scalar(select(TenantInboundRoute).where(
+            TenantInboundRoute.tenant_id == context.id,
+            TenantInboundRoute.route_type == "phone_number",
+            TenantInboundRoute.normalized_identifier == to_number,
+            TenantInboundRoute.is_active.is_(True),
+        ))
+        if route is None:
+            raise TenantResolutionError("Eingehende Route ist nicht verfügbar.")
+        try:
+            caller_phone = validate_e164(params.get("From", ""))
+        except TwilioServiceError:
+            caller_phone = None
         runtime = build_runtime_config(db, context, settings, test_mode=False)
         call, _created = CallLifecycleService(
             db, context.id
-        ).provision_provider_call(CallChannel.telephone, call_sid, runtime)
+        ).provision_provider_call(
+            CallChannel.telephone,
+            call_sid,
+            runtime,
+            phone_number_id=route.id,
+            caller_phone=caller_phone,
+        )
         if call.status not in {"provisioned", "connected"}:
             return _reject_call()
         token = issue_call_token(
@@ -238,6 +257,7 @@ async def media_stream(
     await websocket.accept()
     context: TenantContext | None = None
     call: CallSession | None = None
+    bridge: TwilioMediaBridge | None = None
     try:
         connected_event = await _receive_setup_event(
             websocket, error_code="invalid_connected_event"
@@ -312,7 +332,7 @@ async def media_stream(
         dispatcher = ConversationToolDispatcher(
             db, settings, context, call.id
         )
-        await TwilioMediaBridge(
+        bridge = TwilioMediaBridge(
             websocket,
             settings,
             context,
@@ -320,16 +340,25 @@ async def media_stream(
             stream_sid,
             dispatcher,
             initial_sequence,
-        ).run()
-        CallLifecycleService(db, context.id).finish(call.id)
+        )
+        await bridge.run()
+        CallLifecycleService(db, context.id).finish(
+            call.id, transcript=bridge.transcript
+        )
     except WebSocketDisconnect:
         if context and call:
-            CallLifecycleService(db, context.id).finish(call.id)
+            CallLifecycleService(db, context.id).finish(
+                call.id, transcript=bridge.transcript if bridge else None
+            )
     except (TwilioMediaError, TwilioServiceError, CallLifecycleError) as exc:
         db.rollback()
         if context and call:
             CallLifecycleService(db, context.id).finish(
-                call.id, status="failed", phase="telephone_bridge", error_code=str(exc)
+                call.id,
+                status="failed",
+                phase="telephone_bridge",
+                error_code=str(exc),
+                transcript=bridge.transcript if bridge else None,
             )
         log_context = {
             "event_name": "twilio_media_rejected",
@@ -343,7 +372,14 @@ async def media_stream(
         db.rollback()
         if context and call:
             CallLifecycleService(db, context.id).finish(
-                call.id, status="failed", phase="telephone_bridge", error_code="telephone_bridge_failed"
+                call.id,
+                status="failed",
+                phase="telephone_bridge",
+                error_code="telephone_bridge_failed",
+                transcript=bridge.transcript if bridge else None,
             )
         logger.error("twilio_media_failed", extra={"event_name": "twilio_media_failed"})
         await websocket.close(code=1011)
+    finally:
+        if context and call:
+            await analyze_call_safely(db, settings, context.id, call.id)

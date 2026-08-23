@@ -1,4 +1,4 @@
-import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyTelephony, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant, TwilioNumber } from "../types/api";
+import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CallDetail, CallListItem, CallStatus, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyTelephony, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant, TwilioNumber } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -27,7 +27,7 @@ function withoutServerFields<T extends object>(value: T, fields: ReadonlyArray<k
   return Object.fromEntries(Object.entries(value).filter(([key]) => !excluded.has(key))) as Partial<T>;
 }
 
-async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; suppressUnauthorizedEvent?: boolean; loginRequest?: boolean; keepalive?: boolean } = {}): Promise<T> {
+async function request<T>(path: string, options: { signal?: AbortSignal; method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; suppressUnauthorizedEvent?: boolean; loginRequest?: boolean; keepalive?: boolean } = {}): Promise<T> {
   try {
     const method = options.method ?? "GET";
     const csrf = method !== "GET" && !options.loginRequest ? csrfToken() : null;
@@ -113,6 +113,10 @@ export const api = {
   updateService: (id: string, value: Omit<Service, "id">) => request<Service>(`/services/${id}`, { method: "PUT", body: value }),
   staff: (signal?: AbortSignal) => request<StaffMember[]>("/staff", { signal }),
   appointments: (signal?: AbortSignal) => request<Appointment[]>("/appointments", { signal }),
+  calls: (signal?: AbortSignal) => request<CallListItem[]>("/calls", { signal }),
+  call: (id: string, signal?: AbortSignal) => request<CallDetail>(`/calls/${encodeURIComponent(id)}`, { signal }),
+  updateCallStatus: (id: string, status: CallStatus) => request<CallDetail>(`/calls/${encodeURIComponent(id)}`, { method: "PATCH", body: { status } }),
+  retryCallAnalysis: (id: string) => request<{ id: string; analysis_status: CallDetail["analysis_status"] }>(`/calls/${encodeURIComponent(id)}/analysis/retry`, { method: "POST" }),
   calendarAgenda: (start: string, end: string, signal?: AbortSignal) => request<CalendarAgenda>(`/calendar/appointments?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal }),
   status: (signal?: AbortSignal) => request<PlatformStatus>("/platform/status", { signal }),
   health: (signal?: AbortSignal) => request<Health>("/health", { signal }),

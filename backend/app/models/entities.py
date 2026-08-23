@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -663,6 +664,12 @@ class CallSession(Base):
         UniqueConstraint(
             "channel", "provider_session_id", name="uq_call_sessions_channel_provider_session"
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "phone_number_id"],
+            ["tenant_inbound_routes.tenant_id", "tenant_inbound_routes.id"],
+            name="fk_call_sessions_phone_number_tenant",
+        ),
+        Index("ix_call_sessions_tenant_started_at", "tenant_id", "started_at"),
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
@@ -671,6 +678,9 @@ class CallSession(Base):
     status: Mapped[str] = mapped_column(String(50))
     provider_session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone_number_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    caller_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    caller_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     configuration_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     runtime_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     runtime_manifest_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -682,11 +692,27 @@ class CallSession(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inbox_status: Mapped[str] = mapped_column(String(20), default="done", index=True)
+    transcript: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    action_items: Mapped[list] = mapped_column(JSON, default=list)
+    priority: Mapped[str] = mapped_column(String(20), default="normal")
+    analysis_status: Mapped[str] = mapped_column(String(20), default="not_requested", index=True)
+    analysis_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_phase: Mapped[str | None] = mapped_column(String(50), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     failure_retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ToolExecution(Base):

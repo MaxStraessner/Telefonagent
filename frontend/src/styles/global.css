@@ -332,3 +332,41 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 .telephony-card { display: grid; gap: 1rem; }
 .telephony-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .telephony-details code { overflow-wrap: anywhere; white-space: normal; }
+
+/* Call history ---------------------------------------------------------- */
+.call-history-table { margin-top: 24px; }
+.call-history-table table { min-width: 1040px; }
+.call-history-table td a { display: block; }
+.call-history-table td a:hover strong { color: var(--primary); }
+.call-history-table td { max-width: 270px; }
+.call-history-table td:nth-child(4) { color: var(--text-soft); }
+.call-priority { display: inline-flex; min-height: 26px; padding: 4px 9px; align-items: center; border-radius: 999px; color: var(--text-soft); background: var(--surface-soft); font-size: .72rem; font-weight: 650; white-space: nowrap; }
+.call-priority.important { color: var(--warning); background: var(--warning-soft); }
+.call-priority.urgent { color: var(--danger); background: color-mix(in srgb,var(--danger) 10%,var(--surface)); }
+.call-mobile-list { gap: 12px; }
+.call-list-card { padding: 18px; }
+.call-list-card > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.call-list-card small,.call-list-card > span { color: var(--text-soft); }
+.call-list-card p { margin: 14px 0 5px; font-weight: 650; }
+.call-detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.call-detail-grid { grid-template-columns: minmax(280px,.72fr) minmax(420px,1.28fr); align-items: start; }
+.call-analysis-card,.call-transcript-card { padding: 28px; }
+.call-analysis-card .section-heading,.call-transcript-card .section-heading { margin-top: 0; }
+.call-analysis-card .notice { margin: 18px 0; flex-wrap: wrap; }
+.call-analysis-card .notice .button { margin-left: auto; }
+.analysis-list { display: grid; gap: 0; margin: 0; }
+.analysis-list > div { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.analysis-list > div:last-child { border-bottom: 0; }
+.analysis-list dt { margin-bottom: 5px; color: var(--text-faint); font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.analysis-list dd { margin: 0; }
+.analysis-list ul { margin: 0; padding-left: 20px; }
+.analysis-list .action-required { margin: 10px 0; padding: 14px; border: 1px solid color-mix(in srgb,var(--warning) 28%,var(--border)); border-radius: 12px; color: var(--warning); background: var(--warning-soft); }
+.call-transcript-card { margin-top: 18px; }
+.call-transcript { display: grid; gap: 12px; }
+.call-transcript-turn { max-width: 82%; padding: 15px 17px; border-radius: 16px; background: var(--surface-soft); }
+.call-transcript-turn.agent { justify-self: start; border-left: 3px solid var(--primary); }
+.call-transcript-turn.customer { justify-self: end; border-right: 3px solid var(--success); }
+.call-transcript-turn strong { color: var(--text-faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
+.call-transcript-turn p { margin: 5px 0 0; white-space: pre-wrap; }
+@media (max-width: 900px) { .call-detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .call-detail-actions { display: grid; width: 100%; }.call-transcript-turn { max-width: 94%; }.call-analysis-card,.call-transcript-card { padding: 20px; } }

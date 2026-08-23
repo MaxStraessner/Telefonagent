@@ -427,7 +427,7 @@ def test_call_token_binds_tenant_session_and_call_sid():
 def test_signed_voice_webhook_is_idempotent_and_tenant_scoped(anonymous_client, db):
     tenant = _tenant(db)
     _cleanup(db, tenant.id)
-    db.add(TenantInboundRoute(
+    route = TenantInboundRoute(
         tenant_id=tenant.id,
         route_type="phone_number",
         normalized_identifier=PHONE_NUMBER,
@@ -435,11 +435,17 @@ def test_signed_voice_webhook_is_idempotent_and_tenant_scoped(anonymous_client, 
         provider="twilio",
         provider_resource_id=PHONE_SID,
         provider_sync_status="synced",
-    ))
+    )
+    db.add(route)
     db.commit()
     settings = twilio_settings()
     app.dependency_overrides[get_settings] = lambda: settings
-    params = {"AccountSid": ACCOUNT_SID, "CallSid": CALL_SID, "To": PHONE_NUMBER}
+    params = {
+        "AccountSid": ACCOUNT_SID,
+        "CallSid": CALL_SID,
+        "To": PHONE_NUMBER,
+        "From": "+491701234567",
+    }
     signature = RequestValidator(AUTH_TOKEN).compute_signature(
         voice_url(settings), params
     )
@@ -465,6 +471,9 @@ def test_signed_voice_webhook_is_idempotent_and_tenant_scoped(anonymous_client, 
     )) == 1
     call = db.scalar(select(CallSession).where(CallSession.provider_session_id == CALL_SID))
     assert call.status == "provisioned"
+    assert call.phone_number_id == route.id
+    assert call.caller_phone == "+491701234567"
+    assert call.analysis_status == "pending"
     assert call.runtime_manifest_digest
     assert "instructions" not in (call.runtime_manifest_snapshot or {})
     _cleanup(db, tenant.id)
@@ -825,3 +834,33 @@ def test_media_tool_result_keeps_call_id_and_creates_one_response(db):
     assert openai.sent[0]["item"]["call_id"] == "call-tool-1"
     assert [item["type"] for item in openai.sent].count("response.create") == 1
     assert dispatcher.marked == ["call-tool-1"]
+
+
+def test_media_bridge_collects_customer_and_agent_transcript(db):
+    tenant = _tenant(db)
+    context = TenantContext(id=tenant.id, tenant=tenant)
+    runtime = build_runtime_config(db, context, twilio_settings(), test_mode=False)
+    bridge = TwilioMediaBridge(
+        None,
+        twilio_settings(),
+        context,
+        runtime,
+        STREAM_SID,
+        None,
+        1,
+    )
+
+    asyncio.run(bridge._handle_openai_event(None, {
+        "type": "response.output_audio_transcript.done",
+        "transcript": "Guten Tag, wie kann ich helfen?",
+    }))
+    asyncio.run(bridge._handle_openai_event(None, {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "Ich hätte gerne einen Termin.",
+    }))
+
+    assert bridge.transcript == [
+        {"speaker": "agent", "text": "Guten Tag, wie kann ich helfen?"},
+        {"speaker": "customer", "text": "Ich hätte gerne einen Termin."},
+    ]
+    assert bridge.latest_user_utterance == "Ich hätte gerne einen Termin."
