@@ -26,6 +26,13 @@ class TranscriptTurn(BaseModel):
 
     speaker: Literal["agent", "customer"]
     text: str = Field(min_length=1, max_length=20_000)
+    segment_id: str | None = None
+    event_id: str | None = None
+    previous_item_id: str | None = None
+    state: Literal["provisional", "confirmed", "interrupted"] = "confirmed"
+    received_at: datetime | None = None
+    start_ms: int | None = Field(default=None, ge=0)
+    end_ms: int | None = Field(default=None, ge=0)
 
     @field_validator("text")
     @classmethod
@@ -43,6 +50,11 @@ class CallAnalysisResult(BaseModel):
     action_required: bool
     action_items: list[str] = Field(max_length=20)
     priority: CallPriority
+    main_concern: str | None = Field(default=None, max_length=1000)
+    contact_phone: str | None = Field(default=None, max_length=50)
+    contact_email: str | None = Field(default=None, max_length=320)
+    callback_required: bool | None = None
+    appointment_request: str | None = Field(default=None, max_length=1000)
 
     @field_validator("caller_name")
     @classmethod
@@ -76,6 +88,11 @@ class CallListItem(BaseModel):
     status: CallInboxStatus
     duration_seconds: int | None
     analysis_status: CallAnalysisStatus
+    operating_mode: str | None = None
+    voice_model: str | None = None
+    call_status: str = "unknown"
+    callback_required: bool | None = None
+    documentation_status: str = "legacy"
 
 
 class CallDetail(CallListItem):
@@ -85,6 +102,12 @@ class CallDetail(CallListItem):
     transcript: list[TranscriptTurn]
     summary: str | None
     action_items: list[str]
+    analysis_details: dict | None = None
+    analysis_error_code: str | None = None
+    error_code: str | None = None
+    actions: list[dict] = Field(default_factory=list)
+    appointments: list[dict] = Field(default_factory=list)
+    content_deleted_at: datetime | None = None
 
 
 class CallStatusUpdate(BaseModel):

@@ -194,7 +194,7 @@ def test_call_analysis_parses_supported_business_cases(monkeypatch, analysis):
             uuid4(),
         )
     )
-    assert result.model_dump() == analysis
+    assert result.model_dump(include=set(analysis)) == analysis
     assert FakeResponsesClient.last_json["model"] == "gpt-5.4-nano"
     assert FakeResponsesClient.last_json["store"] is False
     assert FakeResponsesClient.last_json["text"]["format"]["strict"] is True

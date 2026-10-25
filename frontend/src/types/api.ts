@@ -194,7 +194,7 @@ export interface RuntimeManifest {
   capability_keys: string[]; tools: RuntimeToolDefinition[]; tool_names: string[];
   tools_digest: string; maximum_session_minutes: number; max_output_tokens: number;
   transcription_enabled: boolean; raw_event_logging: boolean; vad: RealtimeVadConfig;
-  setting_targets: Record<string, "prompt" | "session" | "tools" | "ui_only">;
+  setting_targets: Record<string, "prompt" | "session" | "tools" | "storage" | "ui_only">;
 }
 export interface RealtimeSessionBootstrap {
   secret: RealtimeClientSecret;
@@ -214,16 +214,22 @@ export type CallStatus = "open" | "done";
 export type CallPriority = "normal" | "important" | "urgent";
 export type CallCategory = "appointment" | "callback" | "price_request" | "general_question" | "complaint" | "new_customer" | "existing_customer" | "other";
 export type CallAnalysisStatus = "not_requested" | "pending" | "processing" | "completed" | "failed";
-export interface CallTranscriptTurn { speaker: "agent" | "customer"; text: string; }
+export interface CallTranscriptTurn { speaker: "agent" | "customer"; text: string; segment_id?: string; state?: "provisional" | "confirmed" | "interrupted"; start_ms?: number | null; end_ms?: number | null; received_at?: string | null; }
 export interface CallListItem {
   id: string; started_at: string; caller_name: string | null; caller_phone: string | null;
   category: CallCategory | null; result: string | null; action_required: boolean;
   priority: CallPriority; status: CallStatus; duration_seconds: number | null;
   analysis_status: CallAnalysisStatus;
+  operating_mode?: "agent" | "answering_machine" | null; voice_model?: string | null;
+  call_status?: string; callback_required?: boolean | null; documentation_status?: string;
 }
 export interface CallDetail extends CallListItem {
   ended_at: string | null; external_call_id: string | null; phone_number_id: string | null;
   transcript: CallTranscriptTurn[]; summary: string | null; action_items: string[];
+  analysis_details?: { main_concern: string | null; contact_phone: string | null; contact_email: string | null; callback_required: boolean | null; appointment_request: string | null } | null;
+  actions?: { tool_name: string; status: string; success: boolean | null; error_code: string | null }[];
+  appointments?: { id: string; status: string; start_at: string; external_event_id: string | null; service_name: string }[];
+  analysis_error_code?: string | null; error_code?: string | null; content_deleted_at?: string | null;
 }
 export interface PlatformData {
   tenant: Tenant; services: Service[]; staff: StaffMember[]; appointments: Appointment[];
@@ -234,6 +240,7 @@ export interface AgentListItem { id?: string | null; is_active: boolean; sort_or
 export interface AgentTopic extends AgentListItem { label: string; instructions: string; topic_type: "allowed" | "forbidden"; }
 export interface AgentRule extends AgentListItem { rule_text: string; }
 export interface AgentConfiguration {
+  operating_mode: "agent" | "answering_machine"; message_greeting: string; call_retention_days: number;
   tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "company_admin" | "company_user" | "platform_admin";
   company_name: string; assistant_name: string; assistant_role: string; transparency_notice: string;
   address_formality: "formal" | "informal"; language: "de";

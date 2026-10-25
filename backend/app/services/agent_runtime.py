@@ -21,6 +21,9 @@ from app.services.tool_projections import ToolProjectionError, canonical_tools_d
 
 RUNTIME_MANIFEST_SCHEMA_VERSION = "1"
 SETTING_TARGETS = {
+    "operating_mode": "tools",
+    "message_greeting": "prompt",
+    "call_retention_days": "storage",
     "company_name": "prompt",
     "assistant_name": "prompt",
     "assistant_role": "prompt",
@@ -65,7 +68,7 @@ SETTING_TARGETS = {
 
 @dataclass(frozen=True)
 class AgentRuntimeConfig:
-    bundle: AgentBundle
+    bundle: AgentBundle | None
     prompt: str
     greeting: str
     model: str
@@ -82,7 +85,7 @@ class AgentRuntimeConfig:
 
     @property
     def version(self) -> int:
-        return self.bundle.configuration.version
+        return self.manifest.configuration_version
 
 
 def _json_safe(value):
@@ -175,6 +178,8 @@ def build_runtime_config(
         greeting = config.test_greeting
     else:
         greeting = config.standard_greeting if is_open_now(bundle, timezone_name) else config.outside_hours_greeting
+    if config.operating_mode == "answering_machine":
+        greeting = config.message_greeting
     if config.turn_detection_type.value == "semantic_vad":
         turn_detection: dict[str, object] = {
             "type": "semantic_vad", "eagerness": config.turn_eagerness.value,
@@ -191,6 +196,9 @@ def build_runtime_config(
             turn_detection["idle_timeout_ms"] = config.idle_timeout_ms
     capabilities = active_capabilities(bundle)
     tools = realtime_tools(bundle)
+    if config.operating_mode == "answering_machine":
+        capabilities = []
+        tools = []
     try:
         tools_digest = canonical_tools_digest(tools)
     except ToolProjectionError as exc:
@@ -247,4 +255,17 @@ def build_runtime_config(
         tool_choice="auto" if tools else "none", capability_keys=[item.key for item in capabilities],
         prompt_sections=SECTION_NAMES, business_hours_status=business_hours_status,
         timezone=timezone_name, manifest=manifest,
+    )
+
+
+def restore_call_runtime(snapshot: dict) -> AgentRuntimeConfig:
+    """Use the immutable manifest captured when the call was provisioned."""
+    manifest = RuntimeManifestResponse.model_validate(snapshot)
+    return AgentRuntimeConfig(
+        bundle=None, prompt=manifest.instructions, greeting=manifest.welcome_message,
+        model=manifest.model, voice=manifest.voice, speed=manifest.speed,
+        turn_detection=manifest.vad.model_dump(mode="json", exclude_none=True),
+        tools=manifest.tools, tool_choice="auto" if manifest.tools else "none",
+        capability_keys=manifest.capability_keys, prompt_sections=SECTION_NAMES,
+        business_hours_status="snapshot", timezone=manifest.timezone, manifest=manifest,
     )

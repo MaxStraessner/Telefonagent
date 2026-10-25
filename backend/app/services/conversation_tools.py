@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.dependencies import TenantContext
 from app.calendar.errors import CalendarError
 from app.core.config import Settings
-from app.models import BookingState, CalendarAppointmentType, Service, ToolExecution
+from app.models import BookingState, CalendarAppointmentType, CallSession, Service, ToolExecution
 from app.schemas.calendar import (
     AvailabilityResponse,
     CalendarBookingResponse,
@@ -147,6 +147,11 @@ class ConversationToolDispatcher:
         call_id: str,
         latest_confirmed_user_utterance: str | None,
     ) -> dict[str, Any]:
+        session = self.db.scalar(select(CallSession).where(
+            CallSession.id == self.call_session_id, CallSession.tenant_id == self.context.id,
+        ))
+        if session is None or session.operating_mode == "answering_machine":
+            return {"success": False, "error_code": "actions_disabled", "message": "In diesem Gespräch sind keine Aktionen erlaubt."}
         payload_values = {
             **arguments,
             "session_id": self.call_session_id,

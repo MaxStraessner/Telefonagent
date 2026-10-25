@@ -27,6 +27,8 @@ class ToolAudit:
         self.session = db.scalar(
             select(CallSession).where(CallSession.id == session_id, CallSession.tenant_id == tenant_id)
         )
+        if self.session and self.session.operating_mode == "answering_machine":
+            raise HTTPException(status_code=403, detail={"code": "actions_disabled", "message": "Im Anrufbeantwortermodus sind Aktionen deaktiviert."})
         self.context = db.scalar(
             select(BookingConversation).where(
                 BookingConversation.call_session_id == session_id,

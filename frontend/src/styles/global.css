@@ -335,7 +335,7 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 
 /* Call history ---------------------------------------------------------- */
 .call-history-table { margin-top: 24px; }
-.call-history-table table { min-width: 1040px; }
+.call-history-table table { min-width: 840px; }
 .call-history-table td a { display: block; }
 .call-history-table td a:hover strong { color: var(--primary); }
 .call-history-table td { max-width: 270px; }
@@ -347,9 +347,14 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 .call-list-card { padding: 18px; }
 .call-list-card > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .call-list-card small,.call-list-card > span { color: var(--text-soft); }
+.call-list-card small { display: block; margin-top: 6px; }
 .call-list-card p { margin: 14px 0 5px; font-weight: 650; }
 .call-detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .call-detail-grid { grid-template-columns: minmax(280px,.72fr) minmax(420px,1.28fr); align-items: start; }
+.call-detail-grid .detail-card dl div { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
+.call-detail-grid .detail-card dd { overflow-wrap: anywhere; }
+.call-detail-page > section + section { margin-top: 18px; }
+.agent-settings-page .agent-field { align-content: start; }
 .call-analysis-card,.call-transcript-card { padding: 28px; }
 .call-analysis-card .section-heading,.call-transcript-card .section-heading { margin-top: 0; }
 .call-analysis-card .notice { margin: 18px 0; flex-wrap: wrap; }
@@ -367,6 +372,8 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 .call-transcript-turn.agent { justify-self: start; border-left: 3px solid var(--primary); }
 .call-transcript-turn.customer { justify-self: end; border-right: 3px solid var(--success); }
 .call-transcript-turn strong { color: var(--text-faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
+.call-transcript-turn small { margin-left: 8px; color: var(--text-faint); font-size: .72rem; }
 .call-transcript-turn p { margin: 5px 0 0; white-space: pre-wrap; }
 @media (max-width: 900px) { .call-detail-grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .call-detail-actions { display: grid; width: 100%; }.call-transcript-turn { max-width: 94%; }.call-analysis-card,.call-transcript-card { padding: 20px; } }
+@media (min-width: 761px) and (max-width: 1150px) { .calls-page .desktop-table { display: none; }.calls-page .mobile-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .call-detail-actions { display: grid; width: 100%; }.call-transcript-turn { max-width: 94%; }.call-analysis-card,.call-transcript-card { padding: 20px; }.call-detail-grid .detail-card dl div { grid-template-columns: 1fr; } }

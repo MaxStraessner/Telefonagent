@@ -44,6 +44,24 @@ beforeEach(() => { window.history.replaceState({}, "", "/"); });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Call History", () => {
+  it("trennt Terminwunsch, vorläufige Transkription und tatsächliche Buchungen", async () => {
+    window.history.replaceState({}, "", "/anrufe/call-1");
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      return response(url.endsWith("/calls/call-1") ? { ...call,
+        operating_mode: "answering_machine", voice_model: "gpt-realtime-2.1", callback_required: true,
+        analysis_details: { main_concern: "Bitte zurückrufen", appointment_request: "Freitagvormittag", contact_phone: null, contact_email: null },
+        transcript: [{ speaker: "customer", text: "Unvollständiger Satz", state: "provisional", start_ms: 1250 }],
+        actions: [], appointments: [],
+      } : baseBody(url));
+    }));
+    render(<App />);
+    expect(await screen.findByText("Anrufbeantworter")).toBeInTheDocument();
+    expect(screen.getByText("Freitagvormittag")).toBeInTheDocument();
+    expect(screen.getByText("Keine Terminbuchung verknüpft.")).toBeInTheDocument();
+    expect(screen.getByText(/Vorläufig ·/)).toBeInTheDocument();
+    expect(screen.getByText("Gewünscht")).toBeInTheDocument();
+  });
   it("lädt die Anrufliste mit den fachlichen Ergebnissen", async () => {
     window.history.replaceState({}, "", "/anrufe");
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {

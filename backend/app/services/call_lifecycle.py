@@ -34,7 +34,7 @@ class CallLifecycleService:
         self,
         channel: CallChannel,
         provider_session_id: str,
-        runtime: AgentRuntimeConfig,
+        runtime: AgentRuntimeConfig | None,
         *,
         phone_number_id: UUID | None = None,
         caller_phone: str | None = None,
@@ -57,8 +57,10 @@ class CallLifecycleService:
             ),
             bootstrap_status="completed",
             runtime_state="connecting",
+            documentation_status="recording" if channel == CallChannel.telephone else "legacy",
         )
-        self.record_runtime(call, runtime, commit=False)
+        if runtime is not None:
+            self.record_runtime(call, runtime, commit=False)
         self.db.add(call)
         try:
             self.db.commit()
@@ -77,16 +79,17 @@ class CallLifecycleService:
         manifest = runtime.manifest
         call.configuration_version = runtime.version
         call.runtime_manifest_digest = manifest.digest
-        call.runtime_manifest_snapshot = {
-            "model": manifest.model,
-            "voice": manifest.voice,
-            "speed": manifest.speed,
-            "language": manifest.language,
-            "prompt_digest": manifest.prompt_digest,
-            "tool_names": manifest.tool_names,
-            "tools_digest": manifest.tools_digest,
-            "vad": manifest.vad.model_dump(mode="json", exclude_none=True),
-        }
+        call.runtime_manifest_snapshot = (
+            manifest.model_dump(mode="json") if call.channel == CallChannel.telephone else {
+                "model": manifest.model, "voice": manifest.voice, "speed": manifest.speed,
+                "language": manifest.language, "prompt_digest": manifest.prompt_digest,
+                "tool_names": manifest.tool_names, "tools_digest": manifest.tools_digest,
+                "vad": manifest.vad.model_dump(mode="json", exclude_none=True),
+            }
+        )
+        call.voice_model = manifest.model
+        call.operating_mode = runtime.bundle.configuration.operating_mode if runtime.bundle else call.operating_mode
+        call.documentation_status = "recording"
         call.configuration_status = "server_managed"
         if commit:
             self.db.commit()
@@ -105,6 +108,48 @@ class CallLifecycleService:
         self.db.commit()
         self.db.refresh(call)
         return call
+
+    def save_segment(self, call_id: UUID, segment: dict) -> None:
+        """Commit each segment independently; final text wins over delayed deltas."""
+        from app.schemas.calls import TranscriptTurn
+        turn = TranscriptTurn.model_validate(segment).model_dump(mode="json", exclude_none=True)
+        call = self.db.scalar(select(CallSession).where(
+            CallSession.id == call_id, CallSession.tenant_id == self.tenant_id,
+        ).with_for_update().execution_options(populate_existing=True))
+        if call is None or call.content_deleted_at:
+            self.db.rollback()
+            return
+        turns = list(call.transcript or [])
+        segment_id = turn.get("segment_id")
+        index = next((i for i, item in enumerate(turns) if segment_id and item.get("segment_id") == segment_id), None)
+        if index is not None:
+            previous = turns[index]
+            merged = {**previous, **turn}
+            fields = ("text", "state", "speaker", "start_ms", "end_ms", "previous_item_id")
+            if all(previous.get(key) == merged.get(key) for key in fields) or (previous.get("state") in {"confirmed", "interrupted"} and turn.get("state") == "provisional"):
+                self.db.rollback()
+                return
+            turns[index] = merged
+        else:
+            turns.append(turn)
+        # Link known predecessors before their successors, including late arrivals.
+        ordered: list[dict] = []
+        remaining = list(turns)
+        while remaining:
+            ids = {item.get("segment_id") for item in remaining}
+            ready = next((item for item in remaining if item.get("previous_item_id") not in ids), remaining[0])
+            ordered.append(ready)
+            remaining.remove(ready)
+        call.transcript = ordered
+        call.transcript_revision = (call.transcript_revision or 0) + 1
+        if call.ended_at:
+            from datetime import timedelta
+            call.analysis_status = "pending"
+            call.analysis_lease_token = None
+            call.analysis_attempts = 0
+            call.analysis_next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=10)
+        call.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
 
     def finish(
         self,
@@ -129,8 +174,18 @@ class CallLifecycleService:
             call.failure_phase = phase
             call.error_code = error_code
             call.runtime_state = status
-        if transcript is not None:
+        elif error_code and not call.error_code:
+            call.error_code = error_code
+            call.failure_phase = phase
+            call.documentation_status = "incomplete"
+        if transcript is not None and not call.content_deleted_at and not call.transcript_revision:
             call.transcript = transcript
+        if call.documentation_status == "recording":
+            complete = status == "ended" and not call.error_code and bool(call.transcript) and all(turn.get("state", "confirmed") != "provisional" for turn in call.transcript)
+            call.documentation_status = "complete" if complete else "incomplete"
+        if call.channel == CallChannel.telephone and call.analysis_status == "pending":
+            from datetime import timedelta
+            call.analysis_next_attempt_at = now + timedelta(seconds=10)
         if call.ended_at is not None:
             start = call.started_at or call.connected_at
             if start is not None:

@@ -13,8 +13,7 @@ from app.api.dependencies import TenantContext
 from app.core.config import Settings, get_settings
 from app.db.session import bind_tenant_context, get_db
 from app.models import CallChannel, CallSession, Tenant, TenantInboundRoute, TenantStatus
-from app.services.agent_runtime import build_runtime_config
-from app.services.call_analysis import analyze_call_safely
+from app.services.agent_runtime import build_runtime_config, restore_call_runtime
 from app.services.call_lifecycle import CallLifecycleError, CallLifecycleService
 from app.services.conversation_tools import ConversationToolDispatcher
 from app.services.tenant_resolution import InboundRouteTenantResolver, TenantResolutionError
@@ -55,6 +54,8 @@ def _reject_call() -> Response:
 
 def _stream_twiml(settings: Settings, token: str) -> Response:
     root = ET.Element("Response")
+    notice = ET.SubElement(root, "Say", {"language": "de-DE"})
+    notice.text = "Sie sprechen mit einem KI-Assistenten. Dieses Gespräch wird als Text transkribiert und ausgewertet. Wenn Sie dies nicht wünschen, legen Sie bitte auf und nutzen Sie einen anderen Kontaktweg."
     connect = ET.SubElement(root, "Connect")
     stream = ET.SubElement(
         connect,
@@ -138,6 +139,20 @@ async def _receive_setup_event(
     return event
 
 
+def _record_setup_failure(db, context, call, call_sid, route, caller_phone):
+    if context is None:
+        return
+    lifecycle = CallLifecycleService(db, context.id)
+    if call is None:
+        call, created = lifecycle.provision_provider_call(
+            CallChannel.telephone, call_sid, None,
+            phone_number_id=route.id if route else None, caller_phone=caller_phone,
+        )
+        if not created:
+            return
+    lifecycle.finish(call.id, status="failed", phase="telephone_setup", error_code="telephone_setup_failed")
+
+
 @router.post("/voice")
 async def inbound_voice(
     request: Request,
@@ -158,6 +173,10 @@ async def inbound_voice(
         or not CALL_SID_PATTERN.fullmatch(call_sid)
     ):
         return _reject_call()
+    context = None
+    call = None
+    route = None
+    caller_phone = None
     try:
         to_number = validate_e164(to_number)
         context = InboundRouteTenantResolver(db).resolve("phone_number", to_number)
@@ -173,16 +192,14 @@ async def inbound_voice(
             caller_phone = validate_e164(params.get("From", ""))
         except TwilioServiceError:
             caller_phone = None
-        runtime = build_runtime_config(db, context, settings, test_mode=False)
-        call, _created = CallLifecycleService(
-            db, context.id
-        ).provision_provider_call(
-            CallChannel.telephone,
-            call_sid,
-            runtime,
-            phone_number_id=route.id,
-            caller_phone=caller_phone,
-        )
+        lifecycle = CallLifecycleService(db, context.id)
+        call = lifecycle.find_provider_call(CallChannel.telephone, call_sid)
+        if call is None:
+            runtime = build_runtime_config(db, context, settings, test_mode=False)
+            call, _ = lifecycle.provision_provider_call(
+                CallChannel.telephone, call_sid, runtime,
+                phone_number_id=route.id, caller_phone=caller_phone,
+            )
         if call.status not in {"provisioned", "connected"}:
             return _reject_call()
         token = issue_call_token(
@@ -195,9 +212,11 @@ async def inbound_voice(
         return _stream_twiml(settings, token)
     except (TenantResolutionError, TwilioServiceError):
         db.rollback()
+        _record_setup_failure(db, context, call, call_sid, route, caller_phone)
         return _reject_call()
     except Exception:
         db.rollback()
+        _record_setup_failure(db, context, call, call_sid, route, caller_phone)
         logger.error("twilio_voice_setup_failed", extra={"event_name": "twilio_voice_setup_failed"})
         return _reject_call()
 
@@ -325,9 +344,12 @@ async def media_stream(
         ))
         if route is None:
             raise TwilioMediaError("call_route_mismatch")
-        runtime = build_runtime_config(db, context, settings, test_mode=False)
-        if runtime.manifest.digest != call.runtime_manifest_digest:
-            raise TwilioMediaError("runtime_manifest_changed")
+        try:
+            runtime = restore_call_runtime(call.runtime_manifest_snapshot or {})
+            if runtime.manifest.tenant_id != context.id:
+                raise ValueError("runtime_tenant_mismatch")
+        except (TypeError, ValueError) as exc:
+            raise TwilioMediaError("runtime_snapshot_invalid") from exc
         CallLifecycleService(db, context.id).connect(call.id)
         dispatcher = ConversationToolDispatcher(
             db, settings, context, call.id
@@ -340,10 +362,11 @@ async def media_stream(
             stream_sid,
             dispatcher,
             initial_sequence,
+            transcript_sink=lambda turn: CallLifecycleService(db, context.id).save_segment(call.id, turn),
         )
         await bridge.run()
         CallLifecycleService(db, context.id).finish(
-            call.id, transcript=bridge.transcript
+            call.id, transcript=bridge.transcript, error_code=bridge.documentation_error
         )
     except WebSocketDisconnect:
         if context and call:
@@ -381,5 +404,11 @@ async def media_stream(
         logger.error("twilio_media_failed", extra={"event_name": "twilio_media_failed"})
         await websocket.close(code=1011)
     finally:
+        # ASGI may cancel the handler when the peer closes during final-event drain.
         if context and call:
-            await analyze_call_safely(db, settings, context.id, call.id)
+            CallLifecycleService(db, context.id).finish(
+                call.id,
+                status="ended" if bridge and bridge.twilio_stopped else "failed",
+                error_code=bridge.documentation_error if bridge and bridge.twilio_stopped else "stream_disconnected",
+                transcript=bridge.transcript if bridge else None,
+            )

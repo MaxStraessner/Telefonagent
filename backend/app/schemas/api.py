@@ -102,7 +102,7 @@ class RuntimeManifestResponse(BaseModel):
     transcription_enabled: bool
     raw_event_logging: bool
     vad: RealtimeVadResponse
-    setting_targets: dict[str, Literal["prompt", "session", "tools", "ui_only"]]
+    setting_targets: dict[str, Literal["prompt", "session", "tools", "storage", "ui_only"]]
 
 
 class RealtimeSessionBootstrapResponse(BaseModel):

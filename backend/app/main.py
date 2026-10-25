@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +15,20 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app):
+    from app.services.call_processing import call_processing_loop
+    task = asyncio.create_task(call_processing_loop(settings)) if settings.app_env != "test" else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.app_name,
     version=settings.backend_version,
     docs_url=None if settings.is_production else "/docs",
@@ -40,7 +55,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     if settings.is_production:
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
-    if request.url.path.startswith("/api/v1/auth"):
+    if request.url.path.startswith(("/api/v1/auth", "/api/v1/calls")):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
