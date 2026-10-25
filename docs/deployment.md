@@ -105,7 +105,7 @@ Das Skript akzeptiert keinen alternativen Branch oder Zielserver. Es:
 6. lädt exakt den GitHub-Commit in `/docker/telefonagent/releases/<commit>`;
 7. übernimmt die vorhandene Produktions-`.env` intern mit Modus `0600`, ohne Werte auszugeben;
 8. erstellt vor der Migration einen verifizierten PostgreSQL-Custom-Dump unter `/docker/telefonagent/backups`;
-9. validiert Basis- und Produktions-Compose, baut Images und stoppt kurz Backend sowie Frontend;
+9. validiert Basis- und Produktions-Compose, baut Backend, Frontend und ausdrücklich auch das Profil `migration` und stoppt kurz Backend sowie Frontend;
 10. führt den Migrationsservice mit `alembic upgrade head` aus und prüft anschließend die unprivilegierte Runtime-Rolle;
 11. prüft Backend und Frontend über `127.0.0.1:18001` und `127.0.0.1:18081`;
 12. setzt erst nach erfolgreichen Checks `/docker/telefonagent/current` auf das neue Release.

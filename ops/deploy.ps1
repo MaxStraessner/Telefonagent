@@ -248,7 +248,7 @@ compose() {
 }
 
 compose config --quiet
-compose build
+compose --profile migration build
 # Check again after the potentially long build. Read calls without terminating them.
 drained=false
 for _ in $(seq 1 60); do
