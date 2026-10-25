@@ -19,6 +19,7 @@ from app.models import (
     CalendarBookingStatus,
     CalendarConnection,
     CalendarConnectionStatus,
+    CallSession,
     ExternalCalendar,
 )
 from app.schemas.calendar import AvailableSlotResponse, CalendarBookingCreate
@@ -89,6 +90,14 @@ class CalendarBookingService:
         tool_call_id: str | None = None,
         conversation_session_id: UUID | None = None,
     ) -> BookingServiceResult:
+        if conversation_session_id is not None:
+            session = self.db.scalar(select(CallSession).where(
+                CallSession.id == conversation_session_id, CallSession.tenant_id == self.tenant_id,
+            ).execution_options(populate_existing=True))
+            if session is None:
+                raise CalendarError("invalid_conversation_session", "Die Gesprächssitzung ist ungültig.")
+            if session.operating_mode == "answering_machine":
+                raise CalendarError("actions_disabled", "Im Anrufbeantwortermodus sind Aktionen deaktiviert.")
         existing = self.existing_for_key(payload.idempotency_key)
         if existing is not None:
             if existing.status == CalendarBookingStatus.confirmed:

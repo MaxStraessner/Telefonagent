@@ -2,6 +2,8 @@
 
 25. Oktober 2026. Ausschließlich synthetische Daten; keine Produktivverbindung, keine bezahlten OpenAI-Aufrufe und keine echten Telefonanrufe.
 
+**Aktueller Stand:** [Umfassende technische QA und Abnahme nach Fehlerkorrekturen](acceptance-qa-2026-10-25.md). Die nachfolgenden Zahlen und Screenshots dokumentieren den ursprünglichen Implementierungsstand vor dieser zusätzlichen QA.
+
 ## Prüfungen
 
 Abschlussergebnis: **249 Backendtests erfolgreich**, einschließlich aller elf PostgreSQL-RLS-Tests im gemeinsamen Gesamtlauf; keine übersprungenen Tests in diesem Lauf. **110 Frontendtests erfolgreich**. Ruff, ESLint, Frontend-Produktionsbuild, Compose-Konfiguration und `git diff --check` erfolgreich.

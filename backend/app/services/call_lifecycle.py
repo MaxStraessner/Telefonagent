@@ -28,7 +28,7 @@ class CallLifecycleService:
             CallSession.channel == channel,
             CallSession.provider_session_id == provider_session_id,
         )
-        return self.db.scalar(statement.with_for_update() if for_update else statement)
+        return self.db.scalar((statement.with_for_update() if for_update else statement).execution_options(populate_existing=True))
 
     def provision_provider_call(
         self,
@@ -98,7 +98,7 @@ class CallLifecycleService:
         call = self.db.scalar(select(CallSession).where(
             CallSession.id == call_id,
             CallSession.tenant_id == self.tenant_id,
-        ).with_for_update())
+        ).with_for_update().execution_options(populate_existing=True))
         if call is None or call.status != "provisioned":
             self.db.rollback()
             raise CallLifecycleError("call_not_provisioned")
@@ -148,6 +148,8 @@ class CallLifecycleService:
             call.analysis_lease_token = None
             call.analysis_attempts = 0
             call.analysis_next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=10)
+            if call.status == "ended" and not call.error_code:
+                call.documentation_status = "complete" if all(item.get("state", "confirmed") != "provisional" for item in ordered) else "incomplete"
         call.updated_at = datetime.now(timezone.utc)
         self.db.commit()
 
@@ -163,8 +165,11 @@ class CallLifecycleService:
         call = self.db.scalar(select(CallSession).where(
             CallSession.id == call_id,
             CallSession.tenant_id == self.tenant_id,
-        ).with_for_update())
+        ).with_for_update().execution_options(populate_existing=True))
         if call is None:
+            self.db.rollback()
+            return
+        if call.content_deleted_at:
             self.db.rollback()
             return
         now = datetime.now(timezone.utc)

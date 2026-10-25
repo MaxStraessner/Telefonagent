@@ -2,4 +2,12 @@ __pycache__
 .pytest_cache
 .venv
 test.db
+.local-backups
+.ruff_cache
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 

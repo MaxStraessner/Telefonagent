@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
@@ -41,9 +41,34 @@ function baseBody(url: string): unknown {
 }
 
 beforeEach(() => { window.history.replaceState({}, "", "/"); });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Call History", () => {
+  it("zeigt gelöschte Inhalte nicht als ausstehende Analyse", async () => {
+    window.history.replaceState({}, "", "/anrufe");
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      return response(url.endsWith("/calls") ? [{ ...call, documentation_status: "deleted", analysis_status: "not_requested", result: null }] : baseBody(url));
+    }));
+    render(<App />);
+    expect((await screen.findAllByText("Gesprächsinhalte gelöscht")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Analyse ausstehend")).not.toBeInTheDocument();
+  });
+  it("aktualisiert eine asynchron fertiggestellte Auswertung automatisch", async () => {
+    vi.useFakeTimers();
+    window.history.replaceState({}, "", "/anrufe/call-1");
+    let finished = false;
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      return response(url.endsWith("/calls/call-1") ? { ...call, analysis_status: finished ? "completed" : "pending", summary: finished ? "Automatisch ausgewertet" : null } : baseBody(url));
+    }));
+    render(<App />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("Die Auswertung wird vorbereitet.")).toBeInTheDocument();
+    finished = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText("Automatisch ausgewertet")).toBeInTheDocument();
+  });
   it("trennt Terminwunsch, vorläufige Transkription und tatsächliche Buchungen", async () => {
     window.history.replaceState({}, "", "/anrufe/call-1");
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {

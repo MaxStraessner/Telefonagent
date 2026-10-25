@@ -277,6 +277,7 @@ async def media_stream(
     context: TenantContext | None = None
     call: CallSession | None = None
     bridge: TwilioMediaBridge | None = None
+    stream_owned = False
     try:
         connected_event = await _receive_setup_event(
             websocket, error_code="invalid_connected_event"
@@ -351,6 +352,7 @@ async def media_stream(
         except (TypeError, ValueError) as exc:
             raise TwilioMediaError("runtime_snapshot_invalid") from exc
         CallLifecycleService(db, context.id).connect(call.id)
+        stream_owned = True
         dispatcher = ConversationToolDispatcher(
             db, settings, context, call.id
         )
@@ -369,13 +371,13 @@ async def media_stream(
             call.id, transcript=bridge.transcript, error_code=bridge.documentation_error
         )
     except WebSocketDisconnect:
-        if context and call:
+        if context and call and stream_owned:
             CallLifecycleService(db, context.id).finish(
                 call.id, transcript=bridge.transcript if bridge else None
             )
     except (TwilioMediaError, TwilioServiceError, CallLifecycleError) as exc:
         db.rollback()
-        if context and call:
+        if context and call and (stream_owned or call.status == "provisioned"):
             CallLifecycleService(db, context.id).finish(
                 call.id,
                 status="failed",
@@ -393,7 +395,7 @@ async def media_stream(
         await websocket.close(code=1008)
     except Exception:
         db.rollback()
-        if context and call:
+        if context and call and (stream_owned or call.status == "provisioned"):
             CallLifecycleService(db, context.id).finish(
                 call.id,
                 status="failed",
@@ -405,7 +407,7 @@ async def media_stream(
         await websocket.close(code=1011)
     finally:
         # ASGI may cancel the handler when the peer closes during final-event drain.
-        if context and call:
+        if context and call and stream_owned:
             CallLifecycleService(db, context.id).finish(
                 call.id,
                 status="ended" if bridge and bridge.twilio_stopped else "failed",

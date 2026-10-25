@@ -31,13 +31,15 @@ Auch Fehler beim Aufbau der Laufzeit werden als fehlgeschlagene zugeordnete Anru
 
 Ein Lebenszyklus-Task im bestehenden Backend verarbeitet persistente Zustände in `call_sessions`; der Telefon-WebSocket wartet nicht auf OpenAI. Der Task öffnet pro Unternehmen einen eigenen RLS-gebundenen Datenbankkontext. Es gibt keine zusätzliche Queue-Infrastruktur.
 
+Unter PostgreSQL ermittelt die eng begrenzte Funktion `call_processing_tenant_ids()` zunächst nur Telefonie-Mandantenkennungen ohne Benutzerkontext. Der Task bindet danach jeden Inhaltszugriff ausdrücklich an das jeweilige Unternehmen. Die Funktion wird durch Migration 0017 eingerichtet. Verarbeitung erhält eine eigene zweiminütige Lease-Frist; auch Wiederaufnahmen nach Prozessverlust enden nach drei beanspruchten Versuchen.
+
 Das bestehende günstige Textmodell `gpt-5.4-nano` bleibt konfigurierbar. Strict JSON Schema und Pydantic validieren Zusammenfassung, Hauptanliegen, ausdrücklich genannte Kontaktdaten, Rückrufbedarf und Terminwunsch. Unbekannte Felder bleiben null. Das Modell erhält keine Aktionswerkzeuge und speichert die Responses-Anfrage nicht (`store=false`). Die tatsächlichen Aktionen und Buchungszustände werden separat aus Werkzeug- und Kalenderdatensätzen geladen; ein Terminwunsch ersetzt keine bestätigte Buchung.
 
 Ein atomarer Claim, ein Verarbeitungstoken und die Transkriptrevision schützen vor paralleler Verarbeitung und veralteten Ergebnissen. Neue späte Segmente stellen die Auswertung erneut zurück. Ergebnisse nach Inhaltslöschung werden verworfen. Timeouts, Transportfehler, HTTP 429 und 5xx werden mit begrenztem Backoff automatisch bis zu drei Versuchen wiederholt. Permanente Fehler verbleiben sichtbar; eine manuelle Wiederholung reiht die Verarbeitung neu ein. Nach zwei Minuten abgelaufene Verarbeitung wird wieder aufgenommen. Jede Runtime-Instanz kann den Task ausführen; Claims verhindern doppelte Ergebnisübernahmen.
 
 ## Datenbankänderung 0017
 
-Nur additive Spalten an vorhandenen Tabellen:
+Additive Spalten an vorhandenen Tabellen und eine PostgreSQL-Routingfunktion für die Hintergrundverarbeitung:
 
 - `agent_configurations`: `operating_mode` (Bestand: `agent`), `message_greeting`, `call_retention_days` (30, administrativ 1–365 Tage).
 - `call_sessions`: `operating_mode`, `voice_model`, `transcript_revision`, `documentation_status`, `analysis_details`, `analysis_next_attempt_at`, `analysis_lease_token`, `content_deleted_at`.
@@ -99,3 +101,5 @@ Die Änderung betrifft die vorhandenen Modelle und Schemas (`entities.py`, `agen
 Im Frontend wurden die vorhandenen Seiten `AgentSettingsPage.tsx`, `CallsPage.tsx`, `CallDetailPage.tsx`, API-Client, Typen und bestehende responsive Styles erweitert. Backendtests liegen in `test_call_modes.py` sowie den ergänzten Telefonie-, Historien- und Migrationstests; Frontendtests ergänzen die bestehenden Einstellungs- und Historienprüfungen.
 
 Prüfnachweise und synthetische Screenshots: [Verifikationsbericht](verification/call-modes/README.md). Die visuellen Prüfungen decken Desktop und echte iframe-Ansichtsbreiten von 390 Pixeln für Einstellungen, Historie und Details ab. Dabei wurden Formulargitter, Metadatenumbrüche, Tabellenbreite und mobile Anrufkarten nachgebessert. Die Screenshots enthalten ausschließlich eigens erzeugte synthetische Daten.
+
+Die zusätzliche umfassende technische QA mit Fehlerkorrekturen, tatsächlicher PostgreSQL-Prozesskette, Abhängigkeitsprüfung und offenen Abnahmegrenzen ist im [aktuellen Abnahmebericht](verification/call-modes/acceptance-qa-2026-10-25.md) dokumentiert. Der dort beschriebene vorbestehende ORM-/Migrationsdrift ist gesondert zu behandeln.

@@ -205,6 +205,7 @@ class CallAnalysisService:
             return call
 
         revision = call.transcript_revision
+        initial_inbox_status = call.inbox_status
         token = str(uuid4())
         claimed = self.db.execute(update(CallSession).where(
             CallSession.id == call_id, CallSession.tenant_id == self.tenant_id,
@@ -212,7 +213,8 @@ class CallAnalysisService:
             CallSession.transcript_revision == revision, CallSession.content_deleted_at.is_(None),
         ).values(analysis_status="processing", analysis_error_code=None,
                  analysis_attempts=CallSession.analysis_attempts + 1,
-                 analysis_lease_token=token, updated_at=datetime.now(timezone.utc)))
+                 analysis_lease_token=token, analysis_next_attempt_at=datetime.now(timezone.utc) + timedelta(minutes=2),
+                 updated_at=datetime.now(timezone.utc)))
         if not claimed.rowcount:
             self.db.rollback()
             return self._call(call_id)
@@ -263,7 +265,8 @@ class CallAnalysisService:
         call.action_items = analysis.action_items
         call.priority = analysis.priority
         call.analysis_details = analysis.model_dump(mode="json", include={"main_concern", "contact_phone", "contact_email", "callback_required", "appointment_request"})
-        call.inbox_status = "open" if analysis.action_required else "done"
+        if call.inbox_status == initial_inbox_status:
+            call.inbox_status = "open" if analysis.action_required else "done"
         call.analysis_status = "completed"
         call.analysis_lease_token = None
         call.analysis_next_attempt_at = None

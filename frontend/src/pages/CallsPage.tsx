@@ -38,6 +38,9 @@ export function formatCallDuration(seconds: number | null): string {
 }
 
 function analysisText(call: CallListItem): string {
+  if (call.documentation_status === "deleted") return "Gesprächsinhalte gelöscht";
+  if (call.call_status === "connected" || call.call_status === "provisioned") return callStatusLabel(call.call_status);
+  if (call.analysis_status === "not_requested") return "Keine Auswertung angefordert";
   if (call.analysis_status === "failed") return "Analyse fehlgeschlagen";
   if (call.analysis_status !== "completed") return "Analyse ausstehend";
   return call.result || "Kein Ergebnis festgehalten";

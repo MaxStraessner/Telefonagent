@@ -23,9 +23,23 @@ def upgrade():
         batch.add_column(sa.Column("analysis_lease_token", sa.String(36), nullable=True))
         batch.add_column(sa.Column("content_deleted_at", sa.DateTime(timezone=True), nullable=True))
     # Historical mode/model remain unknown; no retrospective model or mode is invented.
+    if op.get_bind().dialect.name == "postgresql":
+        # Like the inbound-route resolver, expose only routing identifiers. The
+        # worker must bind each returned tenant before reading any call content.
+        op.execute(sa.text("""
+            CREATE FUNCTION call_processing_tenant_ids() RETURNS SETOF uuid
+            LANGUAGE sql STABLE SECURITY DEFINER
+            SET search_path = pg_catalog, public, pg_temp
+            AS $$
+                SELECT DISTINCT tenant_id FROM public.call_sessions
+                WHERE channel = 'telephone' AND content_deleted_at IS NULL
+            $$
+        """))
 
 
 def downgrade():
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(sa.text("DROP FUNCTION IF EXISTS call_processing_tenant_ids()"))
     with op.batch_alter_table("call_sessions") as batch:
         for name in ("content_deleted_at", "analysis_lease_token", "analysis_next_attempt_at", "analysis_details", "documentation_status", "transcript_revision", "voice_model", "operating_mode"):
             batch.drop_column(name)

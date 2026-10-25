@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, or_, select, text
 
 from app.db.session import SessionLocal, bind_tenant_context
 from app.models import AgentConfiguration, CallChannel, CallSession, Tenant
@@ -38,36 +38,61 @@ async def process_tenant_calls(db, settings, tenant_id) -> None:
     calls = list(db.scalars(select(CallSession).where(
         CallSession.tenant_id == tenant_id, CallSession.channel == CallChannel.telephone,
         CallSession.content_deleted_at.is_(None),
-        or_(CallSession.ended_at.is_(None), CallSession.analysis_status.in_(["pending", "processing"]),
-            and_(CallSession.analysis_status == "failed", CallSession.analysis_next_attempt_at.is_not(None), CallSession.analysis_attempts < 3),
+        or_(and_(CallSession.ended_at.is_(None), CallSession.started_at < now - timedelta(minutes=2)),
+            and_(CallSession.analysis_status == "pending", or_(CallSession.analysis_next_attempt_at.is_(None), CallSession.analysis_next_attempt_at <= now)),
+            and_(CallSession.analysis_status == "processing", or_(CallSession.analysis_next_attempt_at <= now,
+                and_(CallSession.analysis_next_attempt_at.is_(None), CallSession.updated_at < now - timedelta(minutes=2)))),
+            and_(CallSession.analysis_status == "failed", CallSession.analysis_next_attempt_at <= now, CallSession.analysis_attempts < 3),
             and_(CallSession.documentation_status != "legacy", CallSession.ended_at < now - timedelta(days=retention))),
-    ).order_by(CallSession.created_at).limit(100)))
+    ).order_by(case((CallSession.ended_at.is_not(None), 0), else_=1), CallSession.created_at).limit(100)))
     for call in calls:
+        # Another worker or an administrator may have changed this row since
+        # candidate selection. Re-read it under a lock before any transition.
+        call = db.scalar(select(CallSession).where(CallSession.id == call.id, CallSession.tenant_id == tenant_id).with_for_update().execution_options(populate_existing=True))
+        if call is None or call.content_deleted_at:
+            db.rollback()
+            continue
         if call.documentation_status != "legacy" and call.ended_at and _utc(call.ended_at) < now - timedelta(days=retention):
             erase_call_content(call)
             db.commit()
             continue
         if call.ended_at is None:
             start = _utc(call.started_at or call.created_at)
-            if start < now - timedelta(minutes=settings.openai_realtime_max_session_minutes + 2):
+            maximum = (call.runtime_manifest_snapshot or {}).get("maximum_session_minutes", settings.openai_realtime_max_session_minutes)
+            if start < now - timedelta(minutes=maximum + 2):
                 CallLifecycleService(db, tenant_id).finish(call.id, status="failed", error_code="stream_lost", phase="recovery")
+            else:
+                db.rollback()
             continue
         if call.analysis_status == "processing":
-            if _utc(call.updated_at) < now - timedelta(minutes=2):
+            expired = _utc(call.analysis_next_attempt_at) <= now if call.analysis_next_attempt_at else _utc(call.updated_at) < now - timedelta(minutes=2)
+            if expired:
+                if call.analysis_attempts >= 3:
+                    call.analysis_status = "failed"
+                    call.analysis_error_code = "analysis_recovery_exhausted"
+                    call.analysis_lease_token = None
+                    call.analysis_next_attempt_at = None
+                    db.commit()
+                    continue
                 call.analysis_status = "pending"
                 call.analysis_lease_token = None
                 db.commit()
             else:
+                db.rollback()
                 continue
         if call.analysis_status == "failed":
             if not call.analysis_next_attempt_at or call.analysis_attempts >= 3:
+                db.rollback()
                 continue
             if _utc(call.analysis_next_attempt_at) > now:
+                db.rollback()
                 continue
             call.analysis_status = "pending"
             db.commit()
         if call.analysis_status == "pending" and (not call.analysis_next_attempt_at or _utc(call.analysis_next_attempt_at) <= now):
             await analyze_call_safely(db, settings, tenant_id, call.id)
+        else:
+            db.rollback()
 
 
 def _utc(value):
@@ -78,11 +103,16 @@ async def call_processing_loop(settings) -> None:
     while True:
         try:
             with SessionLocal() as db:
-                tenant_ids = list(db.scalars(select(Tenant.id)))
+                tenant_ids = list(db.scalars(text("SELECT * FROM call_processing_tenant_ids()"))) if db.bind.dialect.name == "postgresql" else list(db.scalars(select(Tenant.id)))
             for tenant_id in tenant_ids:
-                with SessionLocal() as db:
-                    bind_tenant_context(db, tenant_id)
-                    await process_tenant_calls(db, settings, tenant_id)
+                try:
+                    with SessionLocal() as db:
+                        bind_tenant_context(db, tenant_id)
+                        await process_tenant_calls(db, settings, tenant_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error("call_processing_tenant_failed")
         except asyncio.CancelledError:
             raise
         except Exception:

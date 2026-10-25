@@ -77,14 +77,13 @@ def _detail(call: CallSession, db: Session) -> CallDetail:
     )
 
 
-def _tenant_call(db: Session, tenant_id: UUID, call_id: UUID) -> CallSession:
-    call = db.scalar(
-        select(CallSession).where(
-            CallSession.id == call_id,
-            CallSession.tenant_id == tenant_id,
-            CallSession.channel == CallChannel.telephone,
-        )
+def _tenant_call(db: Session, tenant_id: UUID, call_id: UUID, *, for_update: bool = False) -> CallSession:
+    statement = select(CallSession).where(
+        CallSession.id == call_id,
+        CallSession.tenant_id == tenant_id,
+        CallSession.channel == CallChannel.telephone,
     )
+    call = db.scalar((statement.with_for_update() if for_update else statement).execution_options(populate_existing=True))
     if call is None:
         raise _not_found()
     return call
@@ -125,7 +124,7 @@ def update_call_status(
     _user: UserContext = Depends(get_user_context),
     db: Session = Depends(get_db),
 ) -> CallDetail:
-    call = _tenant_call(db, context.id, call_id)
+    call = _tenant_call(db, context.id, call_id, for_update=True)
     call.inbox_status = payload.status
     call.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -141,7 +140,7 @@ def retry_call_analysis(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> CallAnalysisRetryResponse:
-    call = _tenant_call(db, context.id, call_id)
+    call = _tenant_call(db, context.id, call_id, for_update=True)
     if call.analysis_status != "failed" or call.content_deleted_at or not call.ended_at:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -166,7 +165,7 @@ def delete_call_content(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    call = _tenant_call(db, context.id, call_id)
+    call = _tenant_call(db, context.id, call_id, for_update=True)
     if call.ended_at is None:
         raise HTTPException(status_code=409, detail={"code": "call_active", "message": "Laufende Gespräche können noch nicht gelöscht werden."})
     erase_call_content(call)

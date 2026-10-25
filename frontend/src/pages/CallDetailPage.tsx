@@ -17,7 +17,7 @@ export function CallDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const load = useCallback((signal?: AbortSignal) => {
-    setLoading(true); setError(null);
+    setLoading(true); setError(null); setCall(null);
     return api.call(callId, signal).then(setCall).catch((cause) => {
       if (cause instanceof DOMException && cause.name === "AbortError") return;
       setError(cause instanceof ApiError ? cause.message : "Der Anruf konnte nicht geladen werden.");
@@ -25,6 +25,23 @@ export function CallDetailPage() {
   }, [callId]);
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
+
+  const processing = call?.id === callId && !call.content_deleted_at && (call.analysis_status === "pending" || call.analysis_status === "processing");
+  useEffect(() => {
+    if (!processing) return;
+    const controller = new AbortController();
+    let busy = false;
+    const timer = window.setInterval(() => {
+      if (busy) return;
+      busy = true;
+      void api.call(callId, controller.signal).then((value) => {
+        if (!controller.signal.aborted) setCall(value);
+      }).catch(() => {
+        // A transient refresh failure leaves the last known state visible.
+      }).finally(() => { busy = false; });
+    }, 5000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [callId, processing]);
 
   async function toggleStatus() {
     if (!call) return;
@@ -83,7 +100,7 @@ export function CallDetailPage() {
           <div><dt>Genannte Kontaktdaten</dt><dd>{[call.analysis_details?.contact_phone, call.analysis_details?.contact_email].filter(Boolean).join(" · ") || "Nicht erfasst"}</dd></div>
           <div><dt>Terminwunsch</dt><dd>{call.analysis_details?.appointment_request || "Nicht erfasst"}</dd></div>
           <div><dt>Ergebnis</dt><dd>{call.result || "Noch kein Ergebnis vorhanden."}</dd></div>
-          <div className={call.action_required ? "action-required" : ""}><dt>Handlungsbedarf</dt><dd>{call.action_required ? "Ja – Bearbeitung erforderlich" : "Nein"}</dd></div>
+          <div className={call.action_required ? "action-required" : ""}><dt>Handlungsbedarf</dt><dd>{call.analysis_status !== "completed" ? "Noch nicht ausgewertet" : call.action_required ? "Ja – Bearbeitung erforderlich" : "Nein"}</dd></div>
           <div><dt>Aufgaben</dt><dd>{call.action_items.length ? <ul>{call.action_items.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul> : "Keine Aufgaben"}</dd></div>
           <div><dt>Priorität</dt><dd>{callPriorityLabels[call.priority]}</dd></div>
         </dl>
