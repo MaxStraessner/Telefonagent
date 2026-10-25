@@ -95,6 +95,8 @@ frontend_container="telefonagent-frontend-1"
 database_container="telefonagent-database-1"
 backend_health="http://127.0.0.1:18001/api/v1/health"
 frontend_health="http://127.0.0.1:18081/"
+application_stopped=false
+deployment_complete=false
 
 fail() {
   printf 'deployment_error=%s\n' "$1" >&2
@@ -125,6 +127,35 @@ case "$current_dir" in
   *) fail "active_compose_path_outside_telefonagent" ;;
 esac
 [ -f "$current_dir/.env" ] || fail "active_environment_file_missing"
+previous_backend_image="$(docker inspect --format '{{.Image}}' "$backend_container")"
+previous_frontend_image="$(docker inspect --format '{{.Image}}' "$frontend_container")"
+backend_image_tag="$(docker inspect --format '{{.Config.Image}}' "$backend_container")"
+frontend_image_tag="$(docker inspect --format '{{.Config.Image}}' "$frontend_container")"
+
+recover_previous_application() {
+  result=$?
+  if [ "$result" -ne 0 ] && [ "$application_stopped" = true ] && [ "$deployment_complete" = false ]; then
+    printf 'deployment_recovery=restoring_previous_application\n' >&2
+    # Keep the additive schema and the database; restore only application images.
+    if docker image tag "$previous_backend_image" "$backend_image_tag" &&
+    docker image tag "$previous_frontend_image" "$frontend_image_tag" &&
+    docker compose --project-name "$project" --env-file "$current_dir/.env" \
+      -f "$current_dir/docker-compose.yml" -f "$current_dir/docker-compose.prod.yml" \
+      up -d --no-build --no-deps backend frontend; then
+      for _ in $(seq 1 30); do
+        if curl --fail --silent --output /dev/null "$backend_health" && curl --fail --silent --output /dev/null "$frontend_health"; then
+          printf 'deployment_recovery=previous_application_healthy\n' >&2
+          break
+        fi
+        sleep 2
+      done
+    else
+      printf 'deployment_recovery=failed\n' >&2
+    fi
+  fi
+  exit "$result"
+}
+trap recover_previous_application EXIT
 
 require_env_value() {
   key="$1"
@@ -203,8 +234,9 @@ docker exec "$database_container" sh -c 'exec pg_dump --username="$POSTGRES_USER
 docker exec "$database_container" pg_restore --list "$container_dump" >/dev/null
 docker cp "$database_container:$container_dump" "$backup_path"
 sha256sum "$backup_path" > "$backup_path.sha256"
+sha256sum --check "$backup_path.sha256" >/dev/null
 cleanup_dump
-trap - EXIT
+trap recover_previous_application EXIT
 
 compose() {
   docker compose \
@@ -217,6 +249,39 @@ compose() {
 
 compose config --quiet
 compose build
+# Check again after the potentially long build. Read calls without terminating them.
+drained=false
+for _ in $(seq 1 60); do
+  if docker exec -i "$backend_container" python - <<'PY'
+import sys
+from app.core.config import get_settings
+from twilio.http.http_client import TwilioHttpClient
+from twilio.rest import Client
+settings = get_settings()
+try:
+    if not settings.telephony_configured:
+        raise RuntimeError("telephony_not_configured")
+    client = Client(settings.twilio_account_sid, settings.twilio_auth_token,
+                    http_client=TwilioHttpClient(timeout=10))
+    active = any(client.calls.list(status=state, limit=1)
+                 for state in ("in-progress", "ringing", "queued"))
+except Exception:
+    print("deployment_call_check=unavailable", file=sys.stderr)
+    sys.exit(2)
+print("deployment_call_check=" + ("waiting" if active else "idle"))
+sys.exit(1 if active else 0)
+PY
+  then
+    drained=true
+    break
+  else
+    check_status=$?
+    [ "$check_status" -eq 1 ] || fail "active_call_check_failed"
+  fi
+  sleep 5
+done
+[ "$drained" = true ] || fail "active_calls_did_not_drain"
+application_stopped=true
 docker stop "$backend_container" "$frontend_container" >/dev/null
 compose run --rm -T migrate </dev/null
 
@@ -236,6 +301,8 @@ run_database_command "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO \"$runt
 
 owned_tables="$(docker exec "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --command="$1"' sh "SELECT count(*) FROM pg_class table_info JOIN pg_roles owner_role ON owner_role.oid = table_info.relowner WHERE owner_role.rolname = '$runtime_user' AND table_info.relkind IN ('r', 'p')")"
 [ "$owned_tables" = "0" ] || fail "runtime_database_role_owns_tables"
+function_ready="$(docker exec "$database_container" sh -c 'exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --tuples-only --no-align --set=ON_ERROR_STOP=1 --command="$1"' sh "SELECT (to_regprocedure('public.call_processing_tenant_ids()') IS NOT NULL AND has_function_privilege('$runtime_user', 'public.call_processing_tenant_ids()', 'EXECUTE'))::text")"
+[ "$function_ready" = "true" ] || fail "call_processing_function_unavailable"
 
 compose up -d database backend frontend
 
@@ -252,12 +319,14 @@ done
 compose exec -T backend alembic current </dev/null
 compose ps
 ln -sfn "$release_dir" "$app_root/current"
+deployment_complete=true
 
 printf 'deployed_commit=%s\n' "$revision"
 printf 'previous_release=%s\n' "$current_dir"
 printf 'database_backup=%s\n' "$backup_path"
 printf 'backend_health=ok\n'
 printf 'frontend_health=ok\n'
+# End of script; absorbs a possible CR added by Windows stdin serialization.
 '@
 
 $normalizedRemoteScript = $remoteScript -replace "`r`n", "`n"
