@@ -1,0 +1,77 @@
+{
+  "checked_at_utc": "2026-10-25T15:10:46.044520+00:00",
+  "local_env_exists": true,
+  "compose": {
+    "compose_valid": true,
+    "runtime_has_no_migration_url": true,
+    "migration_command_is_upgrade_head": true,
+    "migration_url_present": false,
+    "runtime_bootstrap_disabled": true
+  },
+  "real_call_readiness": "not_approved",
+  "configuration": {
+    "credentials_present": {
+      "OPENAI_API_KEY": true,
+      "TWILIO_ACCOUNT_SID": true,
+      "TWILIO_AUTH_TOKEN": true,
+      "TWILIO_STREAM_TOKEN_SECRET": true,
+      "AUTH_HMAC_SECRET": true,
+      "CALENDAR_TOKEN_ENCRYPTION_KEY": true,
+      "GOOGLE_CALENDAR_CLIENT_ID": true,
+      "GOOGLE_CALENDAR_CLIENT_SECRET": true,
+      "MICROSOFT_CALENDAR_CLIENT_ID": false,
+      "MICROSOFT_CALENDAR_CLIENT_SECRET": false
+    },
+    "account_sid_format_valid": true,
+    "auth_token_format_valid": true,
+    "stream_secret_minimum_met": true,
+    "calendar_encryption_key_valid": true,
+    "telephony_complete": true,
+    "google_oauth_complete": true,
+    "microsoft_oauth_complete": false,
+    "realtime_2_1_selected": true,
+    "analysis_nano_selected": true,
+    "transcription_enabled": true,
+    "raw_event_logging_disabled": true,
+    "app_public_https_syntax": true,
+    "frontend_public_https_syntax": false,
+    "test_number_explicitly_selected": false,
+    "test_public_origin_configured": false,
+    "test_origin_differs_from_current": false,
+    "does_not_verify": [
+      "credential_entitlements",
+      "dns_tls_websocket_reachability",
+      "calendar_oauth_grant",
+      "production_configuration"
+    ]
+  },
+  "providers": {
+    "voice_sessions_opened": 0,
+    "calls_created": 0,
+    "provider_mutations": 0,
+    "openai": {
+      "status": "ok",
+      "realtime_model_listed": true,
+      "analysis_model_listed": true,
+      "live_1_listed": true,
+      "audio_session_and_billing_not_verified": true
+    },
+    "twilio": {
+      "account_status": "ok",
+      "account_active": true,
+      "trial_account": false,
+      "numbers_status": "ok",
+      "numbers_in_page": 1,
+      "inventory_truncated": false,
+      "voice_capable_in_page": 1,
+      "voice_unrouted_in_page": 0,
+      "current_app_voice_routes_in_page": 0,
+      "current_app_status_routes_in_page": 0,
+      "selected_test_number_found": false,
+      "selected_test_number_voice_capable": false,
+      "selected_test_voice_route_matches": false,
+      "selected_test_status_route_matches": false,
+      "selected_test_uses_no_app_or_trunk": false
+    }
+  }
+}

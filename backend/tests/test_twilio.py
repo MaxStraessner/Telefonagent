@@ -475,7 +475,28 @@ def test_signed_voice_webhook_is_idempotent_and_tenant_scoped(anonymous_client, 
     assert call.caller_phone == "+491701234567"
     assert call.analysis_status == "pending"
     assert call.runtime_manifest_digest
-    assert "instructions" not in (call.runtime_manifest_snapshot or {})
+    assert call.runtime_manifest_snapshot["instructions"]
+    assert "api_key" not in call.runtime_manifest_snapshot
+    _cleanup(db, tenant.id)
+
+
+def test_setup_failure_is_kept_in_call_history(monkeypatch, anonymous_client, db):
+    tenant = _tenant(db)
+    _cleanup(db, tenant.id)
+    db.add(TenantInboundRoute(tenant_id=tenant.id, route_type="phone_number", normalized_identifier=PHONE_NUMBER, is_active=True))
+    db.commit()
+    settings = twilio_settings()
+    app.dependency_overrides[get_settings] = lambda: settings
+    def fail_runtime(*args, **kwargs):
+        raise ValueError("synthetic-invalid-runtime")
+    monkeypatch.setattr("app.api.v1.twilio.build_runtime_config", fail_runtime)
+    params = {"AccountSid": ACCOUNT_SID, "CallSid": CALL_SID, "To": PHONE_NUMBER}
+    signature = RequestValidator(AUTH_TOKEN).compute_signature(voice_url(settings), params)
+    response = anonymous_client.post("/api/v1/twilio/voice", data=params, headers={"X-Twilio-Signature": signature})
+    assert "Hangup" in response.text and "Stream" not in response.text
+    saved = db.scalar(select(CallSession).where(CallSession.provider_session_id == CALL_SID))
+    assert saved.status == "failed" and saved.error_code == "telephone_setup_failed"
+    assert saved.documentation_status == "incomplete" and saved.ended_at is not None
     _cleanup(db, tenant.id)
 
 
@@ -768,11 +789,14 @@ def test_playback_marks_track_only_acknowledged_audio_for_barge_in():
 
 def test_dispatcher_refuses_booking_without_confirmed_user_utterance(db):
     tenant = _tenant(db)
+    session = CallSession(tenant_id=tenant.id, channel=CallChannel.telephone, status="connected", operating_mode="agent")
+    db.add(session)
+    db.commit()
     dispatcher = ConversationToolDispatcher(
         db,
         twilio_settings(),
         TenantContext(id=tenant.id, tenant=tenant),
-        uuid4(),
+        session.id,
     )
 
     result = asyncio.run(
@@ -864,3 +888,5 @@ def test_media_bridge_collects_customer_and_agent_transcript(db):
         {"speaker": "customer", "text": "Ich hätte gerne einen Termin."},
     ]
     assert bridge.latest_user_utterance == "Ich hätte gerne einen Termin."
+    asyncio.run(bridge._handle_openai_event(None, {"type": "conversation.item.input_audio_transcription.failed", "error": {"message": "Sensitive provider text must not be logged"}}))
+    assert bridge.documentation_error == "transcription_failed"

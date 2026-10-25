@@ -18,7 +18,7 @@
     "react-dom": "19.1.0",
     "react-router-dom": "7.18.2",
     "typescript": "5.8.3",
-    "vite": "7.3.6",
+    "vite": "7.3.7",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -33,6 +33,6 @@
     "globals": "^17.7.0",
     "jsdom": "26.1.0",
     "typescript-eslint": "^8.65.0",
-    "vitest": "3.2.7"
+    "vitest": "5.0.5"
   }
 }

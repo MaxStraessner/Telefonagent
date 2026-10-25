@@ -44,6 +44,24 @@ beforeEach(() => { installApi(); vi.stubGlobal("confirm", vi.fn(() => true)); })
 afterEach(() => vi.unstubAllGlobals());
 
 describe("KI-Einstellungen", () => {
+  it("speichert Betriebsmodus, Nachrichtenbegrüßung und Löschfrist", async () => {
+    const calls = installApi();
+    render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
+    await screen.findByRole("heading", { name: "KI konfigurieren" });
+    await userEvent.selectOptions(screen.getByLabelText("Betriebsmodus"), "answering_machine");
+    const greeting = screen.getByLabelText(/Nachrichtenbegrüßung/);
+    await userEvent.clear(greeting);
+    await userEvent.type(greeting, "Willkommen. Bitte hinterlassen Sie Ihr Anliegen.");
+    const retention = screen.getByLabelText(/Gesprächsinhalte aufbewahren/);
+    await userEvent.clear(retention);
+    await userEvent.type(retention, "14");
+    await userEvent.click(screen.getByRole("button", { name: "Änderungen speichern" }));
+    await screen.findByText(/^Gespeichert –/);
+    const write = calls.find((item) => item.method === "PUT");
+    expect(write?.body?.operating_mode).toBe("answering_machine");
+    expect(write?.body?.message_greeting).toBe("Willkommen. Bitte hinterlassen Sie Ihr Anliegen.");
+    expect(write?.body?.call_retention_days).toBe(14);
+  });
   it("lädt alle Bereiche und zeigt die wirksame Testkonfiguration", async () => {
     render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
     expect(await screen.findByRole("heading", { name: "KI konfigurieren" })).toBeInTheDocument();

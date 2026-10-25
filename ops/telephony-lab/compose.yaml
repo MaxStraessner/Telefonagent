@@ -1,0 +1,103 @@
+# Offline local acceptance only. No production overlays, credentials or volumes.
+name: telefonagent-local-acceptance
+
+x-settings: &settings
+  APP_ENV: development
+  APP_COMPONENT: runtime
+  DATABASE_URL: postgresql+psycopg://telefonagent_lab_runtime:synthetic-local-lab-only@database:5432/telefonagent_auth_test
+  AUTH_HMAC_SECRET: synthetic-offline-lab-hmac-with-more-than-32-bytes
+  APP_BASE_URL: http://localhost:28001
+  FRONTEND_URL: http://localhost:28081
+  CORS_ORIGINS: http://localhost:28081
+  MAIL_ENABLED: "false"
+  DEV_BOOTSTRAP_ENABLED: "false"
+  ALLOW_DEVELOPMENT_TENANT_FALLBACK: "false"
+  OPENAI_API_KEY: ""
+  TWILIO_ACCOUNT_SID: ""
+  TWILIO_AUTH_TOKEN: ""
+  TWILIO_STREAM_TOKEN_SECRET: ""
+  OPENAI_REALTIME_MODEL: gpt-realtime-2.1
+  OPENAI_REALTIME_MAX_SESSION_MINUTES: "2"
+  OPENAI_REALTIME_TRANSCRIPTION_ENABLED: "true"
+  OPENAI_REALTIME_LOG_RAW_EVENTS: "false"
+  OPENAI_CALL_ANALYSIS_MODEL: gpt-5.4-nano
+
+services:
+  database:
+    image: postgres:17-alpine
+    labels: {purpose: telefonagent-local-acceptance}
+    environment:
+      POSTGRES_DB: telefonagent_auth_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: synthetic-local-qa-only
+    tmpfs: [/var/lib/postgresql/data]
+    volumes:
+      - ./runtime-role.sql:/docker-entrypoint-initdb.d/runtime-role.sql:ro
+    ports: ["127.0.0.1:25439:5432"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d telefonagent_auth_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+
+  migrate:
+    image: telefonagent-local-acceptance-backend:qa
+    build: ../../backend
+    labels: {purpose: telefonagent-local-acceptance}
+    environment:
+      <<: *settings
+      APP_COMPONENT: migration
+      MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:synthetic-local-qa-only@database:5432/telefonagent_auth_test
+    command: [alembic, upgrade, head]
+    depends_on:
+      database: {condition: service_healthy}
+    security_opt: ["no-new-privileges:true"]
+
+  bootstrap:
+    image: telefonagent-local-acceptance-backend:qa
+    labels: {purpose: telefonagent-local-acceptance}
+    environment:
+      <<: *settings
+      DATABASE_URL: postgresql+psycopg://postgres:synthetic-local-qa-only@database:5432/telefonagent_auth_test
+      DEV_BOOTSTRAP_ENABLED: "true"
+      DEV_BOOTSTRAP_USERNAME: qa-owner@telefonagent.local
+      DEV_BOOTSTRAP_PASSWORD: synthetic-offline-lab-password
+    command: [python, -m, app.seed]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    security_opt: ["no-new-privileges:true"]
+
+  backend:
+    image: telefonagent-local-acceptance-backend:qa
+    labels: {purpose: telefonagent-local-acceptance}
+    environment: *settings
+    ports: ["127.0.0.1:28001:8000"]
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+
+  frontend:
+    image: telefonagent-local-acceptance-frontend:qa
+    build:
+      context: ../../frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:28001/api/v1
+        VITE_REALTIME_E2E_STUB: "false"
+    labels: {purpose: telefonagent-local-acceptance}
+    environment:
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: localhost
+    ports: ["127.0.0.1:28081:5173"]
+    depends_on:
+      backend: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:5173/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]

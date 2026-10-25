@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 from sqlalchemy import create_engine, inspect, text
@@ -8,6 +9,29 @@ from alembic.config import Config
 from app.core.config import get_settings
 from app.db.session import engine
 from app.seed import seed_database
+
+
+def test_call_documentation_upgrade_preserves_existing_transcript(tmp_path, monkeypatch):
+    url = f"sqlite:///{(tmp_path / 'existing-calls.db').as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", url)
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    command.upgrade(config, "0016")
+    isolated = create_engine(url)
+    tenant_id, call_id = uuid4().hex, uuid4().hex
+    transcript = json.dumps([{"speaker": "customer", "text": "Bestehende synthetische Nachricht"}])
+    with isolated.begin() as connection:
+        connection.execute(text("INSERT INTO tenants (id, slug, name, industry, timezone, status) VALUES (:id, 'call-upgrade', 'Test', 'services', 'Europe/Berlin', 'active')"), {"id": tenant_id})
+        connection.execute(text("INSERT INTO call_sessions (id, tenant_id, channel, status, transcript) VALUES (:id, :tenant, 'telephone', 'ended', :transcript)"), {"id": call_id, "tenant": tenant_id, "transcript": transcript})
+    command.upgrade(config, "head")
+    with isolated.connect() as connection:
+        row = connection.execute(text("SELECT transcript, operating_mode, voice_model, documentation_status FROM call_sessions WHERE id = :id"), {"id": call_id}).one()
+        assert json.loads(row.transcript)[0]["text"] == "Bestehende synthetische Nachricht"
+        assert row.operating_mode is None and row.voice_model is None
+        assert row.documentation_status == "legacy"
+    isolated.dispose()
+    get_settings.cache_clear()
 
 
 def test_migration_created_all_tables():

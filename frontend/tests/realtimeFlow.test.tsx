@@ -172,7 +172,7 @@ function clientCallbacks(): RealtimeClientCallbacks {
   };
 }
 
-let trackStop: ReturnType<typeof vi.fn>;
+let trackStop: ReturnType<typeof vi.fn<() => void>>;
 let getUserMedia: ReturnType<typeof vi.fn>;
 let microphoneTrack: {
   enabled: boolean;
@@ -415,7 +415,7 @@ describe("Realtime browser voice flow", () => {
   );
 
   it("bricht während des Bootstraps ab, ignoriert dessen späte Antwort und startet neu", async () => {
-    const baselineFetch = fetch as ReturnType<typeof vi.fn>;
+    const baselineFetch = fetch;
     let resolveFirstBootstrap: ((response: Response) => void) | undefined;
     let bootstrapCount = 0;
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -827,7 +827,7 @@ describe("Realtime browser voice flow", () => {
     sdk.requestResponse.mockClear();
     vi.mocked(callbacks.onError).mockClear();
 
-    const originalFetch = fetch as ReturnType<typeof vi.fn>;
+    const originalFetch = fetch;
     let finishToolRequest: (() => void) | undefined;
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
       if (!String(input).endsWith("/calendar/tools/check-appointment-availability/session")) {
@@ -1102,7 +1102,7 @@ describe("Realtime browser voice flow", () => {
   });
 
   it("zeigt einen strukturierten Backendfehler ohne neuen Verbindungsversuch", async () => {
-    const originalFetch = fetch as ReturnType<typeof vi.fn>;
+    const originalFetch = fetch;
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
       if (String(input).endsWith("/realtime/session-bootstrap")) {
         return Promise.resolve(new Response(JSON.stringify({ error: { code: "realtime_provider_rejected", message: "Der Anbieter hat die Realtime-Konfiguration abgelehnt." } }), { status: 502, headers: { "Content-Type": "application/json" } }));

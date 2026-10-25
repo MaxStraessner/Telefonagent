@@ -112,6 +112,12 @@ Das Skript akzeptiert keinen alternativen Branch oder Zielserver. Es:
 
 Das Skript löscht keine alten Releases oder Backups und führt keinen automatischen Datenbank-Restore durch.
 
+Vor dem Anwendungsneustart prüft es nach dem Imagebuild noch einmal ausschließlich lesend auf aktive, klingelnde und wartende Twilio-Anrufe. Bestehende Gespräche dürfen bis zu fünf Minuten auslaufen; bei nicht prüfbarem Providerstatus oder weiter aktiven Anrufen bricht es vor dem Stoppen ab. Es beendet oder leitet keine Anrufe um. Der neue Backup-Dump wird vor der Migration mit `pg_restore --list` und SHA-256 geprüft.
+
+Für die additive Migration 0017 prüft das Skript nach dem Upgrade zusätzlich die Workerfunktion und deren Ausführungsrecht. Scheitert der Ablauf nach dem Anwendungsstopp, stellt es die zuvor laufenden Backend-/Frontend-Images über dieselben bisherigen Compose-Dateien und dasselbe Projekt wieder her. Die Datenbank bleibt unverändert auf dem erreichten Migrationsstand; kein Downgrade, Restore oder Löschen von Volumes. Der Deploymentbefehl bleibt bei einem solchen Fehler fehlgeschlagen und meldet den Wiederanlauf gesondert. Bei späteren, nicht rückwärtskompatiblen Migrationen muss dieses Verfahren erneut auf Kompatibilität geprüft werden.
+
+Die Call-Drain- und Wiederanlaufpfade sowie die eingebettete Bash-/Python-Syntax sind in `ops/tests/deploy_safety.py` mit simulierten Provider-/Dockerantworten geprüft; diese Tests verbinden sich nicht mit Produktion.
+
 ## Normaler Deploymentbefehl
 
 Nach Merge und Aktualisierung des lokalen `main`:

@@ -88,6 +88,8 @@ class ConversationOrchestrator:
         )
         if self.session is None:
             raise CalendarError("invalid_conversation_session", "Die Gesprächssitzung ist ungültig.")
+        if self.session.operating_mode == "answering_machine":
+            raise CalendarError("actions_disabled", "Im Anrufbeantwortermodus sind Aktionen deaktiviert.")
         self.context = db.scalar(
             select(BookingConversation).where(
                 BookingConversation.call_session_id == session_id,

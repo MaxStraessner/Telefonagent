@@ -1,0 +1,118 @@
+Browser tab: 2, Title: "Telefonagent", URL: "http://localhost:28081/anrufe/0b3789ec-e405-4284-abe8-09c69797ef4e".
+1 AXWebArea Telefonagent, URL: localhost:28081/anrufe/0b3789ec-e405-4284-abe8-09c69797ef4e
+	2 container root
+		3 container
+			4 button Navigation öffnen
+			5 text T Telefonagent
+			6 button Farbschema wechseln
+		7 container
+			8 text T Telefonagent PLATFORM
+			9 button Navigation schließen
+			10 container Hauptnavigation
+				11 link Description: Übersicht, Value: localhost:28081/
+				12 link Description: Testgespräch, Value: localhost:28081/testgespraech
+				13 link Description: Anrufe, Value: localhost:28081/anrufe
+				14 link Description: Termine, Value: localhost:28081/termine
+			15 button Dunkler Modus
+			16 text S Synthetic QA answering_machine Lokale Administration  ·  owner
+			17 button Abmelden
+		18 container
+			19 container
+				20 text Aktiver Unternehmenskontext:  Synthetic QA answering_machine
+			21 text Alle Fachfunktionen verwenden ausschließlich diesen Kontext.
+			22 link Description: Plattformverwaltung, Value: localhost:28081/plattform
+			23 button Kontext verlassen
+			24 text ANRUFDETAIL
+			25 heading Anna Beispiel, Value: 1
+				26 text Anna Beispiel
+			27 text +491700000001 · 25.10.2026, 16:13:05
+			28 link Description: ← Zurück, Value: localhost:28081/anrufe
+			29 button Als erledigt markieren
+			30 container
+				31 heading Metadaten, Value: 2
+					32 text Metadaten
+				33 definition list
+					34 container Anrufer
+						35 text Anrufer
+					36 text Anna Beispiel
+					37 container Telefonnummer
+						38 text Telefonnummer
+					39 text +491700000001
+					40 container Datum
+						41 text Datum
+					42 text 25.10.2026
+					43 container Uhrzeit
+						44 text Uhrzeit
+					45 text 16:13
+					46 container Dauer
+						47 text Dauer
+					48 text 0:00 Min.
+					49 container Modus
+						50 text Modus
+					51 text Anrufbeantworter
+					52 container Sprachmodell
+						53 text Sprachmodell
+					54 text gpt-realtime-2.1
+					55 container Telefonstatus
+						56 text Telefonstatus
+					57 text Beendet
+					58 container Dokumentation
+						59 text Dokumentation
+					60 text Abgeschlossen
+					61 container Rückruf
+						62 text Rückruf
+					63 text Gewünscht
+					64 container Status
+						65 text Status
+					66 text Offen
+			67 container
+				68 text KI-AUSWERTUNG
+				69 heading Gesprächszusammenfassung, Value: 2
+					70 text Gesprächszusammenfassung
+				71 text Normal
+				72 definition list
+					73 container ZUSAMMENFASSUNG
+						74 text ZUSAMMENFASSUNG
+					75 text Anna bittet um Rückruf am nächsten Tag.
+					76 container ANLIEGEN
+						77 text ANLIEGEN
+					78 text Rückruf
+					79 container HAUPTANLIEGEN
+						80 text HAUPTANLIEGEN
+					81 text Rückruf
+					82 container GENANNTE KONTAKTDATEN
+						83 text GENANNTE KONTAKTDATEN
+					84 text 0170 0000001
+					85 container TERMINWUNSCH
+						86 text TERMINWUNSCH
+					87 text Nicht erfasst
+					88 container ERGEBNIS
+						89 text ERGEBNIS
+					90 text Nachricht aufgenommen.
+					91 container HANDLUNGSBEDARF
+						92 text HANDLUNGSBEDARF
+					93 text Ja – Bearbeitung erforderlich
+					94 container AUFGABEN
+						95 text AUFGABEN
+					96 content list
+						97 container
+							98 AXListMarker •
+							99 text Zurückrufen
+					100 container PRIORITÄT
+						101 text PRIORITÄT
+					102 text Normal
+			103 text GESPRÄCHSVERLAUF
+			104 heading Vollständiges Transkript, Value: 2
+				105 text Vollständiges Transkript
+			106 text 2  Beiträge
+			107 container
+				108 text AGENT Guten Tag. Wie kann ich helfen?
+			109 container
+				110 text ANRUFER 1.2  s Ich bin Anna Beispiel. Bitte rufen Sie mich morgen zurück. Meine Telefonnummer ist 0170 0000001.
+			111 heading Ausgeführte Aktionen und Termine, Value: 2
+				112 text Ausgeführte Aktionen und Termine
+			113 text Diese Angaben stammen aus den tatsächlichen Werkzeug- und Buchungsdatensätzen. Ein Terminwunsch allein bestätigt keine Buchung.
+			114 text Keine Aktionen protokolliert.
+			115 text Keine Terminbuchung verknüpft.
+
+The focused UI element is 1 AXWebArea Telefonagent, URL: localhost:28081/anrufe/0b3789ec-e405-4284-abe8-09c69797ef4e

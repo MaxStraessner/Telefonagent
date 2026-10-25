@@ -9,6 +9,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket
@@ -18,6 +19,7 @@ from app.core.config import Settings
 from app.services.agent_runtime import AgentRuntimeConfig
 from app.services.conversation_tools import ConversationToolDispatcher
 from app.services.tool_projections import outbound_wire_tools
+from app.services.voice_providers import RealtimeProtocol
 
 MAX_EVENT_BYTES = 1_000_000
 MAX_AUDIO_BYTES = 160_000
@@ -47,7 +49,6 @@ class TwilioMediaError(Exception):
             for key, value in {
                 "provider_error_code": self.provider_code,
                 "provider_error_param": self.provider_param,
-                "provider_error_message": self.provider_message,
             }.items()
             if value
         }
@@ -59,7 +60,7 @@ async def openai_connection(settings: Settings, runtime: AgentRuntimeConfig) -> 
 
     if not settings.openai_api_key:
         raise TwilioMediaError("realtime_not_configured")
-    url = f"wss://api.openai.com/v1/realtime?model={runtime.model}"
+    url = RealtimeProtocol().url(runtime.model)
     safety_digest = hmac.new(
         settings.openai_safety_identifier_salt.encode("utf-8"),
         str(runtime.manifest.tenant_id).encode("utf-8"),
@@ -218,6 +219,7 @@ class TwilioMediaBridge:
         initial_sequence: int,
         *,
         connector: Callable[[Settings, AgentRuntimeConfig], Any] = openai_connection,
+        transcript_sink: Callable[[dict], None] | None = None,
     ) -> None:
         self.twilio = twilio
         self.settings = settings
@@ -227,8 +229,17 @@ class TwilioMediaBridge:
         self.dispatcher = dispatcher
         self.initial_sequence = initial_sequence
         self.connector = connector
+        self.transcript_sink = transcript_sink
+        self.seen_events: set[str] = set()
+        self.segment_text: dict[str, str] = {}
+        self.segment_states: dict[str, str] = {}
+        self.segment_speakers: dict[str, str] = {}
+        self.segment_metadata: dict[str, dict] = {}
+        self.interrupted_segments: set[str] = set()
+        self.documentation_error: str | None = None
         self.playback = PlaybackState()
         self.latest_user_utterance: str | None = None
+        self.latest_input_item_id: str | None = None
         self.transcript: list[dict[str, str]] = []
         self.twilio_stopped = False
         self.outbound: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(OUTBOUND_QUEUE_SIZE)
@@ -250,14 +261,19 @@ class TwilioMediaBridge:
                     twilio_receiver = asyncio.create_task(self._receive_twilio(openai))
                     openai_receiver = asyncio.create_task(self._receive_openai(openai))
                     tasks = {sender, twilio_receiver, openai_receiver}
-                    done, pending = await asyncio.wait(
-                        tasks, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in done:
-                        task.result()
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
+                    try:
+                        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                        for task in done:
+                            task.result()
+                        if twilio_receiver in done and self.twilio_stopped:
+                            # Allow late final transcription events to reach persistent storage.
+                            drained, _ = await asyncio.wait({openai_receiver}, timeout=0.75)
+                            for task in drained:
+                                task.result()
+                    finally:
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
         except TimeoutError as exc:
             raise TwilioMediaError("maximum_session_duration_reached") from exc
 
@@ -314,7 +330,7 @@ class TwilioMediaBridge:
                     if str(event.get("streamSid") or "") != self.stream_sid:
                         raise TwilioMediaError("stream_context_mismatch")
                     payload = _validate_audio((event.get("media") or {}).get("payload"))
-                    await openai.send(json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
+                    await openai.send(json.dumps(RealtimeProtocol().audio_append(payload)))
                 elif kind == "mark":
                     if str(event.get("streamSid") or "") != self.stream_sid:
                         raise TwilioMediaError("stream_context_mismatch")
@@ -335,7 +351,7 @@ class TwilioMediaBridge:
                 else:
                     raise TwilioMediaError("unsupported_twilio_event")
         finally:
-            await self.outbound.put(None)
+            pass
 
     async def _receive_openai(self, openai: Any) -> None:
         while True:
@@ -352,7 +368,34 @@ class TwilioMediaBridge:
         self.transcript.append(turn)
 
     async def _handle_openai_event(self, openai: Any, event: dict[str, Any]) -> None:
+        event_id = str(event.get("event_id") or "")
+        if event_id and event_id in self.seen_events:
+            return
+        if event_id:
+            self.seen_events.add(event_id)
         kind = event["type"]
+        if kind in {"conversation.item.created", "conversation.item.added", "input_audio_buffer.committed"}:
+            item_id = str(event.get("item_id") or (event.get("item") or {}).get("id") or "")
+            if item_id:
+                if "previous_item_id" in event:
+                    self.segment_metadata.setdefault(item_id, {})["previous_item_id"] = event.get("previous_item_id")
+                self._save_known_segment(item_id)
+        if kind in {"input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"}:
+            item_id = str(event.get("item_id") or "")
+            if item_id:
+                key = "start_ms" if kind.endswith("started") else "end_ms"
+                self.segment_metadata.setdefault(item_id, {})[key] = event.get("audio_start_ms" if key == "start_ms" else "audio_end_ms")
+                self._save_known_segment(item_id)
+                if key == "start_ms":
+                    self.latest_input_item_id = item_id
+                    # An earlier "yes" cannot authorize an action while the
+                    # caller's correction is still awaiting transcription.
+                    self.latest_user_utterance = None
+        if kind in {
+            "conversation.item.input_audio_transcription.delta", "conversation.item.input_audio_transcription.completed",
+            "response.output_audio_transcript.delta", "response.output_audio_transcript.done", "response.audio_transcript.done",
+        }:
+            self._persist_transcript_event(event)
         if kind == "response.output_audio.delta":
             if self.twilio_stopped:
                 return
@@ -363,7 +406,16 @@ class TwilioMediaBridge:
         elif kind == "input_audio_buffer.speech_started":
             if self.twilio_stopped:
                 return
+            if not self.runtime.turn_detection.get("interrupt_response", True):
+                return
+            unplayed_audio = self.playback.acknowledged_ms < self.playback.total_ms
             item_id, audio_end_ms = self.playback.clear()
+            if item_id and unplayed_audio:
+                self.interrupted_segments.add(item_id)
+            if item_id and unplayed_audio and item_id in self.segment_text and self.transcript_sink:
+                text = self.segment_text[item_id]
+                if text.strip():
+                    self.transcript_sink({"segment_id": item_id, "speaker": "agent", "text": text[:20_000], "state": "interrupted"})
             await self.outbound.put({"event": "clear", "streamSid": self.stream_sid})
             if item_id:
                 await openai.send(json.dumps({
@@ -374,7 +426,8 @@ class TwilioMediaBridge:
                 }))
         elif kind == "conversation.item.input_audio_transcription.completed":
             transcript = str(event.get("transcript") or "").strip()
-            self.latest_user_utterance = transcript[:300] or None
+            if not self.latest_input_item_id or event.get("item_id") == self.latest_input_item_id:
+                self.latest_user_utterance = transcript[:300] or None
             self._append_transcript("customer", transcript)
         elif kind in {
             "response.output_audio_transcript.done",
@@ -383,8 +436,42 @@ class TwilioMediaBridge:
             self._append_transcript("agent", event.get("transcript"))
         elif kind == "response.function_call_arguments.done":
             await self._execute_tool(openai, event)
+        elif kind == "conversation.item.input_audio_transcription.failed":
+            self.documentation_error = "transcription_failed"
         elif kind == "error":
             raise _openai_rejection("openai_stream_error", event)
+
+    def _persist_transcript_event(self, event: dict[str, Any]) -> None:
+        kind = event["type"]
+        speaker = "customer" if "input_audio_transcription" in kind else "agent"
+        item_id = str(event.get("item_id") or "")
+        segment_id = item_id or str(event.get("event_id") or "")
+        if not segment_id:
+            return
+        final = kind.endswith((".done", ".completed"))
+        if not final and self.segment_states.get(segment_id) in {"confirmed", "interrupted"}:
+            return
+        if final:
+            text = str(event.get("transcript") or "")
+        else:
+            text = self.segment_text.get(segment_id, "") + str(event.get("delta") or "")
+        if len(text) > 20_000:
+            self.documentation_error = "transcript_segment_truncated"
+        self.segment_text[segment_id] = text[:20_000]
+        self.segment_states[segment_id] = "interrupted" if item_id in self.interrupted_segments else "confirmed" if final else "provisional"
+        self.segment_speakers[segment_id] = speaker
+        self._save_known_segment(segment_id, event.get("event_id"))
+
+    def _save_known_segment(self, segment_id: str, event_id: str | None = None) -> None:
+        text = self.segment_text.get(segment_id, "")
+        if text.strip() and self.transcript_sink:
+            self.transcript_sink({
+                "segment_id": segment_id, "event_id": event_id,
+                "speaker": self.segment_speakers[segment_id], "text": text[:20_000],
+                "state": "interrupted" if segment_id in self.interrupted_segments else self.segment_states[segment_id],
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                **self.segment_metadata.get(segment_id, {}),
+            })
 
     async def _execute_tool(self, openai: Any, event: dict[str, Any]) -> None:
         call_id = str(event.get("call_id") or "")
@@ -397,12 +484,13 @@ class TwilioMediaBridge:
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        result = await self.dispatcher.execute(
-            name,
-            arguments,
-            call_id=call_id,
-            latest_confirmed_user_utterance=self.latest_user_utterance,
-        )
+        if name not in self.runtime.manifest.tool_names:
+            result = {"success": False, "error_code": "actions_disabled"}
+        else:
+            result = await self.dispatcher.execute(
+                name, arguments, call_id=call_id,
+                latest_confirmed_user_utterance=self.latest_user_utterance,
+            )
         await openai.send(json.dumps({
             "type": "conversation.item.create",
             "item": {"type": "function_call_output", "call_id": call_id, "output": json.dumps(result, ensure_ascii=False)},

@@ -26,6 +26,9 @@ class AgentRuleData(AgentListItem):
 
 class AgentConfigurationData(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    operating_mode: Literal["agent", "answering_machine"] = "agent"
+    message_greeting: str = Field(default="Guten Tag. Bitte schildern Sie Ihr Anliegen.", min_length=1, max_length=700)
+    call_retention_days: int = Field(default=30, ge=1, le=365)
     company_name: str = Field(min_length=1, max_length=200)
     assistant_name: str = Field(min_length=1, max_length=100)
     assistant_role: str = Field(min_length=1, max_length=200)
@@ -67,6 +70,7 @@ class AgentConfigurationData(BaseModel):
         "company_name", "assistant_name", "assistant_role", "transparency_notice",
         "standard_greeting", "outside_hours_greeting", "test_greeting", "farewell",
         "primary_task", "off_topic_behavior", "uncertainty_behavior", "fallback_message",
+        "message_greeting",
     )
     @classmethod
     def strip_required(cls, value: str) -> str:

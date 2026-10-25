@@ -114,6 +114,7 @@ export const api = {
   staff: (signal?: AbortSignal) => request<StaffMember[]>("/staff", { signal }),
   appointments: (signal?: AbortSignal) => request<Appointment[]>("/appointments", { signal }),
   calls: (signal?: AbortSignal) => request<CallListItem[]>("/calls", { signal }),
+  deleteCallContent: (id: string) => request<void>(`/calls/${encodeURIComponent(id)}/content`, { method: "DELETE" }),
   call: (id: string, signal?: AbortSignal) => request<CallDetail>(`/calls/${encodeURIComponent(id)}`, { signal }),
   updateCallStatus: (id: string, status: CallStatus) => request<CallDetail>(`/calls/${encodeURIComponent(id)}`, { method: "PATCH", body: { status } }),
   retryCallAnalysis: (id: string) => request<{ id: string; analysis_status: CallDetail["analysis_status"] }>(`/calls/${encodeURIComponent(id)}/analysis/retry`, { method: "POST" }),
