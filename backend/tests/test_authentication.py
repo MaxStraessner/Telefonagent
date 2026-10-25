@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -70,9 +71,36 @@ def test_login_accepts_normalized_email(anonymous_client):
     assert response.json()["user"]["platform_role"] in {"owner", "admin"}
 
 
+def test_platform_owner_can_configure_selected_company_without_membership(anonymous_client, db):
+    suffix = uuid4().hex[:8]
+    tenant, _ = ProvisioningService(db).provision_tenant(
+        slug="owner-config-" + suffix, name="Synthetic Owner Configuration", industry="services",
+        timezone_name="Europe/Berlin", username="owner-config-admin-" + suffix,
+        display_name="Synthetic Admin", email=None, password="synthetic company admin password",
+    )
+    response = login(anonymous_client)
+    assert response.status_code == 200
+    assert "company.manage" not in response.json()["permissions"]
+    headers = {"Origin": "http://testserver", "X-CSRF-Token": anonymous_client.cookies.get("telefonagent_csrf")}
+    selected = anonymous_client.post("/api/v1/auth/context", json={"company_id": str(tenant.id)}, headers=headers)
+    assert selected.status_code == 200 and selected.json()["membership"] is None
+    assert "company.manage" in selected.json()["permissions"]
+    config = anonymous_client.get("/api/v1/agent/config")
+    assert config.status_code == 200 and config.json()["can_edit"] is True
+    data = config.json()
+    payload = {key: value for key, value in data.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role"}}
+    headers["X-CSRF-Token"] = anonymous_client.cookies.get("telefonagent_csrf")
+    saved = anonymous_client.put("/api/v1/agent/config", json={**payload, "expected_version": data["version"], "operating_mode": "answering_machine"}, headers=headers)
+    assert saved.status_code == 200 and saved.json()["operating_mode"] == "answering_machine"
+    cleared = anonymous_client.delete("/api/v1/auth/context", headers=headers)
+    assert cleared.status_code == 200
+    assert "company.manage" not in cleared.json()["permissions"]
+
+
 def test_platform_context_switch_rotates_session_and_is_audited(
     anonymous_client, db
 ):
+    existing_audit_ids = set(db.scalars(select(AuditLog.id)))
     assert login(anonymous_client).status_code == 200
     tenant = db.scalar(
         select(Tenant).where(Tenant.slug == "salon-haarkunst-test")
@@ -94,7 +122,7 @@ def test_platform_context_switch_rotates_session_and_is_audited(
     assert old_session is not None and old_session.revoked_at is not None
     audit = db.scalar(
         select(AuditLog)
-        .where(AuditLog.action == "auth.context.selected")
+        .where(AuditLog.action == "auth.context.selected", AuditLog.id.not_in(existing_audit_ids))
         .order_by(AuditLog.created_at.desc())
     )
     assert audit is not None and audit.tenant_id == tenant.id

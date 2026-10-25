@@ -201,6 +201,14 @@ def get_access_context(
         )
     if platform_role == PlatformRole.owner:
         permissions.add("platform.admins.manage")
+    # Match require_agent_admin/require_company_admin for an explicitly selected
+    # company. Platform administrators need no synthetic tenant membership.
+    if (
+        platform_role in {PlatformRole.owner, PlatformRole.admin}
+        and authenticated.tenant is not None
+        and authenticated.tenant.status in {TenantStatus.trial, TenantStatus.active}
+    ):
+        permissions.add("company.manage")
     if authenticated.membership and authenticated.membership.is_active:
         permissions.update({"company.read", "company.features.use"})
         if authenticated.membership.role == TenantRole.company_admin:

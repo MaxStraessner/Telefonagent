@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
+    get_access_context,
     get_authenticated_session,
     validate_browser_request,
 )
@@ -73,28 +74,7 @@ def _requested_role(value: str) -> TenantRole:
 
 
 def _permissions(authenticated: AuthenticatedSession) -> list[str]:
-    values: set[str] = set()
-    if authenticated.user.platform_role in {PlatformRole.owner, PlatformRole.admin}:
-        values.update(
-            {
-                "platform.read",
-                "platform.companies.manage",
-                "platform.company_users.manage",
-                "platform.audit.read",
-                "company.context.select",
-            }
-        )
-    if authenticated.user.platform_role == PlatformRole.owner:
-        values.add("platform.admins.manage")
-    if authenticated.membership and authenticated.membership.is_active:
-        values.update({"company.read", "company.features.use"})
-        if authenticated.membership.role == TenantRole.company_admin:
-            values.update(
-                {"company.manage", "company.users.manage", "company.audit.read"}
-            )
-    if authenticated.user.must_change_password:
-        values.clear()
-    return sorted(values)
+    return sorted(get_access_context(authenticated).permissions)
 
 
 def _session_response(
