@@ -4,6 +4,8 @@
 
 **Aktueller Stand:** [Umfassende technische QA und Abnahme nach Fehlerkorrekturen](acceptance-qa-2026-10-25.md). Die nachfolgenden Zahlen und Screenshots dokumentieren den ursprünglichen Implementierungsstand vor dieser zusätzlichen QA.
 
+Anschließend: [Integrationsvorbereitung, vorhandene Providerzugänge und reale Abnahmegrenzen](integration-readiness-2026-10-25.md) sowie [Kurzanleitung für die echten Testanrufe](real-call-checklist.md).
+
 ## Prüfungen
 
 Abschlussergebnis: **249 Backendtests erfolgreich**, einschließlich aller elf PostgreSQL-RLS-Tests im gemeinsamen Gesamtlauf; keine übersprungenen Tests in diesem Lauf. **110 Frontendtests erfolgreich**. Ruff, ESLint, Frontend-Produktionsbuild, Compose-Konfiguration und `git diff --check` erfolgreich.

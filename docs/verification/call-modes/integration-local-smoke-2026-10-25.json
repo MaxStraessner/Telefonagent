@@ -1,0 +1,11 @@
+{
+  "backend_health": true,
+  "frontend_http": true,
+  "login": true,
+  "answering_machine_config_and_tools": true,
+  "agent_config_and_tools": true,
+  "original_mode_restored": true,
+  "agent_persisted_history": true,
+  "answering_machine_persisted_history": true,
+  "cross_company_call_denied": true
+}
