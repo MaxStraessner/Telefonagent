@@ -31,7 +31,7 @@ def configuration_write(value: dict) -> dict:
     return {
         key: item
         for key, item in value.items()
-        if key not in {"tenant_id", "version", "updated_at", "can_edit", "role"}
+        if key not in {"tenant_id", "version", "updated_at", "can_edit", "role", "call_email_transport_available"}
     }
 
 

@@ -4,7 +4,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext, UserContext
@@ -19,6 +19,7 @@ from app.models import (
     AgentKnowledgeProfile,
     AgentKnowledgeService,
     AgentTopic,
+    CallSession,
     PlatformRole,
     ResponseLength,
     TenantRole,
@@ -101,6 +102,8 @@ def configuration_response(bundle: AgentBundle, user: UserContext) -> AgentConfi
         operating_mode=config.operating_mode,
         message_greeting=config.message_greeting,
         call_retention_days=config.call_retention_days,
+        call_email_enabled=config.call_email_enabled,
+        call_email_recipient=config.call_email_recipient,
         company_name=config.company_name, assistant_name=config.assistant_name,
         assistant_role=config.assistant_role, transparency_notice=config.transparency_notice,
         address_formality=config.address_formality.value, language=config.language,
@@ -173,6 +176,12 @@ def update_configuration(
     bundle = load_agent_bundle(db, context.id)
     config = bundle.configuration
     _check_version(config, payload.expected_version)
+    if not payload.call_email_enabled or payload.call_email_recipient != config.call_email_recipient:
+        db.execute(update(CallSession).where(
+            CallSession.tenant_id == context.id,
+            CallSession.notification_status.in_(["waiting_analysis", "pending"]),
+        ).values(notification_status="canceled", notification_recipient=None,
+                 notification_next_attempt_at=None, notification_lease_token=None))
     scalar_fields = payload.model_dump(exclude={"expected_version", "topics", "custom_rules"})
     enum_fields = {
         "address_formality": AddressFormality,

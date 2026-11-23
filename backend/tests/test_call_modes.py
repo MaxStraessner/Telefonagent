@@ -50,7 +50,7 @@ def test_mode_changes_preserve_call_snapshot_and_block_tools(db, client):
     t = tenant(db)
     context = TenantContext(id=t.id, tenant=t)
     response = client.get("/api/v1/agent/config").json()
-    original = {k: v for k, v in response.items() if k not in {"tenant_id", "version", "updated_at", "can_edit", "role"}}
+    original = {k: v for k, v in response.items() if k not in {"tenant_id", "version", "updated_at", "can_edit", "role", "call_email_transport_available"}}
     update = {**original, "expected_version": response["version"], "operating_mode": "answering_machine", "message_greeting": "Guten Tag bei Beispiel. Was möchten Sie uns mitteilen?"}
     assert client.put("/api/v1/agent/config", json=update).status_code == 200
     db.expire_all()

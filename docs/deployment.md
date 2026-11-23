@@ -118,6 +118,8 @@ Für die additive Migration 0017 prüft das Skript nach dem Upgrade zusätzlich 
 
 Die Call-Drain- und Wiederanlaufpfade sowie die eingebettete Bash-/Python-Syntax sind in `ops/tests/deploy_safety.py` mit simulierten Provider-/Dockerantworten geprüft; diese Tests verbinden sich nicht mit Produktion.
 
+Migration 0018 ergänzt ausschließlich die optionalen E-Mail-Einstellungen und Zustellfelder vorhandener Anrufe. Bestehende Unternehmen und Anrufe bleiben für den Versand deaktiviert. Die zusätzlichen Spalten sind mit den bisherigen Anwendungsimages kompatibel; bei App-Rollback weder Datenbankdowngrade noch automatische Schemaangleichung ausführen. SMTP-Einrichtung, Versandgrenzen und reale Abnahme sind in [answering-machine-email.md](answering-machine-email.md) beschrieben. Der Standarddeploymentweg ändert sich nicht.
+
 ## Normaler Deploymentbefehl
 
 Nach Merge und Aktualisierung des lokalen `main`:

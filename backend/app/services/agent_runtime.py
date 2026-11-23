@@ -138,7 +138,7 @@ def _source_digests(
     )
     return {
         "agent_configuration": _digest(
-            _model_values(bundle.configuration, excluded=common_excluded)
+            _model_values(bundle.configuration, excluded=common_excluded | {"call_email_enabled", "call_email_recipient"})
         ),
         "knowledge": _digest(knowledge),
         "capabilities": _digest(capabilities),

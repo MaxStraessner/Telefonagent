@@ -44,6 +44,41 @@ beforeEach(() => { window.history.replaceState({}, "", "/"); });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Call History", () => {
+  it("zeigt Zusammenfassungsvorschau und Zustellstatus in der Übersicht", async () => {
+    window.history.replaceState({}, "", "/anrufe");
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      return response(url.endsWith("/calls") ? [{ ...call, summary_preview: "Bitte nächste Woche zurückrufen.", notification_status: "sent" }] : baseBody(url));
+    }));
+    render(<App />);
+    expect((await screen.findAllByText("Bitte nächste Woche zurückrufen.")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("E-Mail vom Mailserver angenommen").length).toBeGreaterThan(0);
+    expect(screen.getByRole("columnheader", { name: "Zusammenfassung" })).toBeInTheDocument();
+  });
+  it("stellt bestätigte Gesprächsbeiträge als zugängliche Tabelle dar", async () => {
+    window.history.replaceState({}, "", "/anrufe/call-1");
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      return response(url.endsWith("/calls/call-1") ? { ...call, notification_status: "uncertain" } : baseBody(url));
+    }));
+    render(<App />);
+    expect(await screen.findByRole("table", { name: "Gesprächsbeiträge in zeitlicher Reihenfolge" })).toBeInTheDocument();
+    expect(screen.getAllByText("Bestätigt")).toHaveLength(2);
+    expect(screen.getByText(/E-Mail-Zustellung unklar – keine automatische Wiederholung/, { selector: "dd" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "E-Mail erneut zustellen" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Erneuten Versand vorbereiten" }));
+    expect(screen.getByRole("button", { name: "E-Mail erneut zustellen" })).toBeInTheDocument();
+  });
+  it("zeigt Anrufe ohne Nachricht ohne erfundene Auswertung", async () => {
+    window.history.replaceState({}, "", "/anrufe/call-1");
+    vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      return response(url.endsWith("/calls/call-1") ? { ...call, no_message: true, transcript: [], summary: null, analysis_status: "failed", analysis_error_code: "transcript_empty" } : baseBody(url));
+    }));
+    render(<App />);
+    expect(await screen.findByText(/Keine Nachricht hinterlassen/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Erneut analysieren" })).not.toBeInTheDocument();
+  });
   it("zeigt gelöschte Inhalte nicht als ausstehende Analyse", async () => {
     window.history.replaceState({}, "", "/anrufe");
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {

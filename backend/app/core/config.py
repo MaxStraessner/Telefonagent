@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_address: str | None = None
     smtp_starttls: bool = True
+    smtp_use_ssl: bool = False
     allow_development_tenant_fallback: bool = False
     development_tenant_slug: str = "salon-haarkunst-test"
     log_level: str = "INFO"
@@ -291,6 +292,8 @@ class Settings(BaseSettings):
                     "Bei aktivierter Mailzustellung müssen SMTP_HOST und "
                     "SMTP_FROM_ADDRESS in Produktion gesetzt sein."
                 )
+            if self.mail_enabled and not (self.smtp_starttls or self.smtp_use_ssl):
+                raise ValueError("SMTP erfordert in Produktion STARTTLS oder implizites TLS.")
         return self
 
 

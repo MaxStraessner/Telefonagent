@@ -26,10 +26,11 @@ def test_call_documentation_upgrade_preserves_existing_transcript(tmp_path, monk
         connection.execute(text("INSERT INTO call_sessions (id, tenant_id, channel, status, transcript) VALUES (:id, :tenant, 'telephone', 'ended', :transcript)"), {"id": call_id, "tenant": tenant_id, "transcript": transcript})
     command.upgrade(config, "head")
     with isolated.connect() as connection:
-        row = connection.execute(text("SELECT transcript, operating_mode, voice_model, documentation_status FROM call_sessions WHERE id = :id"), {"id": call_id}).one()
+        row = connection.execute(text("SELECT transcript, operating_mode, voice_model, documentation_status, notification_status, notification_recipient FROM call_sessions WHERE id = :id"), {"id": call_id}).one()
         assert json.loads(row.transcript)[0]["text"] == "Bestehende synthetische Nachricht"
         assert row.operating_mode is None and row.voice_model is None
         assert row.documentation_status == "legacy"
+        assert row.notification_status == "not_requested" and row.notification_recipient is None
     isolated.dispose()
     get_settings.cache_clear()
 

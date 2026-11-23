@@ -22,7 +22,7 @@ const knowledge = {
 const catalog = { voices: [{ value: "marin", label: "Marin", recommended: true }, { value: "cedar", label: "Cedar", recommended: true }], capabilities: [] };
 const runtime = { tenant_id: config.tenant_id, configuration_version: 1, company_name: "Salon Haarkunst Test", assistant_name: "Lina", language: "de", style: "friendly_service", business_hours_status: "open", model: "gpt-realtime-2.1", voice: "marin", speed: 1, turn_detection: { type: "server_vad" }, capability_keys: [], tool_names: [], greeting: "Willkommen zum Test", prompt_sections: ["Plattformregeln"] };
 
-function installApi(overrides: { canEdit?: boolean } = {}) {
+function installApi(overrides: { canEdit?: boolean; mailAvailable?: boolean } = {}) {
   const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input); const method = init?.method ?? "GET";
@@ -30,7 +30,7 @@ function installApi(overrides: { canEdit?: boolean } = {}) {
     calls.push({ url, method, body });
     let response: unknown;
     if (url.endsWith("/agent/config") && method === "PUT") response = { ...body, version: 2, updated_at: "2026-07-21T10:01:00Z", can_edit: true, role: "owner" };
-    else if (url.endsWith("/agent/config")) response = { ...config, can_edit: overrides.canEdit ?? true, role: overrides.canEdit === false ? "member" : "owner" };
+    else if (url.endsWith("/agent/config")) response = { ...config, call_email_transport_available: overrides.mailAvailable ?? false, call_email_enabled: false, call_email_recipient: null, can_edit: overrides.canEdit ?? true, role: overrides.canEdit === false ? "member" : "owner" };
     else if (url.endsWith("/agent/knowledge")) response = { ...knowledge, can_edit: overrides.canEdit ?? true };
     else if (url.endsWith("/agent/catalog")) response = catalog;
     else if (url.endsWith("/agent/test-session")) response = { ...runtime, configuration_version: calls.some((call) => call.method === "PUT") ? 2 : 1 };
@@ -44,6 +44,26 @@ beforeEach(() => { installApi(); vi.stubGlobal("confirm", vi.fn(() => true)); })
 afterEach(() => vi.unstubAllGlobals());
 
 describe("KI-Einstellungen", () => {
+  it("speichert feste Mailadresse und Opt-in ohne serverseitige Transportfelder", async () => {
+    const calls = installApi({ mailAvailable: true });
+    render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
+    await screen.findByRole("heading", { name: "KI konfigurieren" });
+    await userEvent.type(screen.getByLabelText(/Feste Empfängeradresse/), "owner@example.org");
+    await userEvent.click(screen.getByLabelText("E-Mail-Benachrichtigungen"));
+    await userEvent.click(screen.getByRole("button", { name: "Änderungen speichern" }));
+    await screen.findByText(/^Gespeichert –/);
+    const write = calls.find((item) => item.method === "PUT");
+    expect(write?.body?.call_email_enabled).toBe(true);
+    expect(write?.body?.call_email_recipient).toBe("owner@example.org");
+    expect(write?.body).not.toHaveProperty("call_email_transport_available");
+  });
+  it("zeigt fehlende SMTP-Konfiguration und erlaubt nur die Adressvorbereitung", async () => {
+    render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
+    await screen.findByRole("heading", { name: "KI konfigurieren" });
+    expect(screen.getByLabelText("E-Mail-Benachrichtigungen")).toBeDisabled();
+    expect(screen.getByText(/auf dem Server noch nicht eingerichtet/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Feste Empfängeradresse/)).toBeEnabled();
+  });
   it("speichert Betriebsmodus, Nachrichtenbegrüßung und Löschfrist", async () => {
     const calls = installApi();
     render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
