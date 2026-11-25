@@ -76,7 +76,7 @@ In diesem Auftrag wurden keine kostenpflichtigen Audioverbindungen und keine ech
 
 ## Datenschutz und Betrieb
 
-Vor Öffnung des Audiostreams spielt Twilio einen festen Hinweis auf KI, Texttranskription und Auswertung ab. Ein Auflegen während dieses Hinweises sendet noch kein Gesprächsaudio an OpenAI. Der Hinweis ist keine nachgewiesene Einwilligung und ersetzt nicht die firmenspezifische Information über Verantwortliche, Zwecke, Rechtsgrundlage, Empfänger, Speicherdauer und Betroffenenrechte. Wenn Einwilligung die gewählte Rechtsgrundlage ist, muss vor dem Rollout ein rechtlich abgestimmter expliziter Zustimmungsprozess ergänzt beziehungsweise das genehmigte Verfahren verwendet werden. Keine automatische Annahme, dass bloßes Weitertelefonieren genügt.
+Twilio liest zuerst die gespeicherte Anrufbegrüßung und direkt im Anschluss einen kurzen Hinweis auf KI und schriftliche Verarbeitung vor. Erst danach öffnet sich der Audiostream zu OpenAI. Für die Verarbeitung gelten die firmenspezifischen Informationen über Verantwortliche, Zwecke, Rechtsgrundlage, Empfänger, Speicherdauer und Betroffenenrechte. Wenn Einwilligung die gewählte Rechtsgrundlage ist, gilt das dafür festgelegte Zustimmungsverfahren.
 
 [DSGVO Art. 5, 6, 13, 17 und 28](https://eur-lex.europa.eu/legal-content/DE/TXT/?uri=CELEX:32016R0679) verlangen unter anderem Zweckbindung, Speicherbegrenzung, Rechtsgrundlage, Information und geeignete Auftragsverarbeitung. [§ 201 StGB](https://www.gesetze-im-internet.de/stgb/__201.html) ist bei Audioaufzeichnungen gesondert zu prüfen. Es erfolgt hier keine abschließende Rechtsfreigabe für einzelne Unternehmen.
 

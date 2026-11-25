@@ -7,13 +7,13 @@ if TYPE_CHECKING:
     from app.services.agent_runtime import AgentRuntimeConfig
 
 LIVE_TELEPHONE_MODEL = "gpt-live-1.1"
-LIVE_TELEPHONE_VOICES = frozenset({"marin", "cedar"})
 
 
-def telephone_model(settings: "Settings", tools: list[dict]) -> str:
+def telephone_model(settings: "Settings", tools: list[dict], preference: str) -> str:
     # Live transcript deltas do not mark final utterances. Keep the existing
     # confirmation-aware transport for routes that can write calendar events.
-    if (settings.openai_telephone_model == LIVE_TELEPHONE_MODEL and not tools
+    requested = settings.openai_telephone_model if preference == "auto" else preference
+    if (requested == LIVE_TELEPHONE_MODEL and not tools
             and settings.openai_realtime_transcription_enabled):
         return LIVE_TELEPHONE_MODEL
     return settings.openai_realtime_model
@@ -72,7 +72,7 @@ class LiveProtocol:
         return {"type": "session.input_audio.append", "audio": audio}
 
     def start_telephone(self, runtime: "AgentRuntimeConfig", backend_model: str) -> dict:
-        return {"type": "session.start", "session": {
+        session = {
             "model": LIVE_TELEPHONE_MODEL,
             "store": False,
             "instructions": (
@@ -82,9 +82,6 @@ class LiveProtocol:
                 "Du kannst beim Delegieren weiter zuhören. Behaupte niemals externe Änderungen oder Buchungen.\n\n"
                 + runtime.prompt
             ),
-            "input": [{"type": "message", "role": "developer", "content": [
-                {"type": "input_text", "text": runtime.manifest.initial_response_instructions},
-            ]}],
             "audio": {"format": {"type": "audio/pcmu", "rate": 8000}, "output": {"voice": runtime.voice}},
             "delegation": {"type": "responses", "responses": {
                 "model": backend_model,
@@ -97,7 +94,12 @@ class LiveProtocol:
                 ),
                 "tool_choice": "none",
             }},
-        }}
+        }
+        if runtime.manifest.initial_response_instructions:
+            session["input"] = [{"type": "message", "role": "developer", "content": [
+                {"type": "input_text", "text": runtime.manifest.initial_response_instructions},
+            ]}]
+        return {"type": "session.start", "session": session}
 
     def close(self) -> dict:
         return {"type": "session.close"}

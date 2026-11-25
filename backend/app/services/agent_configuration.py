@@ -102,6 +102,7 @@ def configuration_response(bundle: AgentBundle, user: UserContext) -> AgentConfi
         can_edit=_can_edit(user),
         role=user.role.value if user.role else "platform_admin",
         operating_mode=config.operating_mode,
+        telephone_model=config.telephone_model,
         message_greeting=config.message_greeting,
         call_retention_days=config.call_retention_days,
         call_email_enabled=config.call_email_enabled,
@@ -197,6 +198,8 @@ def update_configuration(
         ).values(notification_status="canceled", notification_recipient=None,
                  notification_next_attempt_at=None, notification_lease_token=None))
     scalar_fields = payload.model_dump(exclude={"expected_version", "topics", "custom_rules"})
+    if "telephone_model" not in payload.model_fields_set:
+        scalar_fields.pop("telephone_model")
     enum_fields = {
         "address_formality": AddressFormality,
         "response_length": ResponseLength,

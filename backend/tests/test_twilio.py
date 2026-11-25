@@ -675,7 +675,7 @@ def test_media_websocket_accepts_real_connected_start_media_stop_sequence(
     )
     assert [event["type"] for event in fake_openai.sent[:2]] == [
         "session.update",
-        "response.create",
+        "input_audio_buffer.append",
     ]
     assert all(
         "strict" not in tool

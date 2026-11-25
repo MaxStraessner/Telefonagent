@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 VoiceName = Literal["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]
+TelephoneModel = Literal["auto", "gpt-live-1.1", "realtime"]
 
 
 class AgentListItem(BaseModel):
@@ -28,6 +29,7 @@ class AgentRuleData(AgentListItem):
 class AgentConfigurationData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operating_mode: Literal["agent", "answering_machine"] = "agent"
+    telephone_model: TelephoneModel = "auto"
     message_greeting: str = Field(default="Guten Tag. Bitte schildern Sie Ihr Anliegen.", min_length=1, max_length=700)
     call_retention_days: int = Field(default=30, ge=1, le=365)
     call_email_enabled: bool = False

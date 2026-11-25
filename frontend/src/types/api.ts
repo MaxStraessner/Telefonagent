@@ -245,6 +245,7 @@ export interface AgentTopic extends AgentListItem { label: string; instructions:
 export interface AgentRule extends AgentListItem { rule_text: string; }
 export interface AgentConfiguration {
   operating_mode: "agent" | "answering_machine"; message_greeting: string; call_retention_days: number;
+  telephone_model?: "auto" | "gpt-live-1.1" | "realtime";
   call_email_enabled?: boolean; call_email_recipient?: string | null; call_email_transport_available?: boolean;
   tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "company_admin" | "company_user" | "platform_admin";
   company_name: string; assistant_name: string; assistant_role: string; transparency_notice: string;

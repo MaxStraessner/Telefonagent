@@ -87,6 +87,26 @@ def test_stale_version_is_rejected(client):
     assert response.json()["error"]["code"] == "agent_configuration_version_conflict"
 
 
+def test_telephone_model_preference_changes_calls_without_changing_browser_model(client):
+    app.dependency_overrides[get_settings] = lambda: configured_settings(openai_telephone_model="gpt-live-1.1")
+    original = client.get("/api/v1/agent/config").json()
+    payload = {**configuration_write(original), "operating_mode": "answering_machine", "voice": "coral"}
+    version = original["version"]
+    for preference, effective in [("auto", "gpt-live-1.1"), ("realtime", "gpt-realtime-2.1"), ("gpt-live-1.1", "gpt-live-1.1")]:
+        saved = client.put("/api/v1/agent/config", json={**payload, "expected_version": version, "telephone_model": preference})
+        assert saved.status_code == 200
+        version = saved.json()["version"]
+        runtime = client.post("/api/v1/agent/test-session").json()
+        assert runtime["model"] == "gpt-realtime-2.1"
+        assert runtime["telephone_model"] == effective
+        assert runtime["voice"] == "coral"
+    legacy_payload = {key: value for key, value in payload.items() if key != "telephone_model"}
+    legacy_save = client.put("/api/v1/agent/config", json={**legacy_payload, "expected_version": version})
+    assert legacy_save.status_code == 200 and legacy_save.json()["telephone_model"] == "gpt-live-1.1"
+    restore = {**configuration_write(original), "expected_version": legacy_save.json()["version"]}
+    assert client.put("/api/v1/agent/config", json=restore).status_code == 200
+
+
 def test_invalid_voice_speed_and_empty_required_fields_are_rejected(client):
     current = client.get("/api/v1/agent/config").json()
     payload = configuration_write(current)
