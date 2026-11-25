@@ -9,6 +9,7 @@ const navigation = [
   ["/", "Übersicht", "home", null], ["/testgespraech", "Testgespräch", "call", null],
   ["/anrufe", "Anrufe", "call", null],
   ["/ki-konfigurieren", "KI konfigurieren", "mic", "company.manage"],
+  ["/benachrichtigungen", "Benachrichtigungen", "system", "company.manage"],
   ["/kalender", "Kalenderintegration", "calendar", "company.manage"],
   ["/termine", "Termine", "calendar", null], ["/leistungen", "Leistungen", "services", "company.manage"],
   ["/mitarbeiter", "Mitarbeiter", "staff", "company.manage"], ["/konten", "Konten", "staff", "company.users.manage"], ["/unternehmen", "Unternehmen", "company", "company.manage"],

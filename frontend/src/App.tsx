@@ -7,6 +7,7 @@ import { AppLayout } from "./layouts/AppLayout";
 import { PlatformLayout } from "./layouts/PlatformLayout";
 import { AppointmentsPage } from "./pages/AppointmentsPage";
 import { AgentSettingsPage } from "./pages/AgentSettingsPage";
+import { NotificationsPage } from "./pages/NotificationsPage";
 import { CompanyPage } from "./pages/CompanyPage";
 import { CalendarSettingsPage } from "./pages/CalendarSettingsPage";
 import { ConversationPage } from "./pages/ConversationPage";
@@ -81,6 +82,7 @@ function buildRouter() { return createBrowserRouter([
     { index: true, element: <OverviewPage /> }, { path: "testgespraech", element: <ConversationPage /> },
     { path: "anrufe", element: <CallsPage /> }, { path: "anrufe/:callId", element: <CallDetailPage /> },
     { path: "ki-konfigurieren", element: <PermissionRoute permission="company.manage"><AgentSettingsPage /></PermissionRoute> },
+    { path: "benachrichtigungen", element: <PermissionRoute permission="company.manage"><NotificationsPage /></PermissionRoute> },
     { path: "kalender", element: <PermissionRoute permission="company.manage"><CalendarSettingsPage /></PermissionRoute> },
     { path: "termine", element: <AppointmentsPage /> }, { path: "leistungen", element: <PermissionRoute permission="company.manage"><ServicesPage /></PermissionRoute> },
     { path: "mitarbeiter", element: <PermissionRoute permission="company.manage"><StaffPage /></PermissionRoute> }, { path: "unternehmen", element: <PermissionRoute permission="company.manage"><CompanyPage /></PermissionRoute> },

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CallChannel, CallSession
 from app.services.agent_runtime import AgentRuntimeConfig
+from app.services.gmail_notifications import queue_gmail_notification
 
 TERMINAL_CALL_STATUSES = frozenset({"ended", "cancelled", "failed", "abandoned"})
 
@@ -61,8 +62,9 @@ class CallLifecycleService:
         )
         if runtime is not None:
             self.record_runtime(call, runtime, commit=False)
-            config = runtime.bundle.configuration if runtime.bundle else None
-            if channel == CallChannel.telephone and config and config.operating_mode == "answering_machine" and config.call_email_enabled and config.call_email_recipient:
+        if channel == CallChannel.telephone and not queue_gmail_notification(self.db, call):
+            config = runtime.bundle.configuration if runtime and runtime.bundle else None
+            if config and config.operating_mode == "answering_machine" and config.call_email_enabled and config.call_email_recipient:
                 call.notification_status = "waiting_analysis"
                 call.notification_recipient = config.call_email_recipient
         self.db.add(call)

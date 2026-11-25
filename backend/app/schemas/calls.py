@@ -96,6 +96,7 @@ class CallListItem(BaseModel):
     summary_preview: str | None = None
     no_message: bool = False
     notification_status: str = "not_requested"
+    notification_transport: Literal["gmail", "smtp"] | None = None
     notification_sent_at: datetime | None = None
     notification_error_code: str | None = None
 

@@ -21,6 +21,7 @@ class OutboundMail:
     subject: str
     text: str
     message_id: str | None = None
+    html: str | None = None
 
 
 class MailAdapter(Protocol):

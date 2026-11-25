@@ -107,7 +107,8 @@ export function AgentSettingsPage() {
         <Field label="Gesprächsinhalte aufbewahren (Tage)" hint="Danach werden Transkript, Auswertung und Kontaktdaten automatisch gelöscht. Separat gebuchte Termine bleiben erhalten."><input type="number" min={1} max={365} value={config.call_retention_days ?? 30} onChange={(e) => update("call_retention_days", Number(e.target.value))} /></Field>
         <p>{config.operating_mode === "answering_machine" ? "Nachrichtenaufnahme auf Deutsch; Kalender und externe Aktionen sind technisch deaktiviert." : "Unternehmenswissen und freigeschaltete Kalenderfunktionen stehen zur Verfügung."}<br />Sprachmodell: {runtime?.model ?? "Wird geladen …"}</p>
       </div></Section>}
-      {tab === "identity" && <Section title="Nachrichten per E-Mail" description="Nur neue Anrufe im Anrufbeantwortermodus werden nach der Auswertung versendet. Alte Anrufe bleiben unverändert.">
+      {tab === "identity" && <Section title="Nachrichten per SMTP" description="Nur neue Anrufe im Anrufbeantwortermodus werden nach der Auswertung versendet. Alte Anrufe bleiben unverändert.">
+        <p><Link to="/benachrichtigungen">Gmail-Benachrichtigungen einrichten</Link></p>
         <div className="agent-form-grid">
           <Field label="E-Mail-Benachrichtigungen"><input type="checkbox" checked={config.call_email_enabled ?? false} disabled={!config.call_email_transport_available && !config.call_email_enabled} onChange={(e) => update("call_email_enabled", e.target.checked)} /></Field>
           <Field label="Feste Empfängeradresse" hint="Die Nachricht enthält eine Zusammenfassung und einen Link zum geschützten Transkript."><input type="email" maxLength={320} value={config.call_email_recipient ?? ""} onChange={(e) => update("call_email_recipient", e.target.value || null)} /></Field>

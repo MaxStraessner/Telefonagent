@@ -18,6 +18,7 @@ from app.schemas.calls import (
 )
 from app.services.audit import AuditService
 from app.services.call_processing import erase_call_content
+from app.services.gmail_notifications import active_connection
 from app.services.mail import mail_transport_available
 
 router = APIRouter(prefix="/calls", tags=["calls"])
@@ -59,6 +60,9 @@ def _list_item(call: CallSession) -> CallListItem:
         summary_preview=(call.summary[:240] if call.summary and call.analysis_status == "completed" and not call.content_deleted_at else None),
         no_message=bool(call.ended_at and not call.connected_at and not call.transcript),
         notification_status=call.notification_status,
+        notification_transport="gmail" if call.notification_gmail_generation else (
+            "smtp" if call.notification_status != "not_requested" else None
+        ),
         notification_sent_at=call.notification_sent_at,
         notification_error_code=call.notification_error_code,
     )
@@ -189,12 +193,22 @@ def retry_notification(
     settings: Settings = Depends(get_settings),
 ) -> CallDetail:
     call = _tenant_call(db, context.id, call_id, for_update=True)
-    config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == context.id))
-    if (call.notification_status not in {"failed", "uncertain"} or call.content_deleted_at
-            or call.analysis_status != "completed" or not call.ended_at
-            or call.operating_mode != "answering_machine" or not config or not config.call_email_enabled
-            or not call.notification_recipient or config.call_email_recipient != call.notification_recipient
-            or not mail_transport_available(settings)):
+    if call.notification_gmail_generation:
+        connection = active_connection(db, context.id)
+        can_retry = bool(
+            call.notification_status == "failed" and connection and connection.user_id == user.id
+            and connection.generation == call.notification_gmail_generation
+            and connection.recipient == call.notification_recipient
+            and call.analysis_status in {"completed", "failed"}
+        )
+    else:
+        config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == context.id))
+        can_retry = bool(
+            call.notification_status in {"failed", "uncertain"} and call.analysis_status == "completed"
+            and call.operating_mode == "answering_machine" and config and config.call_email_enabled
+            and config.call_email_recipient == call.notification_recipient and mail_transport_available(settings)
+        )
+    if not can_retry or call.content_deleted_at or not call.ended_at or not call.notification_recipient:
         raise HTTPException(status_code=409, detail={"code": "notification_retry_unavailable", "message": "Der Versand kann für diese Nachricht nicht erneut gestartet werden."})
     call.notification_status = "pending"
     call.notification_attempts = 0

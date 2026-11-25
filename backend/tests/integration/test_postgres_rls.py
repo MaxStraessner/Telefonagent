@@ -342,6 +342,33 @@ def test_runtime_role_sees_only_selected_tenant():
     engine.dispose()
 
 
+def test_gmail_credentials_are_tenant_isolated():
+    from app.models.entities import GmailNotification
+
+    migrator = create_engine(MIGRATOR_URL)
+    runtime = create_engine(RUNTIME_URL)
+    try:
+        with Session(migrator) as db:
+            db.merge(GmailNotification(
+                tenant_id=UUID(TENANT_A), user_id=UUID(USER_A), enabled=False, sections=["summary"],
+                encrypted_refresh_token="synthetic-ciphertext",
+            ))
+            db.commit()
+        with Session(runtime) as db:
+            assert db.scalars(select(GmailNotification)).all() == []
+        with Session(runtime) as db:
+            bind_tenant_context(db, TENANT_B)
+            assert db.get(GmailNotification, (UUID(TENANT_A), UUID(USER_A))) is None
+            updated = db.execute(text("UPDATE gmail_notifications SET encrypted_refresh_token = NULL"))
+            assert updated.rowcount == 0
+        with Session(runtime) as db:
+            bind_tenant_context(db, TENANT_A)
+            assert db.get(GmailNotification, (UUID(TENANT_A), UUID(USER_A))).encrypted_refresh_token == "synthetic-ciphertext"
+    finally:
+        migrator.dispose()
+        runtime.dispose()
+
+
 def test_platform_mode_can_read_control_plane_but_not_business_rows():
     engine = create_engine(RUNTIME_URL)
     with engine.begin() as connection:
