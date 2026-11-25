@@ -6,16 +6,17 @@ import logging
 import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Depends, Request, Response, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext
 from app.core.config import Settings, get_settings
 from app.db.session import bind_tenant_context, get_db
-from app.models import CallChannel, CallSession, Tenant, TenantInboundRoute, TenantStatus
+from app.models import AgentConfiguration, CallChannel, CallSession, Tenant, TenantInboundRoute, TenantStatus
 from app.services.agent_runtime import build_runtime_config, restore_call_runtime
 from app.services.call_lifecycle import CallLifecycleError, CallLifecycleService
 from app.services.conversation_tools import ConversationToolDispatcher
+from app.services.speech import prepare_greeting
 from app.services.tenant_resolution import InboundRouteTenantResolver, TenantResolutionError
 from app.services.twilio import (
     ACCOUNT_SID_PATTERN,
@@ -53,14 +54,15 @@ def _reject_call() -> Response:
     return _xml_response(root)
 
 
-def _stream_twiml(settings: Settings, token: str, greeting: str) -> Response:
+def _stream_twiml(settings: Settings, token: str, greeting: str, *, prepared_greeting: bool = False) -> Response:
     root = ET.Element("Response")
-    notice = ET.SubElement(root, "Say", {"language": "de-DE"})
-    disclosure = (
-        "Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
-        if settings.openai_realtime_transcription_enabled else "Ich bin ein KI-Assistent."
-    )
-    notice.text = f"{greeting} {disclosure}"
+    if not prepared_greeting:
+        notice = ET.SubElement(root, "Say", {"language": "de-DE"})
+        disclosure = (
+            "Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
+            if settings.openai_realtime_transcription_enabled else "Ich bin ein KI-Assistent."
+        )
+        notice.text = f"{greeting} {disclosure}"
     connect = ET.SubElement(root, "Connect")
     stream = ET.SubElement(
         connect,
@@ -201,9 +203,16 @@ async def inbound_voice(
         call = lifecycle.find_provider_call(CallChannel.telephone, call_sid)
         if call is None:
             runtime = build_runtime_config(db, context, settings, test_mode=False, telephone=True)
+            config = runtime.bundle.configuration
+            async with asyncio.timeout(8):
+                audio, digest = await prepare_greeting(settings, context, config, config)
+            if audio and digest != config.greeting_audio_digest:
+                db.execute(update(AgentConfiguration).where(
+                    AgentConfiguration.id == config.id, AgentConfiguration.version == config.version,
+                ).values(greeting_audio=audio, greeting_audio_digest=digest))
             call, _ = lifecycle.provision_provider_call(
                 CallChannel.telephone, call_sid, runtime,
-                phone_number_id=route.id, caller_phone=caller_phone,
+                phone_number_id=route.id, caller_phone=caller_phone, greeting_audio=audio,
             )
         if call.status not in {"provisioned", "connected"}:
             return _reject_call()
@@ -214,7 +223,10 @@ async def inbound_voice(
             call_sid=call_sid,
             phone_number=to_number,
         )
-        return _stream_twiml(settings, token, call.runtime_manifest_snapshot["welcome_message"])
+        return _stream_twiml(
+            settings, token, call.runtime_manifest_snapshot["welcome_message"],
+            prepared_greeting=bool(call.prepared_greeting_audio),
+        )
     except (TenantResolutionError, TwilioServiceError):
         db.rollback()
         _record_setup_failure(db, context, call, call_sid, route, caller_phone)
@@ -356,6 +368,7 @@ async def media_stream(
                 raise ValueError("runtime_tenant_mismatch")
         except (TypeError, ValueError) as exc:
             raise TwilioMediaError("runtime_snapshot_invalid") from exc
+        greeting_audio = call.prepared_greeting_audio
         lifecycle = CallLifecycleService(db, context.id)
         lifecycle.connect(call.id)
         stream_owned = True
@@ -364,9 +377,13 @@ async def media_stream(
         if runtime.model == LIVE_TELEPHONE_MODEL:
             bridge = TwilioLiveMediaBridge(
                 *bridge_args, transcript_checkpoint=lambda turns: lifecycle.checkpoint_live_transcript(call.id, turns),
+                greeting_audio=greeting_audio,
             )
         else:
-            bridge = TwilioMediaBridge(*bridge_args, transcript_sink=lambda turn: lifecycle.save_segment(call.id, turn))
+            bridge = TwilioMediaBridge(
+                *bridge_args, transcript_sink=lambda turn: lifecycle.save_segment(call.id, turn),
+                greeting_audio=greeting_audio,
+            )
         await bridge.run()
         lifecycle.finish(call.id, transcript=bridge.transcript, error_code=bridge.documentation_error)
     except WebSocketDisconnect:

@@ -40,6 +40,7 @@ class CallLifecycleService:
         *,
         phone_number_id: UUID | None = None,
         caller_phone: str | None = None,
+        greeting_audio: bytes | None = None,
     ) -> tuple[CallSession, bool]:
         existing = self.find_provider_call(channel, provider_session_id)
         if existing is not None:
@@ -53,6 +54,7 @@ class CallLifecycleService:
             started_at=now,
             phone_number_id=phone_number_id,
             caller_phone=caller_phone,
+            prepared_greeting_audio=greeting_audio,
             inbox_status="open" if channel == CallChannel.telephone else "done",
             analysis_status=(
                 "pending" if channel == CallChannel.telephone else "not_requested"
@@ -194,6 +196,7 @@ class CallLifecycleService:
             self.db.rollback()
             return
         now = datetime.now(timezone.utc)
+        call.prepared_greeting_audio = None
         ending = call.status not in TERMINAL_CALL_STATUSES
         if ending:
             call.status = status

@@ -64,7 +64,7 @@ def _configuration_missing() -> HTTPException:
 
 def load_agent_bundle(db: Session, tenant_id: UUID, *, for_update: bool = False) -> AgentBundle:
     query = select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant_id)
-    configuration = db.scalar(query.with_for_update() if for_update else query)
+    configuration = db.scalar(query.with_for_update().execution_options(populate_existing=True) if for_update else query)
     profile = db.scalar(select(AgentKnowledgeProfile).where(AgentKnowledgeProfile.tenant_id == tenant_id))
     if configuration is None or profile is None:
         raise _configuration_missing()
@@ -104,6 +104,7 @@ def configuration_response(bundle: AgentBundle, user: UserContext) -> AgentConfi
         operating_mode=config.operating_mode,
         telephone_model=config.telephone_model,
         message_greeting=config.message_greeting,
+        integrated_greeting=config.integrated_greeting,
         call_retention_days=config.call_retention_days,
         call_email_enabled=config.call_email_enabled,
         call_email_recipient=config.call_email_recipient,
@@ -186,6 +187,7 @@ def rename_company_for_calls(db: Session, tenant: Tenant, name: str, user: UserC
 
 def update_configuration(
     db: Session, context: TenantContext, user: UserContext, payload: AgentConfigurationUpdate,
+    *, greeting_audio: bytes | None = None, greeting_audio_digest: str | None = None,
 ) -> AgentBundle:
     bundle = load_agent_bundle(db, context.id, for_update=True)
     config = bundle.configuration
@@ -208,6 +210,8 @@ def update_configuration(
     }
     for key, value in scalar_fields.items():
         setattr(config, key, enum_fields[key](value) if key in enum_fields else value)
+    config.greeting_audio = greeting_audio
+    config.greeting_audio_digest = greeting_audio_digest
     config.version += 1
     config.updated_by_user_id = user.id
     db.execute(delete(AgentTopic).where(AgentTopic.tenant_id == context.id))

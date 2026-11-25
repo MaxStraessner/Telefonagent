@@ -82,6 +82,7 @@ describe("KI-Einstellungen", () => {
     render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
     await screen.findByRole("heading", { name: "KI konfigurieren" });
     await userEvent.selectOptions(screen.getByLabelText("Betriebsmodus"), "answering_machine");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Begrüßung in gewählter Stimme/ }));
     const greeting = screen.getByLabelText(/Nachrichtenbegrüßung/);
     await userEvent.clear(greeting);
     await userEvent.type(greeting, "Willkommen. Bitte hinterlassen Sie Ihr Anliegen.");
@@ -92,6 +93,7 @@ describe("KI-Einstellungen", () => {
     await screen.findByText(/^Gespeichert –/);
     const write = calls.find((item) => item.method === "PUT");
     expect(write?.body?.operating_mode).toBe("answering_machine");
+    expect(write?.body?.integrated_greeting).toBe(true);
     expect(write?.body?.message_greeting).toBe("Willkommen. Bitte hinterlassen Sie Ihr Anliegen.");
     expect(write?.body?.call_retention_days).toBe(14);
   });
