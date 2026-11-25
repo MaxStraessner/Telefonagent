@@ -60,7 +60,7 @@ def update_own_company(
     mailer: MailAdapter = Depends(get_mail_adapter),
 ) -> CompanyDetail:
     tenant = _service(request, context, db, settings, mailer).update_company_operational(
-        tenant_context.tenant, payload
+        tenant_context.tenant, payload, context.user
     )
     return company_detail(db, tenant)
 

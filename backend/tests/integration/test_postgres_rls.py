@@ -491,6 +491,72 @@ def test_platform_authentication_sets_access_level_without_implicit_tenant():
     engine.dispose()
 
 
+def test_platform_admin_and_sole_proprietor_set_up_answering_machine():
+    owner_engine = create_engine(MIGRATOR_URL)
+    runtime = create_engine(RUNTIME_URL)
+    username = "solo-" + uuid4().hex[:12]
+    with Session(owner_engine, expire_on_commit=False) as db:
+        tenant, _ = ProvisioningService(db).provision_tenant(
+            slug=username, name="Testbetrieb", industry="services", timezone_name="Europe/Berlin",
+            username=username, display_name="Testperson", email=None, password=PASSWORD,
+        )
+        tenant_id = tenant.id
+
+    def database():
+        with Session(runtime, expire_on_commit=False, autoflush=False) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database
+    origin = {"Origin": "http://testserver", "X-Requested-With": "Telefonagent"}
+    def login(client, account):
+        response = client.post("/api/v1/auth/login", json={"username": account, "password": PASSWORD}, headers=origin)
+        assert response.status_code == 200
+        return {**origin, "X-CSRF-Token": client.cookies.get("telefonagent_csrf")}
+
+    try:
+        platform = TestClient(app)
+        headers = login(platform, "rls-platform")
+        assert platform.post("/api/v1/auth/context", json={"company_id": str(tenant_id)}, headers=headers).is_success
+        headers["X-CSRF-Token"] = platform.cookies.get("telefonagent_csrf")
+        config = platform.get("/api/v1/agent/config").json()
+        assert config["role"] == "platform_admin"
+        payload = {k: v for k, v in config.items() if k not in {
+            "tenant_id", "version", "updated_at", "role", "can_edit", "call_email_transport_available",
+        }}
+        payload.update(expected_version=config["version"], operating_mode="answering_machine",
+                       standard_greeting="Willkommen in der telefonischen Beratung.")
+        saved = platform.put("/api/v1/agent/config", headers=headers, json=payload)
+        assert saved.status_code == 200, saved.text
+        name = "Maximilian Sträßner"
+        company = TestClient(app)
+        headers = login(company, username)
+        updated = company.put("/api/v1/company", headers=headers, json={"name": name, "timezone": "Europe/Berlin"})
+        assert updated.status_code == 200, updated.text
+        assert company.get("/api/v1/company").json()["name"] == name
+        reloaded = company.get("/api/v1/agent/config").json()
+        assert reloaded["company_name"] == name
+        assert reloaded["standard_greeting"] == payload["standard_greeting"]
+        assert reloaded["operating_mode"] == "answering_machine"
+        assert reloaded["version"] == saved.json()["version"] + 1
+        assert platform.put("/api/v1/agent/config", headers={
+            **origin, "X-CSRF-Token": platform.cookies.get("telefonagent_csrf"),
+        }, json={**payload, "expected_version": saved.json()["version"]}).status_code == 409
+        preview = company.post("/api/v1/agent/test-session", headers=headers).json()
+        assert preview["company_name"] == name and preview["tool_names"] == []
+        assert name in preview["greeting"]
+        assert name in company.get("/api/v1/agent/prompt-preview").json()["prompt"]
+        with owner_engine.connect() as connection:
+            rows = connection.execute(text(
+                "SELECT changed_by_user_id, platform_actor_id FROM agent_configuration_audits "
+                "WHERE tenant_id = :tenant ORDER BY version"
+            ), {"tenant": tenant_id}).all()
+        assert rows[-2] == (None, UUID(PLATFORM_USER))
+        assert rows[-1].changed_by_user_id is not None and rows[-1].platform_actor_id is None
+    finally:
+        owner_engine.dispose()
+        runtime.dispose()
+
+
 def test_security_definer_resolvers_establish_tenant_without_bypassing_rls():
     engine = create_engine(RUNTIME_URL)
     with Session(engine, expire_on_commit=False) as db:

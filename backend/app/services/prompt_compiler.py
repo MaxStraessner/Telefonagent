@@ -58,6 +58,7 @@ def compile_agent_prompt(bundle: AgentBundle, greeting: str) -> str:
     if config.operating_mode == "answering_machine":
         return "\n".join([
             "Du bist der intelligente Anrufbeantworter für " + config.company_name + ".",
+            "Nimm Nachrichten im Auftrag dieses Namens entgegen. Erfinde kein Team, keine Abteilung und keine Vertretung.",
             "Sprich natürliches Deutsch. Nimm das Anliegen entgegen. Stelle nur notwendige Rückfragen, höchstens eine auf einmal.",
             "Frage bei Bedarf nach Name, Telefonnummer und Rückrufwunsch. Vermeide unnötige personenbezogene Angaben.",
             "Keine Kalenderbuchungen, externen Aktionen, verbindlichen Zusagen oder garantierten Rückrufe. Ein Terminwunsch ist nur eine Nachricht.",

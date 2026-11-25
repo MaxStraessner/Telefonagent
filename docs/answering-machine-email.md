@@ -4,10 +4,11 @@ Die bestehende Nachrichtenaufnahme wird um optionalen SMTP-Versand je Unternehme
 
 ## Bedienung
 
-1. Das richtige Unternehmen auswählen und **KI konfigurieren → Identität** öffnen.
-2. Betriebsmodus **Intelligenter Anrufbeantworter** wählen und die Nachrichtenbegrüßung festlegen.
-3. Unter **Nachrichten per E-Mail** genau eine feste Empfängeradresse eintragen. Sobald SMTP auf dem Server vorbereitet ist, E-Mail-Benachrichtigungen einschalten und speichern.
-4. Neue Anrufe erscheinen unter **Anrufe** mit Zusammenfassungsvorschau und E-Mail-Status. Im Anrufdetail stehen die vollständige Auswertung und eine Transkripttabelle mit Zeitpunkt, Sprecher, Inhalt und Bestätigungsstand.
+1. Unter **Unternehmen → Name und Kontakt** den Unternehmensnamen oder bei einem Einzelunternehmen den eigenen Vor- und Nachnamen eintragen und speichern. Eine Namensänderung übernimmt der Assistent für neue Gespräche.
+2. Unter **KI konfigurieren → Identität** den Betriebsmodus **Intelligenter Anrufbeantworter** wählen. Das Feld **Name im Gespräch** zeigt, für wen der Assistent Nachrichten entgegennimmt.
+3. Die **Nachrichtenbegrüßung** festlegen und **Änderungen speichern** wählen. Zum Beispiel „Guten Tag, hier ist der Anrufbeantworter von {Name}. Welche Nachricht möchten Sie hinterlassen?“ Unter **Testen** erscheint die gespeicherte Begrüßung mit eingesetztem Namen.
+4. Wer eine Zusammenfassung per E-Mail erhalten möchte, trägt unter **Nachrichten per E-Mail** eine feste Empfängeradresse ein und aktiviert den Versand. Dafür muss SMTP auf dem Server eingerichtet sein.
+5. Neue Anrufe erscheinen unter **Anrufe** mit Zusammenfassungsvorschau und E-Mail-Status. Im Anrufdetail stehen die vollständige Auswertung und eine Transkripttabelle mit Zeitpunkt, Sprecher, Inhalt und Bestätigungsstand.
 
 Im vollständigen Telefonagenten bleibt die Historie verfügbar; dieser Modus versendet keine neuen Anrufbeantworter-Mails. Bereits vor dem Umschalten gestartete Gespräche behalten ihren eingefrorenen Modus und ihre ursprüngliche Versandentscheidung. E-Mail-Einstellungen allein lösen keinen Versand aus und verschicken keine alten Anrufe nachträglich.
 
