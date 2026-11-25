@@ -40,10 +40,15 @@ export function formatCallDuration(seconds: number | null): string {
 function analysisText(call: CallListItem): string {
   if (call.documentation_status === "deleted") return "Gesprächsinhalte gelöscht";
   if (call.call_status === "connected" || call.call_status === "provisioned") return callStatusLabel(call.call_status);
+  if (call.no_message) return "Keine Nachricht hinterlassen";
   if (call.analysis_status === "not_requested") return "Keine Auswertung angefordert";
   if (call.analysis_status === "failed") return "Analyse fehlgeschlagen";
   if (call.analysis_status !== "completed") return "Analyse ausstehend";
-  return call.result || "Kein Ergebnis festgehalten";
+  return call.summary_preview || call.result || "Kein Ergebnis festgehalten";
+}
+
+export function notificationLabel(call: CallListItem): string {
+  return ({ waiting_analysis: "E-Mail wartet auf Auswertung", pending: "E-Mail zum Versand vorgemerkt", sending: "E-Mail wird versendet", sent: "E-Mail vom Mailserver angenommen", failed: "E-Mail nicht versendet", uncertain: "E-Mail-Zustellung unklar – keine automatische Wiederholung", canceled: "E-Mail-Versand aufgehoben" } as Record<string, string>)[call.notification_status ?? ""] ?? "E-Mail nicht angefordert";
 }
 
 export function CallsPage() {
@@ -77,13 +82,13 @@ export function CallsPage() {
     {!loading && !error && calls.length > 0 && <>
       <section className="card table-card call-history-table desktop-table">
         <div className="table-heading"><div><p className="card-kicker">Anruf-Inbox</p><h2>Neueste Anrufe</h2></div><span>{calls.length} Anrufe</span></div>
-        <table><thead><tr><th>Zeitpunkt</th><th>Anrufer</th><th>Modus</th><th>Anliegen</th><th>Ergebnis</th><th>Priorität</th><th>Dauer</th><th>Status</th></tr></thead>
+        <table><thead><tr><th>Zeitpunkt</th><th>Anrufer</th><th>Modus</th><th>Anliegen</th><th>Zusammenfassung</th><th>Priorität</th><th>Dauer</th><th>Status</th></tr></thead>
           <tbody>{calls.map((call) => <tr key={call.id}>
             <td><Link to={`/anrufe/${call.id}`}>{new Date(call.started_at).toLocaleString("de-DE")}</Link></td>
             <td><Link to={`/anrufe/${call.id}`}><strong>{call.caller_name || "Unbekannt"}</strong><small>{call.caller_phone || "Nummer unbekannt"}</small></Link></td>
             <td>{callModeLabel(call.operating_mode)}{call.callback_required === true && <small>Rückruf gewünscht</small>}</td>
             <td>{call.category ? callCategoryLabels[call.category] : "Noch nicht ausgewertet"}</td>
-            <td>{analysisText(call)}</td>
+            <td>{analysisText(call)}<small>{notificationLabel(call)}</small></td>
             <td><span className={`call-priority ${call.priority}`}>{callPriorityLabels[call.priority]}</span></td>
             <td>{formatCallDuration(call.duration_seconds)}</td>
             <td><span className={`account-status ${call.status === "done" ? "active" : "pending"}`}>{call.status === "done" ? "Erledigt" : "Offen"}</span></td>
@@ -95,7 +100,7 @@ export function CallsPage() {
         <small>{call.caller_phone || "Nummer unbekannt"} · {new Date(call.started_at).toLocaleString("de-DE")}</small>
         <small>{callModeLabel(call.operating_mode)} · {formatCallDuration(call.duration_seconds)}{call.callback_required === true ? " · Rückruf gewünscht" : ""}</small>
         <p>{call.category ? callCategoryLabels[call.category] : "Noch nicht ausgewertet"}</p>
-        <span>{analysisText(call)}</span>
+        <span>{analysisText(call)}</span><small>{notificationLabel(call)}</small>
       </Link>)}</div>
     </>}
   </div>;

@@ -93,6 +93,11 @@ class CallListItem(BaseModel):
     call_status: str = "unknown"
     callback_required: bool | None = None
     documentation_status: str = "legacy"
+    summary_preview: str | None = None
+    no_message: bool = False
+    notification_status: str = "not_requested"
+    notification_sent_at: datetime | None = None
+    notification_error_code: str | None = None
 
 
 class CallDetail(CallListItem):

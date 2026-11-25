@@ -34,6 +34,7 @@ from app.services.agent_configuration import (
 )
 from app.services.agent_runtime import build_runtime_config
 from app.services.capabilities import active_capabilities
+from app.services.mail import mail_transport_available
 from app.services.prompt_compiler import compile_pronunciation_instruction
 from app.services.rate_limit import enforce_rate_limit
 from app.services.realtime import build_safety_identifier
@@ -54,8 +55,11 @@ def get_configuration(
     context: TenantContext = Depends(get_tenant_context),
     user: UserContext = Depends(get_user_context),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> AgentConfigurationResponse:
-    return configuration_response(load_agent_bundle(db, context.id), user)
+    result = configuration_response(load_agent_bundle(db, context.id), user)
+    result.call_email_transport_available = mail_transport_available(settings)
+    return result
 
 
 @router.put("/config", response_model=AgentConfigurationResponse)
@@ -64,9 +68,14 @@ def put_configuration(
     context: TenantContext = Depends(get_tenant_context),
     user: UserContext = Depends(require_agent_admin),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> AgentConfigurationResponse:
     enforce_rate_limit(f"agent-config:{context.id}:{user.id}", limit=20)
-    return configuration_response(update_configuration(db, context, user, payload), user)
+    if payload.call_email_enabled and not mail_transport_available(settings):
+        raise HTTPException(status_code=409, detail={"code": "mail_not_configured", "message": "Der SMTP-Versand muss zuerst auf dem Server eingerichtet werden."})
+    result = configuration_response(update_configuration(db, context, user, payload), user)
+    result.call_email_transport_available = mail_transport_available(settings)
+    return result
 
 
 @router.get("/knowledge", response_model=AgentKnowledgeResponse)

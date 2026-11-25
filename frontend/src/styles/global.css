@@ -377,3 +377,10 @@ table { width: 100%; border-collapse: collapse; }th,td { padding: 14px 10px; tex
 @media (max-width: 900px) { .call-detail-grid { grid-template-columns: 1fr; } }
 @media (min-width: 761px) and (max-width: 1150px) { .calls-page .desktop-table { display: none; }.calls-page .mobile-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .call-detail-actions { display: grid; width: 100%; }.call-transcript-turn { max-width: 94%; }.call-analysis-card,.call-transcript-card { padding: 20px; }.call-detail-grid .detail-card dl div { grid-template-columns: 1fr; } }
+
+.call-transcript-scroll { overflow-x: auto; }
+.call-transcript-table { width: 100%; min-width: 600px; border-collapse: collapse; }
+.call-transcript-table caption { text-align: left; padding: 0 0 1rem; color: var(--text-soft); }
+.call-transcript-table th, .call-transcript-table td { text-align: left; padding: .8rem; vertical-align: top; border-bottom: 1px solid var(--border); }
+.call-transcript-table td:nth-child(3) { min-width: 240px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.call-history-table td small { display: block; margin-top: .4rem; }

@@ -108,10 +108,16 @@ class CompanyUpdate(StrictAccountWrite):
 
 
 class CompanyOperationalUpdate(StrictAccountWrite):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
     contact_name: str | None = Field(default=None, max_length=150)
     contact_email: str | None = Field(default=None, max_length=320)
     contact_phone: str | None = Field(default=None, max_length=50)
     timezone: str = Field(max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str | None) -> str:
+        return CompanyCreate.required_text(value or "")
 
     _optional = field_validator(
         "contact_name", "contact_email", "contact_phone", mode="before"

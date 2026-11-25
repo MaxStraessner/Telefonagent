@@ -4,7 +4,7 @@ import { ApiError, api } from "../api/client";
 import { useAuth } from "../api/AuthProvider";
 import { ErrorState } from "../components/AsyncState";
 import type { CallDetail } from "../types/api";
-import { callCategoryLabels, callModeLabel, callPriorityLabels, callStatusLabel, formatCallDuration } from "./CallsPage";
+import { callCategoryLabels, callModeLabel, callPriorityLabels, callStatusLabel, formatCallDuration, notificationLabel } from "./CallsPage";
 import { PageHeader } from "./shared";
 
 export function CallDetailPage() {
@@ -15,6 +15,7 @@ export function CallDetailPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmResend, setConfirmResend] = useState(false);
 
   const load = useCallback((signal?: AbortSignal) => {
     setLoading(true); setError(null); setCall(null);
@@ -26,7 +27,7 @@ export function CallDetailPage() {
 
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
 
-  const processing = call?.id === callId && !call.content_deleted_at && (call.analysis_status === "pending" || call.analysis_status === "processing");
+  const processing = call?.id === callId && !call.content_deleted_at && (call.analysis_status === "pending" || call.analysis_status === "processing" || ["waiting_analysis", "pending", "sending"].includes(call.notification_status ?? ""));
   useEffect(() => {
     if (!processing) return;
     const controller = new AbortController();
@@ -67,6 +68,14 @@ export function CallDetailPage() {
     finally { setSaving(false); }
   }
 
+  async function retryNotification() {
+    if (!call) return;
+    setSaving(true); setError(null);
+    try { setCall(await api.retryCallNotification(call.id)); setConfirmResend(false); }
+    catch (cause) { setError(cause instanceof ApiError ? cause.message : "Der E-Mail-Versand konnte nicht neu gestartet werden."); }
+    finally { setSaving(false); }
+  }
+
   if (loading) return <div className="page"><div className="center-state card"><div className="spinner" /><p>Anruf wird geladen …</p></div></div>;
   if (!call) return <div className="page"><ErrorState message={error ?? "Anruf nicht gefunden."} retry={() => void load()} /></div>;
 
@@ -74,6 +83,7 @@ export function CallDetailPage() {
   return <div className="page call-detail-page">
     <PageHeader eyebrow="Anrufdetail" title={call.caller_name || "Unbekannter Anrufer"} description={`${call.caller_phone || "Nummer unbekannt"} · ${new Date(call.started_at).toLocaleString("de-DE")}`} action={action} />
     {error && <div className="notice error" role="alert"><span>!</span><p>{error}</p></div>}
+    {session?.permissions.includes("company.manage") && !call.content_deleted_at && call.analysis_status === "completed" && ["failed", "uncertain"].includes(call.notification_status ?? "") && <section className="card detail-card"><h2>E-Mail-Versand prüfen</h2><p>{notificationLabel(call)}. Prüfen Sie zuerst Ihr Postfach. Bei unklarem Status kann eine erneute Zustellung zu einer doppelten Nachricht führen.</p>{confirmResend ? <div className="call-detail-actions"><button className="button secondary" disabled={saving} onClick={() => setConfirmResend(false)}>Abbrechen</button><button className="button primary" disabled={saving} onClick={() => void retryNotification()}>E-Mail erneut zustellen</button></div> : <button className="button secondary" onClick={() => setConfirmResend(true)}>Erneuten Versand vorbereiten</button>}</section>}
     <section className="grid call-detail-grid">
       <article className="card detail-card"><h2>Metadaten</h2><dl>
         <div><dt>Anrufer</dt><dd>{call.caller_name || "Unbekannt"}</dd></div>
@@ -86,13 +96,15 @@ export function CallDetailPage() {
         <div><dt>Telefonstatus</dt><dd>{callStatusLabel(call.call_status)}</dd></div>
         <div><dt>Dokumentation</dt><dd>{call.documentation_status === "incomplete" ? "Unvollständig" : call.documentation_status === "deleted" ? "Inhalte gelöscht" : call.documentation_status === "recording" ? "Gespräch läuft" : call.documentation_status === "complete" ? "Abgeschlossen" : "Bestandsdaten"}</dd></div>
         <div><dt>Rückruf</dt><dd>{call.callback_required === true ? "Gewünscht" : call.callback_required === false ? "Nicht gewünscht" : "Unbekannt"}</dd></div>
+        <div><dt>E-Mail</dt><dd>{notificationLabel(call)}{call.notification_sent_at && <> · {new Date(call.notification_sent_at).toLocaleString("de-DE")}</>}{call.notification_error_code && <small>{call.notification_error_code}</small>}</dd></div>
         {(call.error_code || call.analysis_error_code) && <div><dt>Verarbeitungsfehler</dt><dd>{call.error_code || call.analysis_error_code}</dd></div>}
         <div><dt>Status</dt><dd><span className={`account-status ${call.status === "done" ? "active" : "pending"}`}>{call.status === "done" ? "Erledigt" : "Offen"}</span></dd></div>
       </dl></article>
       <article className="card call-analysis-card"><div className="section-heading"><div><p className="card-kicker">KI-Auswertung</p><h2>Gesprächszusammenfassung</h2></div><span className={`call-priority ${call.priority}`}>{callPriorityLabels[call.priority]}</span></div>
-        {call.analysis_status === "failed" && <div className="notice error" role="status"><span>!</span><p>Die Auswertung ist fehlgeschlagen. Das Transkript wurde trotzdem gespeichert.</p><button className="button secondary" disabled={saving} onClick={() => void retryAnalysis()}>Erneut analysieren</button></div>}
+        {call.no_message && !call.content_deleted_at && <p role="status">Keine Nachricht hinterlassen. Es liegen keine Gesprächsinhalte für eine Zusammenfassung vor.</p>}
+        {!call.no_message && call.analysis_status === "failed" && <div className="notice error" role="status"><span>!</span><p>Die Auswertung ist fehlgeschlagen. Das vorhandene Transkript bleibt verfügbar.</p><button className="button secondary" disabled={saving} onClick={() => void retryAnalysis()}>Erneut analysieren</button></div>}
         {call.content_deleted_at && <p role="status">Die Gesprächsinhalte wurden gelöscht.</p>}
-        {!call.content_deleted_at && call.analysis_status !== "completed" && call.analysis_status !== "failed" && <div className="notice warning" role="status"><span>!</span><p>Die Auswertung wird vorbereitet.</p></div>}
+        {!call.content_deleted_at && !call.no_message && call.analysis_status !== "completed" && call.analysis_status !== "failed" && <div className="notice warning" role="status"><span>!</span><p>Die Auswertung wird vorbereitet.</p></div>}
         <dl className="analysis-list">
           <div><dt>Zusammenfassung</dt><dd>{call.summary || "Noch keine Zusammenfassung vorhanden."}</dd></div>
           <div><dt>Anliegen</dt><dd>{call.category ? callCategoryLabels[call.category] : "Noch nicht ausgewertet"}</dd></div>
@@ -107,7 +119,7 @@ export function CallDetailPage() {
       </article>
     </section>
     <section className="card call-transcript-card"><div className="section-heading"><div><p className="card-kicker">Gesprächsverlauf</p><h2>Vollständiges Transkript</h2></div><span>{call.transcript.length} Beiträge</span></div>
-      {call.transcript.length === 0 ? <p className="empty-state">Für diesen Anruf ist kein Transkript verfügbar.</p> : <div className="call-transcript">{call.transcript.map((turn, index) => <article className={`call-transcript-turn ${turn.speaker}`} key={`${index}-${turn.speaker}`}><strong>{turn.speaker === "agent" ? "Agent" : "Anrufer"}</strong>{turn.start_ms != null && <small>{(turn.start_ms / 1000).toFixed(1)} s</small>}{turn.state === "provisional" && <small>Vorläufig · nicht abschließend bestätigt</small>}{turn.state === "interrupted" && <small>Unterbrochen · möglicherweise nicht vollständig gehört</small>}<p>{turn.text}</p></article>)}</div>}
+      {call.transcript.length === 0 ? <p className="empty-state">Für diesen Anruf ist kein Transkript verfügbar.</p> : <div className="call-transcript-scroll"><table className="call-transcript-table"><caption>Gesprächsbeiträge in zeitlicher Reihenfolge</caption><thead><tr><th>Zeitpunkt</th><th>Sprecher</th><th>Gesprächsinhalt</th><th>Bestätigung</th></tr></thead><tbody>{call.transcript.map((turn, index) => <tr key={`${index}-${turn.speaker}`}><td>{turn.start_ms != null ? `${(turn.start_ms / 1000).toFixed(1)} s` : turn.received_at ? new Date(turn.received_at).toLocaleTimeString("de-DE") : "Nicht erfasst"}</td><td>{turn.speaker === "agent" ? "Agent" : "Anrufer"}</td><td>{turn.text}</td><td>{turn.state === "provisional" ? "Vorläufig · nicht abschließend bestätigt" : turn.state === "interrupted" ? "Unterbrochen · möglicherweise nicht vollständig gehört" : "Bestätigt"}</td></tr>)}</tbody></table></div>}
     </section>
     <section className="card detail-card"><h2>Ausgeführte Aktionen und Termine</h2>
       <p>Diese Angaben stammen aus den tatsächlichen Werkzeug- und Buchungsdatensätzen. Ein Terminwunsch allein bestätigt keine Buchung.</p>

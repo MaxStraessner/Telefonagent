@@ -34,16 +34,18 @@ def main():
         write("POST", "/auth/context", {"company_id": salon["id"]})
         original = client.get("/agent/config").json()
         config = original
+        assert original["call_email_transport_available"] is False
+        results["mail_safely_unconfigured"] = True
         try:
             for mode in ("answering_machine", "agent"):
-                payload = {key: value for key, value in original.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role"}}
+                payload = {key: value for key, value in original.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role", "call_email_transport_available"}}
                 config = write("PUT", "/agent/config", {**payload, "expected_version": config["version"], "operating_mode": mode})
                 assert config["operating_mode"] == mode
                 runtime = write("POST", "/agent/test-session", {})
                 assert bool(runtime["tool_names"]) == (mode == "agent")
                 results[mode + "_config_and_tools"] = True
         finally:
-            payload = {key: value for key, value in original.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role"}}
+            payload = {key: value for key, value in original.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role", "call_email_transport_available"}}
             write("PUT", "/agent/config", {**payload, "expected_version": config["version"]})
         results["original_mode_restored"] = True
 

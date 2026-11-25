@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import UserContext
 from app.core.config import Settings
 from app.core.security import hash_password, normalize_username, sha256_token, verify_password
 from app.models import (
@@ -30,6 +31,7 @@ from app.schemas.accounts import (
     PlatformAdminInvite,
     PlatformAdminUpdate,
 )
+from app.services.agent_configuration import rename_company_for_calls
 from app.services.audit import AuditService
 from app.services.mail import MailAdapter, MailDeliveryError, OutboundMail
 from app.services.provisioning import ProvisioningConflictError, ProvisioningService
@@ -214,9 +216,14 @@ class AccountManagementService:
         return tenant
 
     def update_company_operational(
-        self, tenant: Tenant, payload: CompanyOperationalUpdate
+        self, tenant: Tenant, payload: CompanyOperationalUpdate, user: UserContext
     ) -> Tenant:
+        if payload.name is not None:
+            self.db.refresh(tenant, attribute_names=["name"], with_for_update=True)
         before = self._company_snapshot(tenant)
+        if payload.name is not None and tenant.name != payload.name:
+            rename_company_for_calls(self.db, tenant, payload.name, user)
+            tenant.name = payload.name
         tenant.timezone = payload.timezone
         tenant.contact_name = payload.contact_name
         tenant.contact_email = payload.contact_email

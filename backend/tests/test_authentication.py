@@ -88,7 +88,7 @@ def test_platform_owner_can_configure_selected_company_without_membership(anonym
     config = anonymous_client.get("/api/v1/agent/config")
     assert config.status_code == 200 and config.json()["can_edit"] is True
     data = config.json()
-    payload = {key: value for key, value in data.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role"}}
+    payload = {key: value for key, value in data.items() if key not in {"tenant_id", "version", "updated_at", "can_edit", "role", "call_email_transport_available"}}
     headers["X-CSRF-Token"] = anonymous_client.cookies.get("telefonagent_csrf")
     saved = anonymous_client.put("/api/v1/agent/config", json={**payload, "expected_version": data["version"], "operating_mode": "answering_machine"}, headers=headers)
     assert saved.status_code == 200 and saved.json()["operating_mode"] == "answering_machine"

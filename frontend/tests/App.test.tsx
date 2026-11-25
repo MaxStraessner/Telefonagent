@@ -30,6 +30,31 @@ beforeEach(() => { mockSuccess(); });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Telefonagent App", () => {
+  it("speichert einen Personennamen im Unternehmensprofil und aktualisiert den aktiven Kontext", async () => {
+    let profile = { ...tenant, contact_name: null, contact_email: null, contact_phone: null };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/company") && init?.method === "PUT") {
+        profile = { ...profile, ...JSON.parse(String(init.body)) };
+      }
+      const result = path.endsWith("/auth/session")
+        ? { ...authSession, tenant: profile, permissions: ["company.manage"] }
+        : path.endsWith("/company") || path.endsWith("/tenant") ? profile
+        : path.endsWith("/platform/status") ? status : [];
+      return Response.json(result);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.pushState({}, "", "/unternehmen");
+    render(<App />);
+    const name = await screen.findByLabelText("Unternehmensname oder eigener Name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Maximilian Sträßner");
+    await userEvent.click(screen.getByRole("button", { name: "Änderungen speichern" }));
+    expect(await screen.findByText("Unternehmensprofil gespeichert.")).toBeInTheDocument();
+    expect(await screen.findByText("Aktiver Unternehmenskontext: Maximilian Sträßner")).toBeInTheDocument();
+    expect(profile.name).toBe("Maximilian Sträßner");
+    window.history.replaceState({}, "", "/");
+  });
   it("zeigt Ladezustand und rendert danach die Übersicht mit API-Mandant", async () => {
     render(<App />);
     expect(screen.getByText("Sitzung wird geprüft …")).toBeInTheDocument();

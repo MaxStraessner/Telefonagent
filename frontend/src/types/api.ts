@@ -222,6 +222,9 @@ export interface CallListItem {
   analysis_status: CallAnalysisStatus;
   operating_mode?: "agent" | "answering_machine" | null; voice_model?: string | null;
   call_status?: string; callback_required?: boolean | null; documentation_status?: string;
+  summary_preview?: string | null; no_message?: boolean;
+  notification_status?: "not_requested" | "waiting_analysis" | "pending" | "sending" | "sent" | "failed" | "uncertain" | "canceled";
+  notification_sent_at?: string | null; notification_error_code?: string | null;
 }
 export interface CallDetail extends CallListItem {
   ended_at: string | null; external_call_id: string | null; phone_number_id: string | null;
@@ -241,6 +244,7 @@ export interface AgentTopic extends AgentListItem { label: string; instructions:
 export interface AgentRule extends AgentListItem { rule_text: string; }
 export interface AgentConfiguration {
   operating_mode: "agent" | "answering_machine"; message_greeting: string; call_retention_days: number;
+  call_email_enabled?: boolean; call_email_recipient?: string | null; call_email_transport_available?: boolean;
   tenant_id: string; version: number; updated_at: string; can_edit: boolean; role: "company_admin" | "company_user" | "platform_admin";
   company_name: string; assistant_name: string; assistant_role: string; transparency_notice: string;
   address_formality: "formal" | "informal"; language: "de";

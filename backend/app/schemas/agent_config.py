@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -29,6 +30,8 @@ class AgentConfigurationData(BaseModel):
     operating_mode: Literal["agent", "answering_machine"] = "agent"
     message_greeting: str = Field(default="Guten Tag. Bitte schildern Sie Ihr Anliegen.", min_length=1, max_length=700)
     call_retention_days: int = Field(default=30, ge=1, le=365)
+    call_email_enabled: bool = False
+    call_email_recipient: str | None = Field(default=None, max_length=320)
     company_name: str = Field(min_length=1, max_length=200)
     assistant_name: str = Field(min_length=1, max_length=100)
     assistant_role: str = Field(min_length=1, max_length=200)
@@ -81,6 +84,8 @@ class AgentConfigurationData(BaseModel):
 
     @model_validator(mode="after")
     def validate_conditional_style_fields(self):
+        if self.call_email_enabled and not self.call_email_recipient:
+            raise ValueError("Eine feste Empfängeradresse ist erforderlich.")
         if self.pronunciation_style == "regional" and not self.regional_accent:
             raise ValueError("Für eine regionale Färbung muss eine Region ausgewählt werden.")
         if self.pronunciation_style == "custom" and not self.pronunciation_instructions.strip():
@@ -89,12 +94,24 @@ class AgentConfigurationData(BaseModel):
             raise ValueError("Für einen individuellen Gesprächsstil ist eine Anweisung erforderlich.")
         return self
 
+    @field_validator("call_email_recipient")
+    @classmethod
+    def validate_recipient(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if (not re.fullmatch(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}", value)
+                or len(value) > 254 or len(value.split("@", 1)[0]) > 64):
+            raise ValueError("Bitte genau eine gültige E-Mail-Adresse ohne Anzeigenamen eingeben.")
+        return value
+
 
 class AgentConfigurationUpdate(AgentConfigurationData):
     expected_version: int = Field(ge=1)
 
 
 class AgentConfigurationResponse(AgentConfigurationData):
+    call_email_transport_available: bool = False
     tenant_id: UUID
     version: int
     updated_at: datetime

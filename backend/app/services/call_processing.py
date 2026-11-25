@@ -9,11 +9,13 @@ from app.db.session import SessionLocal, bind_tenant_context
 from app.models import AgentConfiguration, CallChannel, CallSession, Tenant
 from app.services.call_analysis import analyze_call_safely
 from app.services.call_lifecycle import CallLifecycleService
+from app.services.call_notifications import cancel_notification, process_call_notification
 
 logger = logging.getLogger(__name__)
 
 
 def erase_call_content(call: CallSession) -> None:
+    cancel_notification(call)
     call.transcript = []
     call.caller_name = None
     call.caller_phone = None
@@ -43,6 +45,10 @@ async def process_tenant_calls(db, settings, tenant_id) -> None:
             and_(CallSession.analysis_status == "processing", or_(CallSession.analysis_next_attempt_at <= now,
                 and_(CallSession.analysis_next_attempt_at.is_(None), CallSession.updated_at < now - timedelta(minutes=2)))),
             and_(CallSession.analysis_status == "failed", CallSession.analysis_next_attempt_at <= now, CallSession.analysis_attempts < 3),
+            and_(CallSession.ended_at.is_not(None), CallSession.notification_status.in_(["waiting_analysis", "pending", "sending"]),
+                 or_(CallSession.notification_next_attempt_at.is_(None), CallSession.notification_next_attempt_at <= now),
+                 or_(CallSession.analysis_status == "completed", CallSession.notification_status == "sending",
+                     and_(CallSession.analysis_status == "failed", CallSession.analysis_next_attempt_at.is_(None)))),
             and_(CallSession.documentation_status != "legacy", CallSession.ended_at < now - timedelta(days=retention))),
     ).order_by(case((CallSession.ended_at.is_not(None), 0), else_=1), CallSession.created_at).limit(100)))
     for call in calls:
@@ -64,6 +70,13 @@ async def process_tenant_calls(db, settings, tenant_id) -> None:
             else:
                 db.rollback()
             continue
+        # Delivery may also finalize a terminal analysis failure. Commit first;
+        # the notification service takes its own claim and releases all locks.
+        if call.notification_status == "sending" or (call.notification_status in {"waiting_analysis", "pending"} and call.analysis_status in {"completed", "failed"}):
+            call_id = call.id
+            db.commit()
+            await process_call_notification(db, settings, tenant_id, call_id)
+            call = db.scalar(select(CallSession).where(CallSession.id == call_id, CallSession.tenant_id == tenant_id).with_for_update().execution_options(populate_existing=True))
         if call.analysis_status == "processing":
             expired = _utc(call.analysis_next_attempt_at) <= now if call.analysis_next_attempt_at else _utc(call.updated_at) < now - timedelta(minutes=2)
             if expired:
@@ -91,6 +104,7 @@ async def process_tenant_calls(db, settings, tenant_id) -> None:
             db.commit()
         if call.analysis_status == "pending" and (not call.analysis_next_attempt_at or _utc(call.analysis_next_attempt_at) <= now):
             await analyze_call_safely(db, settings, tenant_id, call.id)
+            await process_call_notification(db, settings, tenant_id, call.id)
         else:
             db.rollback()
 

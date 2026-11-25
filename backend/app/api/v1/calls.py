@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import TenantContext, UserContext, get_tenant_context, get_user_context, require_agent_admin
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
-from app.models import CalendarBooking, CallChannel, CallSession, ToolExecution
+from app.models import AgentConfiguration, CalendarBooking, CallChannel, CallSession, ToolExecution
 from app.schemas.calls import (
     CallAnalysisRetryResponse,
     CallDetail,
@@ -18,6 +18,7 @@ from app.schemas.calls import (
 )
 from app.services.audit import AuditService
 from app.services.call_processing import erase_call_content
+from app.services.mail import mail_transport_available
 
 router = APIRouter(prefix="/calls", tags=["calls"])
 
@@ -55,6 +56,11 @@ def _list_item(call: CallSession) -> CallListItem:
         operating_mode=call.operating_mode, voice_model=call.voice_model,
         call_status=call.status, documentation_status=call.documentation_status,
         callback_required=(call.analysis_details or {}).get("callback_required"),
+        summary_preview=(call.summary[:240] if call.summary and call.analysis_status == "completed" and not call.content_deleted_at else None),
+        no_message=bool(call.ended_at and not call.connected_at and not call.transcript),
+        notification_status=call.notification_status,
+        notification_sent_at=call.notification_sent_at,
+        notification_error_code=call.notification_error_code,
     )
 
 
@@ -172,3 +178,30 @@ def delete_call_content(
     AuditService(db, settings).record(actor_user_id=user.id, platform_role=user.platform_role,
         tenant_id=context.id, action="call_content_deleted", target_type="call", target_id=call.id)
     db.commit()
+
+
+@router.post("/{call_id}/notification/retry", response_model=CallDetail)
+def retry_notification(
+    call_id: UUID,
+    context: TenantContext = Depends(get_tenant_context),
+    user: UserContext = Depends(require_agent_admin),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> CallDetail:
+    call = _tenant_call(db, context.id, call_id, for_update=True)
+    config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == context.id))
+    if (call.notification_status not in {"failed", "uncertain"} or call.content_deleted_at
+            or call.analysis_status != "completed" or not call.ended_at
+            or call.operating_mode != "answering_machine" or not config or not config.call_email_enabled
+            or not call.notification_recipient or config.call_email_recipient != call.notification_recipient
+            or not mail_transport_available(settings)):
+        raise HTTPException(status_code=409, detail={"code": "notification_retry_unavailable", "message": "Der Versand kann für diese Nachricht nicht erneut gestartet werden."})
+    call.notification_status = "pending"
+    call.notification_attempts = 0
+    call.notification_next_attempt_at = datetime.now(timezone.utc)
+    call.notification_lease_token = None
+    call.notification_error_code = None
+    AuditService(db, settings).record(actor_user_id=user.id, platform_role=user.platform_role,
+        tenant_id=context.id, action="call_notification_retry", target_type="call", target_id=call.id)
+    db.commit()
+    return _detail(call, db)

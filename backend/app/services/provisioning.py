@@ -378,6 +378,7 @@ class ProvisioningService:
                 AgentConfiguration(
                     tenant_id=tenant.id,
                     company_name=tenant.name,
+                    message_greeting="Guten Tag, hier ist der Anrufbeantworter von {Name}. Welche Nachricht möchten Sie hinterlassen?",
                     assistant_name=settings.assistant_name,
                     assistant_role="digitaler Terminassistent",
                     transparency_notice="Ich bin ein KI-gestützter Sprachassistent.",

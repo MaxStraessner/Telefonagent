@@ -138,7 +138,7 @@ def _source_digests(
     )
     return {
         "agent_configuration": _digest(
-            _model_values(bundle.configuration, excluded=common_excluded)
+            _model_values(bundle.configuration, excluded=common_excluded | {"call_email_enabled", "call_email_recipient"})
         ),
         "knowledge": _digest(knowledge),
         "capabilities": _digest(capabilities),
@@ -179,7 +179,7 @@ def build_runtime_config(
     else:
         greeting = config.standard_greeting if is_open_now(bundle, timezone_name) else config.outside_hours_greeting
     if config.operating_mode == "answering_machine":
-        greeting = config.message_greeting
+        greeting = config.message_greeting.replace("{Name}", config.company_name)
     if config.turn_detection_type.value == "semantic_vad":
         turn_detection: dict[str, object] = {
             "type": "semantic_vad", "eagerness": config.turn_eagerness.value,

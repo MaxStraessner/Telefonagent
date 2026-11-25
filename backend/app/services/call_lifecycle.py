@@ -61,6 +61,10 @@ class CallLifecycleService:
         )
         if runtime is not None:
             self.record_runtime(call, runtime, commit=False)
+            config = runtime.bundle.configuration if runtime.bundle else None
+            if channel == CallChannel.telephone and config and config.operating_mode == "answering_machine" and config.call_email_enabled and config.call_email_recipient:
+                call.notification_status = "waiting_analysis"
+                call.notification_recipient = config.call_email_recipient
         self.db.add(call)
         try:
             self.db.commit()

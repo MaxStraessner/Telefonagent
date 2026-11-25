@@ -491,6 +491,72 @@ def test_platform_authentication_sets_access_level_without_implicit_tenant():
     engine.dispose()
 
 
+def test_platform_admin_and_sole_proprietor_set_up_answering_machine():
+    owner_engine = create_engine(MIGRATOR_URL)
+    runtime = create_engine(RUNTIME_URL)
+    username = "solo-" + uuid4().hex[:12]
+    with Session(owner_engine, expire_on_commit=False) as db:
+        tenant, _ = ProvisioningService(db).provision_tenant(
+            slug=username, name="Testbetrieb", industry="services", timezone_name="Europe/Berlin",
+            username=username, display_name="Testperson", email=None, password=PASSWORD,
+        )
+        tenant_id = tenant.id
+
+    def database():
+        with Session(runtime, expire_on_commit=False, autoflush=False) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = database
+    origin = {"Origin": "http://testserver", "X-Requested-With": "Telefonagent"}
+    def login(client, account):
+        response = client.post("/api/v1/auth/login", json={"username": account, "password": PASSWORD}, headers=origin)
+        assert response.status_code == 200
+        return {**origin, "X-CSRF-Token": client.cookies.get("telefonagent_csrf")}
+
+    try:
+        platform = TestClient(app)
+        headers = login(platform, "rls-platform")
+        assert platform.post("/api/v1/auth/context", json={"company_id": str(tenant_id)}, headers=headers).is_success
+        headers["X-CSRF-Token"] = platform.cookies.get("telefonagent_csrf")
+        config = platform.get("/api/v1/agent/config").json()
+        assert config["role"] == "platform_admin"
+        payload = {k: v for k, v in config.items() if k not in {
+            "tenant_id", "version", "updated_at", "role", "can_edit", "call_email_transport_available",
+        }}
+        payload.update(expected_version=config["version"], operating_mode="answering_machine",
+                       standard_greeting="Willkommen in der telefonischen Beratung.")
+        saved = platform.put("/api/v1/agent/config", headers=headers, json=payload)
+        assert saved.status_code == 200, saved.text
+        name = "Maximilian Sträßner"
+        company = TestClient(app)
+        headers = login(company, username)
+        updated = company.put("/api/v1/company", headers=headers, json={"name": name, "timezone": "Europe/Berlin"})
+        assert updated.status_code == 200, updated.text
+        assert company.get("/api/v1/company").json()["name"] == name
+        reloaded = company.get("/api/v1/agent/config").json()
+        assert reloaded["company_name"] == name
+        assert reloaded["standard_greeting"] == payload["standard_greeting"]
+        assert reloaded["operating_mode"] == "answering_machine"
+        assert reloaded["version"] == saved.json()["version"] + 1
+        assert platform.put("/api/v1/agent/config", headers={
+            **origin, "X-CSRF-Token": platform.cookies.get("telefonagent_csrf"),
+        }, json={**payload, "expected_version": saved.json()["version"]}).status_code == 409
+        preview = company.post("/api/v1/agent/test-session", headers=headers).json()
+        assert preview["company_name"] == name and preview["tool_names"] == []
+        assert name in preview["greeting"]
+        assert name in company.get("/api/v1/agent/prompt-preview").json()["prompt"]
+        with owner_engine.connect() as connection:
+            rows = connection.execute(text(
+                "SELECT changed_by_user_id, platform_actor_id FROM agent_configuration_audits "
+                "WHERE tenant_id = :tenant ORDER BY version"
+            ), {"tenant": tenant_id}).all()
+        assert rows[-2] == (None, UUID(PLATFORM_USER))
+        assert rows[-1].changed_by_user_id is not None and rows[-1].platform_actor_id is None
+    finally:
+        owner_engine.dispose()
+        runtime.dispose()
+
+
 def test_security_definer_resolvers_establish_tenant_without_bypassing_rls():
     engine = create_engine(RUNTIME_URL)
     with Session(engine, expire_on_commit=False) as db:
@@ -556,12 +622,15 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
     settings = Settings(app_env="test", database_url=RUNTIME_URL, cors_origins="http://testserver",
         app_base_url="https://qa.example.test", auth_hmac_secret="qa-test-hmac-at-least-thirty-two-bytes",
         openai_api_key="synthetic-never-used-key", twilio_account_sid="AC" + "1" * 32,
+        smtp_host="smtp.example.test", smtp_from_address="agent@example.test",
         twilio_auth_token="synthetic-twilio-test-token", twilio_stream_token_secret="qa-call-token-secret-with-at-least-thirty-two-bytes")
     with Session(migrator, expire_on_commit=False) as db:
         tenant, _ = ProvisioningService(db).provision_tenant(slug=username, name="Synthetic QA " + mode,
             industry="services", timezone_name="Europe/Berlin", username=username, display_name="QA Admin", email=None, password=password)
         config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant.id))
         config.operating_mode = mode
+        config.call_email_enabled = True
+        config.call_email_recipient = "owner@example.test"
         config.message_greeting = "Guten Tag. Welche Nachricht möchten Sie hinterlassen?"
         db.add(AgentCapability(tenant_id=tenant.id, capability_key="calendar_booking", is_active=True))
         db.add(TenantInboundRoute(tenant_id=tenant.id, route_type="phone_number", normalized_identifier=phone, is_active=True))
@@ -573,6 +642,11 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_settings] = lambda: settings
     sent = []
+    mails = []
+    class Mailbox:
+        def send(self, message):
+            mails.append(message)
+    monkeypatch.setattr("app.services.call_notifications.build_mail_adapter", lambda _: Mailbox())
     class FakeOpenAI:
         def __init__(self):
             self.queue = asyncio.Queue()
@@ -692,6 +766,14 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
             assert detail["callback_required"] is True and detail["operating_mode"] == mode
             assert detail["voice_model"] == settings.openai_realtime_model
             assert detail["appointments"] == []
+            assert detail["summary_preview"] == detail["summary"]
+            if mode == "answering_machine":
+                assert len(mails) == 1 and mails[0].recipient == "owner@example.test"
+                assert detail["notification_status"] == "sent" and detail["notification_sent_at"]
+                assert detail["summary"] in mails[0].text and f"/anrufe/{call_id}" in mails[0].text
+                assert "Ich bin Anna Beispiel" not in mails[0].text
+            else:
+                assert mails == [] and detail["notification_status"] == "not_requested"
             assert client.get(f"/api/v1/calls/{TELEPHONE_CALL_A}").status_code == 404
             tool_output = next(event["item"]["output"] for event in sent if event["type"] == "conversation.item.create")
             if mode == "answering_machine":
@@ -817,3 +899,88 @@ def test_postgres_migration_0017_roundtrip_preserves_0016_data_and_rls(monkeypat
     finally:
         engine.dispose()
         get_settings.cache_clear()
+
+
+def test_postgres_0018_upgrade_preserves_0017_data_and_security(monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+    monkeypatch.setenv("DATABASE_URL", MIGRATOR_URL)
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", MIGRATOR_URL)
+    get_settings.cache_clear()
+    engine = create_engine(MIGRATOR_URL)
+    calls = text("SELECT id, tenant_id, transcript::text, summary, operating_mode, voice_model, transcript_revision, analysis_details::text FROM call_sessions ORDER BY id")
+    security = text("SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname IN ('call_sessions', 'agent_configurations') ORDER BY relname")
+    try:
+        command.downgrade(Config("alembic.ini"), "0017")
+        with engine.connect() as connection:
+            before = connection.execute(calls).all()
+            policies = connection.execute(security).all()
+        command.upgrade(Config("alembic.ini"), "0018")
+        with engine.connect() as connection:
+            assert connection.execute(calls).all() == before
+            assert connection.execute(security).all() == policies
+            assert connection.scalar(text("SELECT count(*) FROM call_sessions WHERE notification_status != 'not_requested' OR notification_recipient IS NOT NULL OR notification_attempts != 0")) == 0
+            assert connection.scalar(text("SELECT count(*) FROM agent_configurations WHERE call_email_enabled OR call_email_recipient IS NOT NULL")) == 0
+            assert connection.scalar(text("SELECT count(*) FROM pg_proc WHERE proname = 'call_processing_tenant_ids' AND prosecdef")) == 1
+    finally:
+        command.upgrade(Config("alembic.ini"), "head")
+        engine.dispose()
+        get_settings.cache_clear()
+
+
+def test_postgres_notification_claims_are_isolated_and_do_not_hold_network_locks():
+    from threading import Event
+
+    from app.services.call_notifications import process_call_notification
+    migrator = create_engine(MIGRATOR_URL)
+    runtime = create_engine(RUNTIME_URL)
+    sessions = sessionmaker(runtime, expire_on_commit=False)
+    entered, release = Event(), Event()
+    sent = []
+    call_id = uuid4()
+    now = datetime.now(timezone.utc)
+    with Session(migrator) as db:
+        # Seed full configuration using the existing provisioner to avoid
+        # relying on the minimal tenant rows used by unrelated RLS fixtures.
+        tenant, _ = ProvisioningService(db).provision_tenant(slug="mail-" + uuid4().hex, name="Mail RLS", industry="services", timezone_name="Europe/Berlin", username="mail-" + uuid4().hex, display_name="Synthetic", email=None, password=PASSWORD)
+        tenant_id = tenant.id
+        config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant_id))
+        config.call_email_enabled, config.call_email_recipient = True, "owner@example.test"
+        db.add(CallSession(id=call_id, tenant_id=tenant_id, channel="telephone", status="ended", started_at=now, ended_at=now, analysis_status="completed", summary="Synthetic", transcript=[{"speaker": "customer", "text": "Synthetic"}], operating_mode="answering_machine", notification_status="waiting_analysis", notification_recipient="owner@example.test"))
+        db.commit()
+    class Mailbox:
+        def send(self, message):
+            entered.set()
+            assert release.wait(5)
+            sent.append(message)
+    async def run():
+        with sessions() as first, sessions() as second, sessions() as foreign:
+            bind_tenant_context(first, tenant_id)
+            bind_tenant_context(second, tenant_id)
+            bind_tenant_context(foreign, TENANT_B)
+            await process_call_notification(foreign, Settings(), UUID(TENANT_B), call_id, adapter=Mailbox())
+            assert not sent and not entered.is_set()
+            task = asyncio.create_task(process_call_notification(first, Settings(), tenant_id, call_id, adapter=Mailbox()))
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                # The committed claim is visible and the row is not locked by
+                # the worker waiting for SMTP. A competing worker cannot send.
+                second.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                row = second.scalar(select(CallSession).where(CallSession.id == call_id).with_for_update())
+                assert row.notification_status == "sending"
+                second.rollback()
+                await process_call_notification(second, Settings(), tenant_id, call_id, adapter=Mailbox())
+                changed = foreign.execute(text("UPDATE call_sessions SET notification_recipient = 'foreign@example.test' WHERE id = :id"), {"id": call_id})
+                assert changed.rowcount == 0
+                foreign.commit()
+            finally:
+                release.set()
+                await task
+            assert len(sent) == 1
+            second.expire_all()
+            assert second.get(CallSession, call_id).notification_status == "sent"
+    try:
+        asyncio.run(run())
+    finally:
+        runtime.dispose()
+        migrator.dispose()
