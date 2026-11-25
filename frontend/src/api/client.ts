@@ -1,4 +1,4 @@
-import type { AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CallDetail, CallListItem, CallStatus, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyTelephony, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant, TwilioNumber } from "../types/api";
+import type { GmailNotificationSettings, AccountInvitation, AgentAvailabilityRequest, AgentCatalog, AgentConfiguration, AgentKnowledge, Appointment, AppointmentTypeWrite, AuditEntry, AuthSession, BookingConfiguration, CalendarAgenda, CalendarAppointmentType, CalendarAvailabilityResult, CalendarBookingResult, CalendarConnectionsOverview, CalendarProviderName, CallDetail, CallListItem, CallStatus, CompanyCreate, CompanyDetail, CompanyStatus, CompanySummary, CompanyTelephony, CompanyUser, CompanyUserCreate, CompanyUserInvite, ExternalCalendar, Health, InitialSetupRequest, InitialSetupStatus, InvitationPreview, ManagedUser, ManagedUserUpdate, ManagedUserWrite, PlatformAdmin, PlatformAdminCreate, PlatformDashboard, PlatformStatus, PromptPreview, RealtimeAgentConfig, RealtimeAttemptFinish, RealtimeClientSecret, RealtimeSessionBootstrap, RuntimeSummary, Service, StaffMember, Tenant, TwilioNumber } from "../types/api";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -89,6 +89,11 @@ export const api = {
   platformCompanyInvitations: (id: string) => request<AccountInvitation[]>(`/platform/companies/${id}/invitations`),
   invitePlatformCompanyUser: (id: string, value: CompanyUserInvite) => request<AccountInvitation>(`/platform/companies/${id}/invitations`, { method: "POST", body: value }),
   revokePlatformCompanyInvitation: (companyId: string, invitationId: string) => request<AccountInvitation>(`/platform/companies/${companyId}/invitations/${invitationId}`, { method: "DELETE" }),
+  gmailNotifications: (signal?: AbortSignal) => request<GmailNotificationSettings>("/notifications/gmail", { signal }),
+  saveGmailNotifications: (value: Pick<GmailNotificationSettings, "enabled" | "recipient" | "sections">) =>
+    request<GmailNotificationSettings>("/notifications/gmail", { method: "PUT", body: value }),
+  connectGmail: (activate: boolean) => request<{ authorization_url: string }>(`/notifications/gmail/connect?activate=${activate}`, { method: "POST" }),
+  disconnectGmail: () => request<void>("/notifications/gmail", { method: "DELETE" }),
   ownCompany: () => request<CompanyDetail>("/company"),
   updateOwnCompany: (value: Pick<CompanyDetail, "contact_name" | "contact_email" | "contact_phone" | "timezone"> & { name?: string }) => request<CompanyDetail>("/company", { method: "PUT", body: value }),
   ownCompanyUsers: () => request<CompanyUser[]>("/company/users"),

@@ -18,6 +18,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.calendar import router as calendar_router
 from app.api.v1.calls import router as calls_router
 from app.api.v1.company import router as company_router
+from app.api.v1.notifications import router as notifications_router
 from app.api.v1.platform import router as platform_router
 from app.api.v1.twilio import router as twilio_router
 from app.core.config import Settings, get_settings
@@ -54,6 +55,7 @@ router.include_router(calendar_router)
 router.include_router(calls_router)
 router.include_router(platform_router)
 router.include_router(company_router)
+router.include_router(notifications_router)
 router.include_router(twilio_router)
 
 

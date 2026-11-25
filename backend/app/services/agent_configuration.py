@@ -192,6 +192,7 @@ def update_configuration(
     if not payload.call_email_enabled or payload.call_email_recipient != config.call_email_recipient:
         db.execute(update(CallSession).where(
             CallSession.tenant_id == context.id,
+            CallSession.notification_gmail_generation.is_(None),
             CallSession.notification_status.in_(["waiting_analysis", "pending"]),
         ).values(notification_status="canceled", notification_recipient=None,
                  notification_next_attempt_at=None, notification_lease_token=None))

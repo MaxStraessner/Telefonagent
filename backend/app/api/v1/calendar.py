@@ -3,7 +3,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +16,7 @@ from app.api.dependencies import (
     get_user_context,
     require_agent_admin,
 )
+from app.api.v1.notifications import gmail_callback
 from app.calendar.errors import CalendarError
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
@@ -87,6 +88,7 @@ from app.services.conversation_tools import (
     bookable_services,
     booking_api_response,
 )
+from app.services.gmail import STATE_PREFIX
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
@@ -221,6 +223,7 @@ def oauth_start(
 
 @router.get("/oauth/{provider}/callback", include_in_schema=True)
 async def oauth_callback(
+    request: Request,
     provider: str,
     state_value: str = Query(alias="state"),
     code: str | None = None,
@@ -228,6 +231,8 @@ async def oauth_callback(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
+    if provider == "google" and state_value.startswith(STATE_PREFIX):
+        return await gmail_callback(request, state_value, code, error, db, settings)
     provider_name = provider_enum(provider)
     frontend = f"{settings.frontend_url.rstrip('/')}/kalender"
     try:

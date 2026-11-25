@@ -9,7 +9,12 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.models import AgentConfiguration, CallChannel, CallSession
+from app.calendar.errors import CalendarError
+from app.core.encryption import CalendarTokenCipher
+from app.models import AgentConfiguration, CallChannel, CallSession, Tenant
+from app.services.gmail import send_gmail
+from app.services.gmail_call_mail import call_mail, twilio_cost
+from app.services.gmail_notifications import active_connection
 from app.services.mail import MailDeliveryError, OutboundMail, build_mail_adapter, mail_transport_available
 
 OPEN_NOTIFICATIONS = ("waiting_analysis", "pending", "sending")
@@ -55,11 +60,12 @@ async def process_call_notification(db, settings, tenant_id, call_id, *, adapter
     if call is None or call.notification_status not in OPEN_NOTIFICATIONS:
         db.rollback()
         return
+    gmail = call.notification_gmail_generation is not None
     if call.notification_status == "sending":
         deadline = call.notification_next_attempt_at
         if deadline is None or _utc(deadline) <= now:
             call.notification_status = "uncertain"
-            call.notification_error_code = "smtp_worker_lost"
+            call.notification_error_code = "gmail_worker_lost" if gmail else "smtp_worker_lost"
             call.notification_next_attempt_at = None
             call.notification_lease_token = None
             db.commit()
@@ -68,23 +74,31 @@ async def process_call_notification(db, settings, tenant_id, call_id, *, adapter
         return
     # Configuration edits cancel unclaimed work atomically. A submission already
     # in flight cannot be recalled, like any email accepted by an SMTP server.
-    config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant_id).execution_options(populate_existing=True))
-    if call.content_deleted_at or call.operating_mode != "answering_machine" or not config or not config.call_email_enabled or not call.notification_recipient or config.call_email_recipient != call.notification_recipient:
+    connection = active_connection(db, tenant_id) if gmail else None
+    if gmail:
+        authorized = bool(connection and connection.generation == call.notification_gmail_generation
+                          and connection.recipient == call.notification_recipient)
+    else:
+        config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant_id).execution_options(populate_existing=True))
+        authorized = bool(call.operating_mode == "answering_machine" and config and config.call_email_enabled
+                          and config.call_email_recipient == call.notification_recipient)
+    if call.content_deleted_at or not call.notification_recipient or not authorized:
         cancel_notification(call)
         db.commit()
         return
     if call.ended_at is None:
         db.rollback()
         return
-    if call.analysis_status == "failed" and not call.analysis_next_attempt_at:
+    analysis_failed = call.analysis_status == "failed" and not call.analysis_next_attempt_at
+    if analysis_failed and not gmail:
         call.notification_status = "canceled" if call.analysis_error_code == "transcript_empty" else "failed"
         call.notification_error_code = "no_message" if call.analysis_error_code == "transcript_empty" else "analysis_failed"
         db.commit()
         return
-    if call.analysis_status != "completed":
+    if call.analysis_status != "completed" and not analysis_failed:
         db.rollback()
         return
-    if not any(turn.get("speaker") == "customer" and turn.get("state", "confirmed") == "confirmed" and turn.get("text", "").strip() for turn in call.transcript or []):
+    if not gmail and not any(turn.get("speaker") == "customer" and turn.get("state", "confirmed") == "confirmed" and turn.get("text", "").strip() for turn in call.transcript or []):
         call.notification_status = "canceled"
         call.notification_error_code = "no_message"
         call.notification_recipient = None
@@ -93,13 +107,18 @@ async def process_call_notification(db, settings, tenant_id, call_id, *, adapter
     if call.notification_next_attempt_at and _utc(call.notification_next_attempt_at) > now:
         db.rollback()
         return
-    if not mail_transport_available(settings) and adapter is None:
+    if not gmail and not mail_transport_available(settings) and adapter is None:
         call.notification_status = "failed"
         call.notification_error_code = "smtp_not_configured"
         db.commit()
         return
     token = str(uuid4())
-    message = render_call_mail(call, settings)
+    if gmail:
+        encrypted_token = connection.encrypted_refresh_token
+        sections = list(connection.sections)
+        call_sid = call.provider_session_id
+    else:
+        message = render_call_mail(call, settings)
     call.notification_status = "sending"
     call.notification_attempts += 1
     call.notification_lease_token = token
@@ -108,14 +127,34 @@ async def process_call_notification(db, settings, tenant_id, call_id, *, adapter
     db.commit()
     failure = None
     try:
-        await asyncio.to_thread((adapter or build_mail_adapter(settings)).send, message)
+        if gmail:
+            cost = await twilio_cost(settings, call_sid) if "cost" in sections else None
+            call = locked_call()
+            if call is None or call.notification_lease_token != token or call.content_deleted_at:
+                db.rollback()
+                return
+            current = active_connection(db, tenant_id)
+            if current is None or current.generation != call.notification_gmail_generation:
+                cancel_notification(call)
+                db.commit()
+                return
+            timezone_name = db.scalar(select(Tenant.timezone).where(Tenant.id == tenant_id)) or "UTC"
+            message = call_mail(call, settings, sections, timezone_name, cost)
+            db.commit()
+            refresh_token = CalendarTokenCipher(settings.calendar_token_encryption_key).decrypt(encrypted_token)
+            await send_gmail(settings, refresh_token, message)
+        else:
+            await asyncio.to_thread((adapter or build_mail_adapter(settings)).send, message)
     except asyncio.CancelledError:
         # The thread might still submit; lease recovery must not resend.
         raise
     except MailDeliveryError as exc:
         failure = exc
+    except CalendarError:
+        failure = MailDeliveryError("Google-Verbindung muss erneuert werden.", code="gmail_reconnect_required")
     except Exception:
-        failure = MailDeliveryError("Unklarer Zustellstatus", code="smtp_unexpected_failure", uncertain=True)
+        transport = "gmail" if gmail else "smtp"
+        failure = MailDeliveryError("Unklarer Zustellstatus", code=f"{transport}_unexpected_failure", uncertain=True)
     call = locked_call()
     if call is None or call.notification_lease_token != token or call.content_deleted_at:
         db.rollback()

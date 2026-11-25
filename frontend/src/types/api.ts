@@ -223,6 +223,7 @@ export interface CallListItem {
   operating_mode?: "agent" | "answering_machine" | null; voice_model?: string | null;
   call_status?: string; callback_required?: boolean | null; documentation_status?: string;
   summary_preview?: string | null; no_message?: boolean;
+  notification_transport?: "gmail" | "smtp" | null;
   notification_status?: "not_requested" | "waiting_analysis" | "pending" | "sending" | "sent" | "failed" | "uncertain" | "canceled";
   notification_sent_at?: string | null; notification_error_code?: string | null;
 }
@@ -328,3 +329,13 @@ export interface CalendarEntry {
 }
 export interface CalendarAgenda { calendar_connected: boolean; entries: CalendarEntry[]; }
 
+export type MailSection = "caller" | "time" | "summary" | "concern" | "tasks" | "transcript" | "cost";
+
+export interface GmailNotificationSettings {
+  available: boolean;
+  connected: boolean;
+  enabled: boolean;
+  active_elsewhere: boolean;
+  recipient: string | null;
+  sections: MailSection[];
+}

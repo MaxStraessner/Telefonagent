@@ -663,6 +663,22 @@ class Appointment(Base, TimestampMixin):
     staff_member: Mapped[StaffMember | None] = relationship()
 
 
+class GmailNotification(Base):
+    __tablename__ = "gmail_notifications"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app_users.id"), primary_key=True)
+    generation: Mapped[uuid.UUID] = mapped_column(Uuid, default=uuid.uuid4)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    recipient: Mapped[str | None] = mapped_column(String(320))
+    sections: Mapped[list[str]] = mapped_column(JSON)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(Text)
+    oauth_state_hash: Mapped[str | None] = mapped_column(String(64))
+    oauth_session_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    encrypted_verifier: Mapped[str | None] = mapped_column(Text)
+    oauth_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CallSession(Base):
     __tablename__ = "call_sessions"
     __table_args__ = (
@@ -692,6 +708,7 @@ class CallSession(Base):
     transcript_revision: Mapped[int] = mapped_column(Integer, default=0)
     notification_status: Mapped[str] = mapped_column(String(30), default="not_requested", index=True)
     notification_recipient: Mapped[str | None] = mapped_column(String(320))
+    notification_gmail_generation: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     notification_attempts: Mapped[int] = mapped_column(Integer, default=0)
     notification_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notification_lease_token: Mapped[str | None] = mapped_column(String(36))
