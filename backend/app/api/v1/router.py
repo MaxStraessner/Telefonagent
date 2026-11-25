@@ -23,7 +23,7 @@ from app.api.v1.platform import router as platform_router
 from app.api.v1.twilio import router as twilio_router
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
-from app.models import AgentConfiguration, Service
+from app.models import AgentCapability, AgentConfiguration, Service, TenantInboundRoute
 from app.repositories import TenantRepository
 from app.schemas.api import (
     AppointmentResponse,
@@ -40,6 +40,7 @@ from app.schemas.api import (
     StaffResponse,
     TenantResponse,
 )
+from app.services.capabilities import enabled_capabilities
 from app.services.realtime import (
     agent_config,
     create_client_secret,
@@ -47,6 +48,8 @@ from app.services.realtime import (
     finish_attempt,
     mark_attempt_connected,
 )
+from app.services.twilio import voice_url
+from app.services.voice_providers import telephone_model
 
 router = APIRouter()
 router.include_router(auth_router)
@@ -83,6 +86,21 @@ def platform_status(
     db: Session = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> PlatformStatusResponse:
     agent_configuration = db.query(AgentConfiguration).filter(AgentConfiguration.tenant_id == context.id).one_or_none()
+    model = None
+    if agent_configuration:
+        active_keys = db.scalars(select(AgentCapability.capability_key).where(
+            AgentCapability.tenant_id == context.id, AgentCapability.is_active.is_(True),
+        ))
+        capabilities = enabled_capabilities(agent_configuration.operating_mode, active_keys)
+        model = telephone_model(settings, has_actions=bool(capabilities), preference=agent_configuration.telephone_model)
+    route = db.scalar(select(TenantInboundRoute).where(
+        TenantInboundRoute.tenant_id == context.id,
+        TenantInboundRoute.route_type == "phone_number",
+        TenantInboundRoute.is_active.is_(True),
+    ))
+    route_status = route.provider_sync_status if route else None
+    if route_status == "synced" and (not settings.telephony_configured or route.provider_synced_url != voice_url(settings)):
+        route_status = "pending"
     return PlatformStatusResponse(
         environment=settings.app_env,
         backend_version=settings.backend_version,
@@ -92,6 +110,10 @@ def platform_status(
         database_connected=database_is_connected(db),
         realtime_model=settings.openai_realtime_model,
         realtime_voice=agent_configuration.voice if agent_configuration else settings.openai_realtime_voice,
+        assistant_name=agent_configuration.assistant_name if agent_configuration else None,
+        telephone_model=model,
+        telephone_voice=agent_configuration.voice if agent_configuration else None,
+        telephone_route_status=route_status,
     )
 
 

@@ -20,6 +20,12 @@ SPEECH_URL = "https://api.openai.com/v1/audio/speech"
 TELEPHONE_SAMPLE_RATE = 8_000
 
 
+def telephone_disclosure(settings: Settings) -> str:
+    if settings.openai_realtime_transcription_enabled:
+        return "Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
+    return "Ich bin ein KI-Assistent."
+
+
 async def render_speech(settings: Settings, context: TenantContext, request_payload: dict) -> bytes:
     if not settings.openai_api_key:
         raise HTTPException(503, detail={"code": "voice_preview_not_configured", "message": "Die Sprachausgabe ist serverseitig noch nicht konfiguriert."})

@@ -17,7 +17,7 @@ from app.models import AgentConfiguration, CallChannel, CallSession, Tenant, Ten
 from app.services.agent_runtime import build_runtime_config, restore_call_runtime
 from app.services.call_lifecycle import CallLifecycleError, CallLifecycleService
 from app.services.conversation_tools import ConversationToolDispatcher
-from app.services.speech import prepare_greeting
+from app.services.speech import prepare_greeting, telephone_disclosure
 from app.services.tenant_resolution import InboundRouteTenantResolver, TenantResolutionError
 from app.services.twilio import (
     ACCOUNT_SID_PATTERN,
@@ -59,11 +59,7 @@ def _stream_twiml(settings: Settings, token: str, greeting: str, *, prepared_gre
     root = ET.Element("Response")
     if not prepared_greeting:
         notice = ET.SubElement(root, "Say", {"language": "de-DE"})
-        disclosure = (
-            "Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
-            if settings.openai_realtime_transcription_enabled else "Ich bin ein KI-Assistent."
-        )
-        notice.text = f"{greeting} {disclosure}"
+        notice.text = f"{greeting} {telephone_disclosure(settings)}"
     connect = ET.SubElement(root, "Connect")
     stream = ET.SubElement(
         connect,

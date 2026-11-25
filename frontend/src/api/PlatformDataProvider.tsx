@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { api, ApiError } from "./client";
 import type { PlatformData } from "../types/api";
 
-interface DataState { data: PlatformData | null; loading: boolean; error: string | null; retry: () => void; }
+interface DataState { data: PlatformData | null; loading: boolean; error: string | null; retry: () => void; refreshStatus: () => void; }
 const PlatformDataContext = createContext<DataState | null>(null);
 
 export function PlatformDataProvider({ children }: { children: ReactNode }) {
@@ -11,6 +11,11 @@ export function PlatformDataProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
+  const refreshStatus = useCallback(() => {
+    void api.status().then((platformStatus) => {
+      setData((current) => current ? { ...current, platformStatus } : current);
+    }).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -27,12 +32,16 @@ export function PlatformDataProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, [attempt]);
 
-  return <PlatformDataContext.Provider value={{ data, loading, error, retry }}>{children}</PlatformDataContext.Provider>;
+  return <PlatformDataContext.Provider value={{ data, loading, error, retry, refreshStatus }}>{children}</PlatformDataContext.Provider>;
 }
 
 export function usePlatformData(): DataState {
   const context = useContext(PlatformDataContext);
   if (!context) throw new Error("usePlatformData muss innerhalb des PlatformDataProvider verwendet werden.");
   return context;
+}
+
+export function useRefreshPlatformStatus(): (() => void) | undefined {
+  return useContext(PlatformDataContext)?.refreshStatus;
 }
 

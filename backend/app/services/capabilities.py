@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.services.agent_configuration import AgentBundle
@@ -26,7 +27,15 @@ CAPABILITY_REGISTRY: dict[str, CapabilityDefinition] = {
 
 
 def active_capabilities(bundle: AgentBundle) -> list[CapabilityDefinition]:
-    enabled = {item.capability_key for item in bundle.capabilities if item.is_active}
+    return enabled_capabilities(bundle.configuration.operating_mode, (
+        item.capability_key for item in bundle.capabilities if item.is_active
+    ))
+
+
+def enabled_capabilities(mode: str, keys: Iterable[str]) -> list[CapabilityDefinition]:
+    if mode == "answering_machine":
+        return []
+    enabled = set(keys)
     return [definition for key, definition in CAPABILITY_REGISTRY.items() if key in enabled]
 
 

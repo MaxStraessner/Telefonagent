@@ -155,10 +155,15 @@ export interface PlatformStatus {
   environment: string; backend_version: string; realtime_voice_configured: boolean;
   telephony_configured: boolean; calendar_configured: boolean; database_connected: boolean;
   realtime_model: string; realtime_voice: string;
+  assistant_name?: string | null;
+  telephone_model?: string | null;
+  telephone_voice?: string | null;
+  telephone_route_status?: string | null;
 }
 export interface RealtimeVadConfig {
   type: "server_vad" | "semantic_vad"; threshold: number | null; prefix_padding_ms: number | null; silence_duration_ms: number | null;
   eagerness: "low" | "medium" | "high" | null;
+  idle_timeout_ms?: number | null;
   create_response: boolean; interrupt_response: boolean;
 }
 export interface RealtimeAgentConfig {
@@ -274,6 +279,9 @@ export interface AgentCatalog { voices: VoiceOption[]; capabilities: Capability[
 export interface RuntimeSummary {
   tenant_id: string; configuration_version: number; company_name: string; assistant_name: string; language: string; style: AgentConfiguration["tone"]; business_hours_status: "open" | "closed"; model: string; voice: string; speed: number;
   telephone_model?: string;
+  telephone_greeting?: string;
+  telephone_opening_voice?: string | null;
+  telephone_turn_detection?: string;
   turn_detection: Record<string, unknown>; capability_keys: string[]; tool_names: string[]; greeting: string; prompt_sections: string[];
 }
 export interface PromptPreview { configuration_version: number; prompt: string; sections: string[]; }

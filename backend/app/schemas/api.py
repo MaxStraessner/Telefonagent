@@ -32,6 +32,10 @@ class PlatformStatusResponse(BaseModel):
     database_connected: bool
     realtime_model: str
     realtime_voice: str
+    assistant_name: str | None = None
+    telephone_model: str | None = None
+    telephone_voice: str | None = None
+    telephone_route_status: str | None = None
 
 
 class RealtimeVadResponse(BaseModel):
@@ -39,6 +43,7 @@ class RealtimeVadResponse(BaseModel):
     threshold: float | None = None
     prefix_padding_ms: int | None = None
     silence_duration_ms: int | None = None
+    idle_timeout_ms: int | None = None
     eagerness: str | None = None
     create_response: bool
     interrupt_response: bool
