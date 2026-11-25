@@ -5,21 +5,25 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from app.api.dependencies import TenantContext
 from app.core.config import Settings
 from app.services.agent_runtime import AgentRuntimeConfig
 from app.services.conversation_tools import ConversationToolDispatcher
 from app.services.tool_projections import outbound_wire_tools
-from app.services.voice_providers import RealtimeProtocol
+from app.services.voice_providers import LIVE_TELEPHONE_MODEL, LiveProtocol, RealtimeProtocol
+
+logger = logging.getLogger(__name__)
 
 MAX_EVENT_BYTES = 1_000_000
 MAX_AUDIO_BYTES = 160_000
@@ -60,7 +64,8 @@ async def openai_connection(settings: Settings, runtime: AgentRuntimeConfig) -> 
 
     if not settings.openai_api_key:
         raise TwilioMediaError("realtime_not_configured")
-    url = RealtimeProtocol().url(runtime.model)
+    protocol = LiveProtocol() if runtime.model == LIVE_TELEPHONE_MODEL else RealtimeProtocol()
+    url = protocol.url(runtime.model)
     safety_digest = hmac.new(
         settings.openai_safety_identifier_salt.encode("utf-8"),
         str(runtime.manifest.tenant_id).encode("utf-8"),
@@ -240,7 +245,7 @@ class TwilioMediaBridge:
         self.playback = PlaybackState()
         self.latest_user_utterance: str | None = None
         self.latest_input_item_id: str | None = None
-        self.transcript: list[dict[str, str]] = []
+        self.transcript: list[dict] = []
         self.twilio_stopped = False
         self.outbound: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(OUTBOUND_QUEUE_SIZE)
 
@@ -250,13 +255,7 @@ class TwilioMediaBridge:
                 self.runtime.manifest.maximum_session_minutes * 60
             ):
                 async with self.connector(self.settings, self.runtime) as openai:
-                    await self._await_session_created(openai)
-                    await openai.send(json.dumps(session_update(self.runtime)))
-                    await self._await_session_updated(openai)
-                    await openai.send(json.dumps({
-                        "type": "response.create",
-                        "response": {"instructions": self.runtime.manifest.initial_response_instructions},
-                    }))
+                    await self._start_openai(openai)
                     sender = asyncio.create_task(self._send_twilio())
                     twilio_receiver = asyncio.create_task(self._receive_twilio(openai))
                     openai_receiver = asyncio.create_task(self._receive_openai(openai))
@@ -266,10 +265,7 @@ class TwilioMediaBridge:
                         for task in done:
                             task.result()
                         if twilio_receiver in done and self.twilio_stopped:
-                            # Allow late final transcription events to reach persistent storage.
-                            drained, _ = await asyncio.wait({openai_receiver}, timeout=0.75)
-                            for task in drained:
-                                task.result()
+                            await self._finish_openai(openai, openai_receiver)
                     finally:
                         for task in tasks:
                             task.cancel()
@@ -277,7 +273,7 @@ class TwilioMediaBridge:
         except TimeoutError as exc:
             raise TwilioMediaError("maximum_session_duration_reached") from exc
 
-    async def _await_session_created(self, openai: Any) -> None:
+    async def _start_openai(self, openai: Any) -> None:
         try:
             event = _decode_event(
                 await asyncio.wait_for(
@@ -287,10 +283,25 @@ class TwilioMediaBridge:
         except TimeoutError as exc:
             raise TwilioMediaError("openai_session_creation_timeout") from exc
         if event["type"] == "session.created":
+            await openai.send(json.dumps(session_update(self.runtime)))
+            await self._await_session_updated(openai)
+            await openai.send(json.dumps({
+                "type": "response.create",
+                "response": {"instructions": self.runtime.manifest.initial_response_instructions},
+            }))
             return
         if event["type"] == "error":
             raise _openai_rejection("openai_connection_rejected", event)
         raise TwilioMediaError("invalid_openai_initial_event")
+
+    async def _finish_openai(self, openai: Any, receiver: asyncio.Task) -> None:
+        # Allow late final transcription events to reach persistent storage.
+        drained, _ = await asyncio.wait({receiver}, timeout=0.75)
+        for task in drained:
+            task.result()
+
+    def _input_audio(self, payload: str) -> dict:
+        return RealtimeProtocol().audio_append(payload)
 
     async def _await_session_updated(self, openai: Any) -> None:
         async with asyncio.timeout(OPENAI_SETUP_TIMEOUT_SECONDS):
@@ -330,7 +341,7 @@ class TwilioMediaBridge:
                     if str(event.get("streamSid") or "") != self.stream_sid:
                         raise TwilioMediaError("stream_context_mismatch")
                     payload = _validate_audio((event.get("media") or {}).get("payload"))
-                    await openai.send(json.dumps(RealtimeProtocol().audio_append(payload)))
+                    await openai.send(json.dumps(self._input_audio(payload)))
                 elif kind == "mark":
                     if str(event.get("streamSid") or "") != self.stream_sid:
                         raise TwilioMediaError("stream_context_mismatch")
@@ -350,8 +361,8 @@ class TwilioMediaBridge:
                     return
                 else:
                     raise TwilioMediaError("unsupported_twilio_event")
-        finally:
-            pass
+        except WebSocketDisconnect:
+            self.twilio_stopped = True
 
     async def _receive_openai(self, openai: Any) -> None:
         while True:
@@ -397,12 +408,7 @@ class TwilioMediaBridge:
         }:
             self._persist_transcript_event(event)
         if kind == "response.output_audio.delta":
-            if self.twilio_stopped:
-                return
-            audio = _validate_audio(event.get("delta"))
-            mark_name = self.playback.add_audio(event.get("item_id"), audio)
-            await self.outbound.put({"event": "media", "streamSid": self.stream_sid, "media": {"payload": audio}})
-            await self.outbound.put({"event": "mark", "streamSid": self.stream_sid, "mark": {"name": mark_name}})
+            await self._queue_audio(event.get("delta"), event.get("item_id"))
         elif kind == "input_audio_buffer.speech_started":
             if self.twilio_stopped:
                 return
@@ -440,6 +446,14 @@ class TwilioMediaBridge:
             self.documentation_error = "transcription_failed"
         elif kind == "error":
             raise _openai_rejection("openai_stream_error", event)
+
+    async def _queue_audio(self, payload: object, item_id: str | None = None) -> None:
+        if self.twilio_stopped:
+            return
+        audio = _validate_audio(payload)
+        mark_name = self.playback.add_audio(item_id, audio)
+        await self.outbound.put({"event": "media", "streamSid": self.stream_sid, "media": {"payload": audio}})
+        await self.outbound.put({"event": "mark", "streamSid": self.stream_sid, "mark": {"name": mark_name}})
 
     def _persist_transcript_event(self, event: dict[str, Any]) -> None:
         kind = event["type"]
@@ -497,3 +511,100 @@ class TwilioMediaBridge:
         }))
         await openai.send(json.dumps({"type": "response.create"}))
         self.dispatcher.mark_result_sent(call_id)
+
+
+class TwilioLiveMediaBridge(TwilioMediaBridge):
+    """Full-duplex Live transport for conversations without action tools."""
+
+    protocol = LiveProtocol()
+
+    def __init__(self, *args, transcript_checkpoint: Callable[[list[dict]], None] | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if self.runtime.manifest.tool_names:
+            raise TwilioMediaError("live_action_tools_not_supported")
+        self.fragments: list[dict] = []
+        self.live_closed = False
+        self.transcript_checkpoint = transcript_checkpoint
+        self.next_checkpoint = 0.0
+
+    def _input_audio(self, payload: str) -> dict:
+        return self.protocol.audio_append(payload)
+
+    async def _start_openai(self, openai: Any) -> None:
+        await openai.send(json.dumps(self.protocol.start_telephone(
+            self.runtime, self.settings.openai_call_analysis_model,
+        )))
+        async with asyncio.timeout(OPENAI_SETUP_TIMEOUT_SECONDS):
+            while True:
+                event = _decode_event(await openai.recv())
+                if event["type"] == "session.started":
+                    return
+                if event["type"] == "error":
+                    raise _openai_rejection("live_session_rejected", event)
+
+    async def _finish_openai(self, openai: Any, receiver: asyncio.Task) -> None:
+        await openai.send(json.dumps(self.protocol.close()))
+        drained, _ = await asyncio.wait({receiver}, timeout=3)
+        if drained:
+            receiver.result()
+        else:
+            self.documentation_error = "live_transcript_close_timeout"
+
+    async def _receive_openai(self, openai: Any) -> None:
+        while True:
+            event = _decode_event(await openai.recv())
+            event_id = event.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                if event_id in self.seen_events:
+                    continue
+                self.seen_events.add(event_id)
+            kind = event["type"]
+            if kind == "session.closed":
+                self.live_closed = True
+                if not self.twilio_stopped:
+                    self.documentation_error = "live_session_closed_early"
+                return
+            if kind == "session.output_audio.delta":
+                await self._queue_audio(event.get("delta"))
+            elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
+                fragment = self.protocol.handle_event(event)
+                text = fragment["text"]
+                start, end = fragment["start_ms"], fragment["end_ms"]
+                if (isinstance(text, str) and text and type(start) is int and type(end) is int
+                        and 0 <= start <= end and len(self.fragments) < 20_000):
+                    fragment["text"] = text[:20_000]
+                    self.fragments.append(fragment)
+                    now = monotonic()
+                    if self.transcript_checkpoint and not self.twilio_stopped and now >= self.next_checkpoint:
+                        self.transcript_checkpoint(live_transcript_turns(self.fragments, confirmed=False))
+                        self.next_checkpoint = now + 5
+            elif kind == "error":
+                if (event.get("error") or {}).get("code") == "responses_validation_failed":
+                    logger.warning("live_responses_delegation_unavailable")
+                else:
+                    raise _openai_rejection("live_stream_error", event)
+
+    async def run(self) -> None:
+        try:
+            await super().run()
+        finally:
+            self.transcript = live_transcript_turns(self.fragments, confirmed=self.live_closed)
+
+
+def live_transcript_turns(fragments: list[dict], *, confirmed: bool) -> list[dict]:
+    turns: list[dict] = []
+    for fragment in sorted(fragments, key=lambda item: item["start_ms"]):
+        speaker = fragment["speaker"]
+        start, end = fragment["start_ms"], fragment["end_ms"]
+        last = turns[-1] if turns else None
+        if (last and last["speaker"] == speaker and start <= last["end_ms"] + 800
+                and len(last["text"]) + len(fragment["text"]) <= 20_000):
+            last["text"] += fragment["text"]
+            last["end_ms"] = max(last["end_ms"], end)
+        else:
+            turns.append({
+                "speaker": speaker, "text": fragment["text"][:20_000],
+                "start_ms": start, "end_ms": end,
+                "state": "confirmed" if confirmed else "provisional",
+            })
+    return [{**turn, "text": turn["text"].strip()} for turn in turns if turn["text"].strip()]
