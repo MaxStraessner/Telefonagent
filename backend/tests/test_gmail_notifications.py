@@ -169,3 +169,17 @@ def test_gmail_api_mime_and_unknown_submission(google_settings, monkeypatch):
     decoded = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw))
     assert decoded["To"] == "test@example.org"
     assert decoded.get_body(preferencelist=("html",)).get_content().strip() == "<b>HTML</b>"
+
+
+def test_dedicated_gmail_oauth_client_does_not_change_calendar_settings(google_settings):
+    settings = google_settings.model_copy(update={
+        "app_base_url": "https://test.example.org",
+        "gmail_client_id": "synthetic-personal-client",
+        "gmail_client_secret": "synthetic-personal-secret",
+    })
+    params = parse_qs(urlsplit(gmail.authorization_url(settings, "state", "challenge")).query)
+    assert params["client_id"] == ["synthetic-personal-client"]
+    assert params["scope"] == [GMAIL_SCOPE]
+    assert params["redirect_uri"] == ["https://test.example.org/api/v1/calendar/oauth/google/callback"]
+    assert settings.google_calendar_client_id == "test-client"
+    assert gmail.oauth_client(settings.model_copy(update={"gmail_client_secret": None})) is None

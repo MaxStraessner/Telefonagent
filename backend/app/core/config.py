@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     google_calendar_client_id: str | None = None
     google_calendar_client_secret: str | None = None
     google_calendar_redirect_uri: str | None = None
+    gmail_client_id: str | None = None
+    gmail_client_secret: str | None = None
     microsoft_calendar_client_id: str | None = None
     microsoft_calendar_client_secret: str | None = None
     microsoft_calendar_redirect_uri: str | None = None
@@ -123,6 +125,8 @@ class Settings(BaseSettings):
         "google_calendar_client_id",
         "google_calendar_client_secret",
         "google_calendar_redirect_uri",
+        "gmail_client_id",
+        "gmail_client_secret",
         "microsoft_calendar_client_id",
         "microsoft_calendar_client_secret",
         "microsoft_calendar_redirect_uri",

@@ -1,4 +1,5 @@
 import base64
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from urllib.parse import urlencode
 
@@ -13,10 +14,38 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
 
+@dataclass(frozen=True)
+class GmailOAuthClient:
+    client_id: str
+    client_secret: str = field(repr=False)
+    redirect_uri: str
+
+
+def oauth_client(settings: Settings) -> GmailOAuthClient | None:
+    if not settings.calendar_token_encryption_key:
+        return None
+    if settings.gmail_client_id or settings.gmail_client_secret:
+        if not settings.gmail_client_id or not settings.gmail_client_secret:
+            return None
+        return GmailOAuthClient(
+            settings.gmail_client_id, settings.gmail_client_secret,
+            settings.app_base_url.rstrip("/") + "/api/v1/calendar/oauth/google/callback",
+        )
+    if settings.google_calendar_configured:
+        return GmailOAuthClient(
+            settings.google_calendar_client_id, settings.google_calendar_client_secret,
+            settings.google_calendar_redirect_uri,
+        )
+    return None
+
+
 def authorization_url(settings: Settings, state: str, challenge: str) -> str:
+    client = oauth_client(settings)
+    if client is None:
+        raise MailDeliveryError("Google OAuth ist nicht eingerichtet.", code="gmail_unavailable")
     params = {
-        "client_id": settings.google_calendar_client_id,
-        "redirect_uri": settings.google_calendar_redirect_uri,
+        "client_id": client.client_id,
+        "redirect_uri": client.redirect_uri,
         "response_type": "code",
         "scope": GMAIL_SCOPE,
         "access_type": "offline",
@@ -42,11 +71,11 @@ def error_code(response: httpx.Response) -> str | None:
     return None
 
 
-async def token_request(client: httpx.AsyncClient, settings: Settings, data: dict) -> dict:
+async def token_request(client: httpx.AsyncClient, auth: GmailOAuthClient, data: dict) -> dict:
     try:
         response = await client.post(TOKEN_URL, data={
-            "client_id": settings.google_calendar_client_id,
-            "client_secret": settings.google_calendar_client_secret,
+            "client_id": auth.client_id,
+            "client_secret": auth.client_secret,
             **data,
         })
     except httpx.RequestError:
@@ -71,12 +100,15 @@ async def token_request(client: httpx.AsyncClient, settings: Settings, data: dic
 
 
 async def exchange_code(settings: Settings, code: str, verifier: str) -> str:
+    auth = oauth_client(settings)
+    if auth is None:
+        raise MailDeliveryError("Google OAuth ist nicht eingerichtet.", code="gmail_unavailable")
     async with httpx.AsyncClient(timeout=10) as client:
-        tokens = await token_request(client, settings, {
+        tokens = await token_request(client, auth, {
             "grant_type": "authorization_code",
             "code": code,
             "code_verifier": verifier,
-            "redirect_uri": settings.google_calendar_redirect_uri,
+            "redirect_uri": auth.redirect_uri,
         })
     refresh = tokens.get("refresh_token")
     if tokens.get("scope") is None or not isinstance(refresh, str) or not refresh:
@@ -85,6 +117,9 @@ async def exchange_code(settings: Settings, code: str, verifier: str) -> str:
 
 
 async def send_gmail(settings: Settings, refresh_token: str, mail: OutboundMail) -> None:
+    auth = oauth_client(settings)
+    if auth is None:
+        raise MailDeliveryError("Google OAuth ist nicht eingerichtet.", code="gmail_unavailable")
     message = EmailMessage()
     message["To"] = mail.recipient
     message["Subject"] = mail.subject
@@ -94,7 +129,7 @@ async def send_gmail(settings: Settings, refresh_token: str, mail: OutboundMail)
         message.add_alternative(mail.html, subtype="html")
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
     async with httpx.AsyncClient(timeout=10) as client:
-        tokens = await token_request(client, settings, {
+        tokens = await token_request(client, auth, {
             "grant_type": "refresh_token", "refresh_token": refresh_token,
         })
         try:

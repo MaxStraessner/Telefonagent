@@ -24,7 +24,7 @@ from app.models.entities import GmailNotification
 from app.schemas.agent_config import AgentConfigurationData
 from app.schemas.notifications import DEFAULT_SECTIONS, NotificationSettingsResponse, NotificationSettingsUpdate
 from app.services.calendar_oauth import code_challenge, state_hash
-from app.services.gmail import STATE_PREFIX, authorization_url, exchange_code
+from app.services.gmail import STATE_PREFIX, authorization_url, exchange_code, oauth_client
 from app.services.gmail_notifications import active_connection, utc
 from app.services.mail import MailDeliveryError
 from app.services.rate_limit import enforce_rate_limit
@@ -51,7 +51,7 @@ def profile(db: Session, context: AccessContext, settings: Settings, item: Gmail
     except ValueError:
         recipient_on_account = None
     return NotificationSettingsResponse(
-        available=settings.google_calendar_configured,
+        available=oauth_client(settings) is not None,
         connected=bool(item and item.encrypted_refresh_token),
         enabled=bool(item and item.enabled),
         active_elsewhere=bool(active and active.user_id != context.user.id),
@@ -112,7 +112,7 @@ def connect_gmail(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    if not settings.google_calendar_configured:
+    if oauth_client(settings) is None:
         raise api_error(503, "gmail_unavailable", "Google OAuth ist auf dem Server noch nicht eingerichtet.")
     enforce_rate_limit(f"gmail-oauth:{context.user.id}", limit=12)
     item = own_settings(db, context, lock=True)

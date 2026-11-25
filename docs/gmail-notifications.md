@@ -14,6 +14,8 @@ Die Gmail-Anbindung verwendet den bestehenden Web-OAuth-Client aus `GOOGLE_CALEN
 
 Der vorhandene `CALENDAR_TOKEN_ENCRYPTION_KEY` verschlüsselt den Gmail-Refresh-Token vor der Speicherung. Access-Tokens bleiben im Arbeitsspeicher. Der Einmalstatus ist an die angemeldete Browsersitzung und das ausgewählte Unternehmen gebunden. In vorgeschalteten Proxy-Logs sollten OAuth-Callback-Queryparameter ebenfalls unterdrückt bleiben.
 
+Bei einem separaten Gmail-Client werden `GMAIL_CLIENT_ID` und `GMAIL_CLIENT_SECRET` gemeinsam gesetzt. In Google ist die URL aus `APP_BASE_URL` mit dem Pfad `/api/v1/calendar/oauth/google/callback` als Redirect-URI zu registrieren. Google Calendar behält seinen eigenen Client. Bei einem Wechsel des Gmail-Clients muss das sendende Konto neu verbunden werden. Für alleinige private Nutzung kann ein separates Google-Cloud-Projekt im Personal Mode verwendet werden. [Google Auth Platform](https://support.google.com/cloud/answer/15544987)
+
 ## Abnahme
 
 1. Als Unternehmensadmin **Benachrichtigungen** öffnen und einen kontrollierten Testempfänger speichern.
