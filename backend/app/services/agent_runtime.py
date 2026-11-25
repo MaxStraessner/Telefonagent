@@ -139,10 +139,11 @@ def _source_digests(
     booking_values = (
         _model_values(booking, excluded=common_excluded) if booking is not None else {"configured": False}
     )
+    configuration_excluded = common_excluded | {
+        "call_email_enabled", "call_email_recipient", "greeting_audio", "greeting_audio_digest",
+    }
     return {
-        "agent_configuration": _digest(
-            _model_values(bundle.configuration, excluded=common_excluded | {"call_email_enabled", "call_email_recipient"})
-        ),
+        "agent_configuration": _digest(_model_values(bundle.configuration, excluded=configuration_excluded)),
         "knowledge": _digest(knowledge),
         "capabilities": _digest(capabilities),
         "booking_configuration": _digest(booking_values),

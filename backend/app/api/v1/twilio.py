@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from fastapi import APIRouter, Depends, Request, Response, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
+from starlette.websockets import WebSocketState
 
 from app.api.dependencies import TenantContext
 from app.core.config import Settings, get_settings
@@ -231,10 +232,12 @@ async def inbound_voice(
         db.rollback()
         _record_setup_failure(db, context, call, call_sid, route, caller_phone)
         return _reject_call()
-    except Exception:
+    except Exception as exc:
         db.rollback()
         _record_setup_failure(db, context, call, call_sid, route, caller_phone)
-        logger.error("twilio_voice_setup_failed", extra={"event_name": "twilio_voice_setup_failed"})
+        logger.error("twilio_voice_setup_failed", extra={
+            "event_name": "twilio_voice_setup_failed", "exception_type": type(exc).__name__,
+        })
         return _reject_call()
 
 
@@ -386,6 +389,8 @@ async def media_stream(
             )
         await bridge.run()
         lifecycle.finish(call.id, transcript=bridge.transcript, error_code=bridge.documentation_error)
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.close(code=1000)
     except WebSocketDisconnect:
         if context and call and stream_owned:
             CallLifecycleService(db, context.id).finish(

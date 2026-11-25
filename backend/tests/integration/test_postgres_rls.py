@@ -641,7 +641,9 @@ def test_twilio_resolvers_keep_two_numbers_and_call_sids_tenant_isolated():
 ])
 def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, uses_live, integrated_greeting, monkeypatch):
     """Actual HTTP/WS and database layers; only provider I/O is simulated."""
+    from app.api.dependencies import TenantContext
     from app.services import call_analysis, call_processing
+    from app.services import speech as speech_service
     suffix = uuid4().hex[:10]
     migrator = create_engine(MIGRATOR_URL)
     runtime = create_engine(RUNTIME_URL)
@@ -656,8 +658,10 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
         openai_telephone_model=LIVE_TELEPHONE_MODEL,
         smtp_host="smtp.example.test", smtp_from_address="agent@example.test",
         twilio_auth_token="synthetic-twilio-test-token", twilio_stream_token_secret="qa-call-token-secret-with-at-least-thirty-two-bytes")
+    speech_requests = []
     async def speech(_, __, payload):
         assert payload["voice"] == "coral" and payload["response_format"] == "pcm"
+        speech_requests.append(payload)
         return bytes(6 * 160)
     monkeypatch.setattr("app.services.speech.render_speech", speech)
     with Session(migrator, expire_on_commit=False) as db:
@@ -673,6 +677,9 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
         config.integrated_greeting = integrated_greeting
         if integrated_greeting:
             config.message_greeting = "Hier ist der KI-Assistent für {Name}. Was darf ich ihm schriftlich ausrichten?"
+            config.greeting_audio, config.greeting_audio_digest = asyncio.run(
+                speech_service.prepare_greeting(settings, TenantContext(tenant.id, tenant), config, config)
+            )
         config.standard_greeting = config.outside_hours_greeting = "Willkommen bei {Name}. Was kann ich für Sie tun?"
         db.add(AgentCapability(tenant_id=tenant.id, capability_key="calendar_booking", is_active=True))
         db.add(TenantInboundRoute(tenant_id=tenant.id, route_type="phone_number", normalized_identifier=phone, is_active=True))
@@ -757,6 +764,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
             root = ET.fromstring(response.text)
             if integrated_greeting:
                 assert [child.tag for child in root] == ["Connect", "Hangup"]
+                assert len(speech_requests) == 1
             else:
                 assert [child.tag for child in root][:2] == ["Say", "Connect"]
                 assert len(root.findall("Say")) == 1
@@ -825,6 +833,10 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
                     })
                     assert stopped.status_code == 204
                 ws.send_json({"event": "stop", "sequenceNumber": str(next_sequence + 1), "streamSid": stream_sid})
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    while True:
+                        ws.receive_json()
+                assert closed.value.code == 1000
             with runtime_sessions() as db:
                 bind_tenant_context(db, tenant_id)
                 saved = db.get(CallSession, call_id)
