@@ -136,6 +136,9 @@ def test_integrated_greeting_is_prepared_once_and_invalid_text_keeps_current_ver
     assert generated[0]["input"] == payload["message_greeting"].replace("{Name}", original["company_name"])
     saved_again = client.put("/api/v1/agent/config", json={**payload, "expected_version": saved.json()["version"]})
     assert saved_again.status_code == 200 and len(generated) == 1
+    runtime = client.post("/api/v1/agent/test-session")
+    assert runtime.status_code == 200
+    assert "schriftlich ausrichten" in runtime.json()["greeting"]
     restore = {**configuration_write(original), "expected_version": saved_again.json()["version"]}
     assert client.put("/api/v1/agent/config", json=restore).status_code == 200
 
