@@ -650,7 +650,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
     settings = Settings(app_env="test", database_url=RUNTIME_URL, cors_origins="http://testserver",
         app_base_url="https://qa.example.test", auth_hmac_secret="qa-test-hmac-at-least-thirty-two-bytes",
         openai_api_key="synthetic-never-used-key", twilio_account_sid="AC" + "1" * 32,
-        openai_telephone_model=LIVE_TELEPHONE_MODEL if uses_live or mode == "agent" else None,
+        openai_telephone_model=LIVE_TELEPHONE_MODEL,
         smtp_host="smtp.example.test", smtp_from_address="agent@example.test",
         twilio_auth_token="synthetic-twilio-test-token", twilio_stream_token_secret="qa-call-token-secret-with-at-least-thirty-two-bytes")
     with Session(migrator, expire_on_commit=False) as db:
@@ -658,9 +658,12 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
             industry="services", timezone_name="Europe/Berlin", username=username, display_name="QA Admin", email=None, password=password)
         config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant.id))
         config.operating_mode = mode
+        config.telephone_model = "auto" if uses_live else "realtime" if mode == "answering_machine" else LIVE_TELEPHONE_MODEL
+        config.voice = "coral"
         config.call_email_enabled = True
         config.call_email_recipient = "owner@example.test"
-        config.message_greeting = "Guten Tag. Welche Nachricht möchten Sie hinterlassen?"
+        config.message_greeting = "Guten Tag, hier ist der Assistent für {Name}. Welche Nachricht möchten Sie hinterlassen?"
+        config.standard_greeting = config.outside_hours_greeting = "Willkommen bei {Name}. Was kann ich für Sie tun?"
         db.add(AgentCapability(tenant_id=tenant.id, capability_key="calendar_booking", is_active=True))
         db.add(TenantInboundRoute(tenant_id=tenant.id, route_type="phone_number", normalized_identifier=phone, is_active=True))
         db.commit()
@@ -744,18 +747,24 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
             root = ET.fromstring(response.text)
             assert [child.tag for child in root][:2] == ["Say", "Connect"]
             assert len(root.findall("Say")) == 1
-            assert f"KI-Telefonassistent für Synthetic QA {mode}" in root.find("Say").text
-            assert "als Text erfasst und ausgewertet" in root.find("Say").text
+            company = f"Synthetic QA {mode}"
+            opening = (f"Guten Tag, hier ist der Assistent für {company}. Welche Nachricht möchten Sie hinterlassen?"
+                       if mode == "answering_machine" else f"Willkommen bei {company}. Was kann ich für Sie tun?")
+            assert root.find("Say").text == f"{opening} Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
             token = root.find(".//Parameter").attrib["value"]
             # A setting change between webhook and media handshake must only
             # affect future calls, including when Twilio retries the webhook.
             with Session(migrator) as db:
                 config = db.scalar(select(AgentConfiguration).where(AgentConfiguration.tenant_id == tenant_id))
                 config.operating_mode = "agent" if mode == "answering_machine" else "answering_machine"
+                config.message_greeting = config.standard_greeting = config.outside_hours_greeting = "Neue Begrüßung."
+                config.voice = "cedar"
                 config.version += 1
                 db.commit()
             duplicate = client.post("/api/v1/twilio/voice", data=params, headers={"X-Twilio-Signature": validator.compute_signature(voice_url(settings), params)})
-            assert ET.fromstring(duplicate.text).find(".//Stream") is not None
+            duplicate_root = ET.fromstring(duplicate.text)
+            assert duplicate_root.find(".//Stream") is not None
+            assert duplicate_root.findtext("Say") == root.findtext("Say")
             with client.websocket_connect("/api/v1/twilio/media", headers={"X-Twilio-Signature": validator.compute_signature(media_url(settings), {})}) as ws:
                 ws.send_json({"event": "connected", "protocol": "Call", "version": "1.0.0"})
                 ws.send_json({"event": "start", "sequenceNumber": "1", "streamSid": stream_sid, "start": {
@@ -834,9 +843,12 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
                 live_config = sent[0]["session"]
                 assert live_config["model"] == LIVE_TELEPHONE_MODEL and live_config["store"] is False
                 assert live_config["audio"]["format"] == {"type": "audio/pcmu", "rate": 8000}
+                assert live_config["audio"]["output"]["voice"] == "coral"
+                assert "input" not in live_config
                 assert live_config["delegation"]["responses"]["tool_choice"] == "none"
                 assert detail["actions"] == []
             else:
+                assert sent[0]["session"]["audio"]["output"]["voice"] == "coral"
                 tool_output = next(event["item"]["output"] for event in sent if event["type"] == "conversation.item.create")
                 if mode == "answering_machine":
                     assert sent[0]["session"]["tools"] == []

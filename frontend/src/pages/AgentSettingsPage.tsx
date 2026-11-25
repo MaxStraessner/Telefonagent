@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../api/client";
 import type { AgentCatalog, AgentConfiguration, AgentFaq, AgentKnowledge, AgentKnowledgeService, AgentRule, AgentTopic, RuntimeSummary } from "../types/api";
@@ -28,7 +28,7 @@ export function AgentSettingsPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [previewing, setPreviewing] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const refreshRuntime = useCallback(async () => {
     setError(null);
@@ -48,7 +48,8 @@ export function AgentSettingsPage() {
     } catch (reason) { setError(reason instanceof ApiError ? reason : new ApiError("Die KI-Einstellungen konnten nicht geladen werden.")); }
     finally { setLoading(false); }
   }, [refreshRuntime]);
-  useEffect(() => { void load(); return () => { if (audioRef.current) URL.revokeObjectURL(audioRef.current.src); }; }, [load]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   const configDirty = useMemo(() => Boolean(config && savedConfig && !equal(config, savedConfig)), [config, savedConfig]);
   const knowledgeDirty = useMemo(() => Boolean(knowledge && savedKnowledge && !equal(knowledge, savedKnowledge)), [knowledge, savedKnowledge]);
   const dirty = tab === "knowledge" ? knowledgeDirty : tab === "test" ? false : configDirty;
@@ -85,8 +86,7 @@ export function AgentSettingsPage() {
         regional_accent: config.regional_accent,
         pronunciation_instructions: config.pronunciation_instructions,
       });
-      if (audioRef.current) URL.revokeObjectURL(audioRef.current.src);
-      const audio = new Audio(URL.createObjectURL(blob)); audioRef.current = audio; await audio.play();
+      setPreviewUrl(URL.createObjectURL(blob));
     } catch (reason) { setError(reason instanceof ApiError ? reason : new ApiError("Die Stimmprobe konnte nicht abgespielt werden.")); }
     finally { setPreviewing(false); }
   };
@@ -103,9 +103,9 @@ export function AgentSettingsPage() {
     <fieldset className="agent-editor" disabled={(!canEdit && tab !== "test") || saving}>
       {tab === "identity" && <Section title="Betriebsmodus" description="Änderungen gelten nach dem Speichern für neue Anrufe. Laufende Gespräche behalten ihre Konfiguration."><div className="agent-form-grid">
         <Field label="Betriebsmodus"><select value={config.operating_mode ?? "agent"} onChange={(e) => update("operating_mode", e.target.value as AgentConfiguration["operating_mode"])}><option value="agent">Vollständiger KI-Telefonagent</option><option value="answering_machine">Intelligenter Anrufbeantworter</option></select></Field>
-        <Field label="Nachrichtenbegrüßung" hint="Aus diesem Text leitet der Assistent nach der kurzen KI-Begrüßung seine Einstiegsfrage ab. Mit {Name} setzen Sie den Unternehmensnamen oder Ihren eigenen Namen ein."><textarea maxLength={700} rows={3} value={config.message_greeting ?? "Guten Tag. Bitte schildern Sie Ihr Anliegen."} onChange={(e) => update("message_greeting", e.target.value)} /></Field>
+        <Field label="Nachrichtenbegrüßung" hint="Dieser Text wird am Anfang des Anrufs vorgelesen. {Name} setzt den hinterlegten Namen ein."><textarea maxLength={700} rows={3} value={config.message_greeting ?? "Guten Tag. Bitte schildern Sie Ihr Anliegen."} onChange={(e) => update("message_greeting", e.target.value)} /></Field>
         <Field label="Gesprächsinhalte aufbewahren (Tage)" hint="Danach werden Transkript, Auswertung und Kontaktdaten automatisch gelöscht. Separat gebuchte Termine bleiben erhalten."><input type="number" min={1} max={365} value={config.call_retention_days ?? 30} onChange={(e) => update("call_retention_days", Number(e.target.value))} /></Field>
-        <p>{config.operating_mode === "answering_machine" ? "Nachrichtenaufnahme auf Deutsch; Kalender und externe Aktionen sind technisch deaktiviert." : "Unternehmenswissen und freigeschaltete Kalenderfunktionen stehen zur Verfügung."}<br />Sprachmodell: {runtime?.model ?? "Wird geladen …"}</p>
+        <p>{config.operating_mode === "answering_machine" ? "Der Anrufbeantworter nimmt Nachrichten auf Deutsch entgegen." : "Unternehmenswissen und freigeschaltete Kalenderfunktionen stehen zur Verfügung."}</p>
       </div></Section>}
       {tab === "identity" && <Section title="Nachrichten per SMTP" description="Nur neue Anrufe im Anrufbeantwortermodus werden nach der Auswertung versendet. Alte Anrufe bleiben unverändert.">
         <p><Link to="/benachrichtigungen">Gmail-Benachrichtigungen einrichten</Link></p>
@@ -118,7 +118,46 @@ export function AgentSettingsPage() {
       </Section>}
       {tab === "identity" && <Section title="Identität" description="Diese Angaben bestimmen, als wer sich die Gesprächs-KI vorstellt."><div className="agent-form-grid"><Field label="Name im Gespräch" hint="Name des Unternehmens oder der Person, für die der Assistent Anrufe entgegennimmt."><input maxLength={200} value={config.company_name} onChange={(e) => update("company_name", e.target.value)} /></Field><Field label="Name des Assistenten"><input value={config.assistant_name} onChange={(e) => update("assistant_name", e.target.value)} /></Field><Field label="Rolle"><input value={config.assistant_role} onChange={(e) => update("assistant_role", e.target.value)} /></Field><Field label="Sprache"><select value={config.language} onChange={(e) => update("language", e.target.value as "de")}><option value="de">Deutsch</option></select></Field><Field label="Transparenzhinweis"><textarea rows={3} value={config.transparency_notice} onChange={(e) => update("transparency_notice", e.target.value)} /></Field><Field label="Anrede"><select value={config.address_formality} onChange={(e) => update("address_formality", e.target.value as AgentConfiguration["address_formality"])}><option value="formal">Sie</option><option value="informal">Du</option></select></Field></div></Section>}
       {tab === "greeting" && <Section title="Begrüßung und Abschluss" description="Je nach Gesprächskontext wird genau eine Begrüßung verwendet."><div className="agent-form-stack"><Field label="Standardbegrüßung"><textarea rows={3} value={config.standard_greeting} onChange={(e) => update("standard_greeting", e.target.value)} /></Field><Field label="Außerhalb der Öffnungszeiten"><textarea rows={3} value={config.outside_hours_greeting} onChange={(e) => update("outside_hours_greeting", e.target.value)} /></Field><Field label="Testmodus"><textarea rows={3} value={config.test_greeting} onChange={(e) => update("test_greeting", e.target.value)} /></Field><Field label="Verabschiedung"><textarea rows={3} value={config.farewell} onChange={(e) => update("farewell", e.target.value)} /></Field></div></Section>}
-      {tab === "voice" && <Section title="Stimme und Sprechen" description="Stimme und Tempo werden an OpenAI Realtime übergeben; Aussprache bleibt eine promptgesteuerte Annäherung."><div className="agent-form-grid"><Field label="Stimme"><select value={config.voice} onChange={(e) => update("voice", e.target.value)}>{catalog.voices.map((voice) => <option value={voice.value} key={voice.value}>{voice.label}{voice.recommended ? " · empfohlen" : ""}</option>)}</select></Field><Field label={`Geschwindigkeit · ${config.speech_speed.toFixed(2)}×`} hint="Langsamer 0,85× · Normal 1,00× · Schneller 1,15×"><input type="range" min="0.25" max="1.5" step="0.05" value={config.speech_speed} onChange={(e) => update("speech_speed", Number(e.target.value))} /></Field><Field label="Aussprache"><select value={config.pronunciation_style} onChange={(e) => update("pronunciation_style", e.target.value as AgentConfiguration["pronunciation_style"])}><option value="neutral">Neutral und hochdeutsch</option><option value="regional">Leichte regionale Färbung</option><option value="custom">Individuelle Ausspracheanweisung</option></select></Field>{config.pronunciation_style === "regional" && <Field label="Regionale Färbung"><select value={config.regional_accent} onChange={(e) => update("regional_accent", e.target.value as AgentConfiguration["regional_accent"])}><option value="">Bitte auswählen</option><option value="north_german">Leicht norddeutsch</option><option value="westphalian">Leicht westfälisch</option><option value="rhineland">Leicht rheinländisch</option><option value="south_german">Leicht süddeutsch</option></select></Field>}{config.pronunciation_style === "custom" && <Field label="Individuelle Ausspracheanweisung" hint="Maximal 1.000 Zeichen; feste Plattformregeln haben Vorrang."><textarea rows={4} maxLength={1000} value={config.pronunciation_instructions} onChange={(e) => update("pronunciation_instructions", e.target.value)} /></Field>}</div><div className="privacy-note"><strong>Hinweis zur Aussprache</strong><p>Die sprachliche Färbung wird durch Anweisungen beeinflusst. Die tatsächliche Aussprache kann je nach Stimme und Gespräch variieren.</p></div><button type="button" className="button secondary" onClick={() => void preview()} disabled={previewing}>{previewing ? "Stimmprobe wird erzeugt …" : "Aktuelle Auswahl probehören"}</button></Section>}
+      {tab === "voice" && <Section title="Stimme und Sprechen">
+        <div className="agent-form-grid">
+          <Field label="Telefon-Sprachmodell" hint="Für deutschsprachige Anrufe wählt die Automatik GPT-Live 1.1. Aktive Kalenderwerkzeuge und Telefonie ohne Transkription verwenden GPT-Realtime.">
+            <select value={config.telephone_model ?? "auto"} onChange={(e) => update("telephone_model", e.target.value as AgentConfiguration["telephone_model"])}>
+              <option value="auto">Automatisch (empfohlen)</option>
+              <option value="gpt-live-1.1">GPT-Live 1.1</option>
+              <option value="realtime">GPT-Realtime</option>
+            </select>
+          </Field>
+          <Field label="Stimme" hint="Gilt im Gespräch am Telefon und im Browsertest.">
+            <select value={config.voice} onChange={(e) => update("voice", e.target.value)}>
+              {catalog.voices.map((voice) => <option value={voice.value} key={voice.value}>{voice.label}{voice.recommended ? " · empfohlen" : ""}</option>)}
+            </select>
+          </Field>
+          <Field label={`Geschwindigkeit · ${config.speech_speed.toFixed(2)}×`} hint="Gilt für Realtime-Gespräche und die Stimmprobe.">
+            <input type="range" min="0.25" max="1.5" step="0.05" value={config.speech_speed} onChange={(e) => update("speech_speed", Number(e.target.value))} />
+          </Field>
+          <Field label="Aussprache">
+            <select value={config.pronunciation_style} onChange={(e) => update("pronunciation_style", e.target.value as AgentConfiguration["pronunciation_style"])}>
+              <option value="neutral">Neutral und hochdeutsch</option>
+              <option value="regional">Leichte regionale Färbung</option>
+              <option value="custom">Individuelle Ausspracheanweisung</option>
+            </select>
+          </Field>
+          {config.pronunciation_style === "regional" && <Field label="Regionale Färbung">
+            <select value={config.regional_accent} onChange={(e) => update("regional_accent", e.target.value as AgentConfiguration["regional_accent"])}>
+              <option value="">Bitte auswählen</option>
+              <option value="north_german">Leicht norddeutsch</option>
+              <option value="westphalian">Leicht westfälisch</option>
+              <option value="rhineland">Leicht rheinländisch</option>
+              <option value="south_german">Leicht süddeutsch</option>
+            </select>
+          </Field>}
+          {config.pronunciation_style === "custom" && <Field label="Individuelle Ausspracheanweisung" hint="Maximal 1.000 Zeichen.">
+            <textarea rows={4} maxLength={1000} value={config.pronunciation_instructions} onChange={(e) => update("pronunciation_instructions", e.target.value)} />
+          </Field>}
+        </div>
+        <button type="button" className="button secondary" onClick={() => void preview()} disabled={previewing}>{previewing ? "Stimmprobe wird erzeugt …" : "Aktuelle Auswahl probehören"}</button>
+        {previewUrl && <audio key={previewUrl} controls autoPlay src={previewUrl} aria-label="Stimmprobe" />}
+      </Section>}
       {tab === "conversation" && <ConversationEditor config={config} update={update} />}
       {tab === "boundaries" && <Boundaries config={config} update={update} setConfig={setConfig} />}
       {tab === "knowledge" && <KnowledgeEditor knowledge={knowledge} setKnowledge={setKnowledge} updateProfile={updateProfile} />}
@@ -146,5 +185,5 @@ function KnowledgeEditor({ knowledge, setKnowledge, updateProfile }: { knowledge
 
 function TestPanel({ runtime, canEdit, refresh }: { runtime: RuntimeSummary | null; canEdit: boolean; refresh: () => Promise<void> }) {
   const [prompt, setPrompt] = useState<string | null>(null);
-  return <Section title="Wirksame Testkonfiguration" description="Der Testmodus lädt denselben Runtime-Dienst wie die Realtime-Sitzung.">{runtime ? <><dl className="runtime-summary"><div><dt>Version</dt><dd>{runtime.configuration_version}</dd></div><div><dt>Unternehmen</dt><dd>{runtime.company_name}</dd></div><div><dt>Assistent</dt><dd>{runtime.assistant_name}</dd></div><div><dt>Sprache</dt><dd>{runtime.language === "de" ? "Deutsch" : runtime.language}</dd></div><div><dt>Stil</dt><dd>{toneLabels[runtime.style]}</dd></div><div><dt>Geschäftszeiten</dt><dd>{runtime.business_hours_status === "open" ? "Simuliert geöffnet" : "Simuliert geschlossen"}</dd></div><div><dt>Browser-Sprachmodell</dt><dd>{runtime.model}</dd></div>{runtime.telephone_model && runtime.telephone_model !== runtime.model && <div><dt>Telefon-Sprachmodell</dt><dd>{runtime.telephone_model}</dd></div>}<div><dt>Stimme</dt><dd>{runtime.voice}</dd></div><div><dt>Tempo</dt><dd>{runtime.speed.toFixed(2)}×</dd></div><div><dt>Sprecherwechsel</dt><dd>{String(runtime.turn_detection.type)}</dd></div><div><dt>Fähigkeiten</dt><dd>{runtime.capability_keys.length ? runtime.capability_keys.join(", ") : "Keine"}</dd></div><div><dt>Werkzeuge</dt><dd>{runtime.tool_names.length ? runtime.tool_names.join(", ") : "Keine"}</dd></div></dl><div className="runtime-greeting"><strong>Testbegrüßung</strong><p>{runtime.greeting}</p></div><div className="agent-test-actions"><button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>{canEdit && <button type="button" className="button secondary" onClick={() => void api.agentPromptPreview().then((value) => setPrompt(value.prompt))}>Kompilierten Prompt anzeigen</button>}<Link className="button primary" to="/testgespraech">Testgespräch starten</Link></div>{prompt && <details className="prompt-preview" open><summary>Kompilierter Prompt · feste Regeln haben Vorrang</summary><pre>{prompt}</pre></details>}</> : <button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>}</Section>;
+  return <Section title="Wirksame Testkonfiguration" description="Das Browser-Testgespräch nutzt GPT-Realtime. Hier sehen Sie auch das aktive Telefonmodell.">{runtime ? <><dl className="runtime-summary"><div><dt>Version</dt><dd>{runtime.configuration_version}</dd></div><div><dt>Unternehmen</dt><dd>{runtime.company_name}</dd></div><div><dt>Assistent</dt><dd>{runtime.assistant_name}</dd></div><div><dt>Sprache</dt><dd>{runtime.language === "de" ? "Deutsch" : runtime.language}</dd></div><div><dt>Stil</dt><dd>{toneLabels[runtime.style]}</dd></div><div><dt>Geschäftszeiten</dt><dd>{runtime.business_hours_status === "open" ? "Simuliert geöffnet" : "Simuliert geschlossen"}</dd></div><div><dt>Browser-Sprachmodell</dt><dd>{runtime.model}</dd></div>{runtime.telephone_model && <div><dt>Telefon-Sprachmodell</dt><dd>{runtime.telephone_model}</dd></div>}<div><dt>Stimme</dt><dd>{runtime.voice}</dd></div><div><dt>Tempo</dt><dd>{runtime.speed.toFixed(2)}×</dd></div><div><dt>Sprecherwechsel</dt><dd>{String(runtime.turn_detection.type)}</dd></div><div><dt>Fähigkeiten</dt><dd>{runtime.capability_keys.length ? runtime.capability_keys.join(", ") : "Keine"}</dd></div><div><dt>Werkzeuge</dt><dd>{runtime.tool_names.length ? runtime.tool_names.join(", ") : "Keine"}</dd></div></dl><div className="runtime-greeting"><strong>Testbegrüßung</strong><p>{runtime.greeting}</p></div><div className="agent-test-actions"><button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>{canEdit && <button type="button" className="button secondary" onClick={() => void api.agentPromptPreview().then((value) => setPrompt(value.prompt))}>Kompilierten Prompt anzeigen</button>}<Link className="button primary" to="/testgespraech">Testgespräch starten</Link></div>{prompt && <details className="prompt-preview" open><summary>Kompilierter Prompt · feste Regeln haben Vorrang</summary><pre>{prompt}</pre></details>}</> : <button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>}</Section>;
 }

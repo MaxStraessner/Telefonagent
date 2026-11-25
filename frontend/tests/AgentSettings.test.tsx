@@ -33,6 +33,7 @@ function installApi(overrides: { canEdit?: boolean; mailAvailable?: boolean; pre
     else if (url.endsWith("/agent/config")) response = { ...config, call_email_transport_available: overrides.mailAvailable ?? false, call_email_enabled: false, call_email_recipient: null, can_edit: overrides.canEdit ?? true, role: overrides.canEdit === false ? "member" : "owner" };
     else if (url.endsWith("/agent/knowledge")) response = { ...knowledge, can_edit: overrides.canEdit ?? true };
     else if (url.endsWith("/agent/catalog")) response = catalog;
+    else if (url.endsWith("/agent/voice-preview")) return new Response("audio", { headers: { "Content-Type": "audio/mpeg" } });
     else if (url.endsWith("/agent/test-session")) {
       if (overrides.previewUnavailable) return new Response("{}", { status: 503 });
       response = { ...runtime, configuration_version: calls.some((call) => call.method === "PUT") ? 2 : 1 };
@@ -102,6 +103,26 @@ describe("KI-Einstellungen", () => {
     expect(screen.getByText("gpt-realtime-2.1")).toBeInTheDocument();
     expect(screen.getByText("Willkommen zum Test")).toBeInTheDocument();
     expect(screen.getAllByText("Keine", { selector: "dd" })).toHaveLength(2);
+  });
+
+  it("speichert das Telefonmodell und bietet eine abspielbare Probe der gewählten Stimme an", async () => {
+    vi.stubGlobal("URL", class extends URL {
+      static createObjectURL() { return "blob:stimmprobe"; }
+      static revokeObjectURL() {}
+    });
+    const calls = installApi();
+    render(<MemoryRouter><AgentSettingsPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole("tab", { name: "Stimme und Sprechen" }));
+    const model = screen.getByRole("combobox", { name: /Telefon-Sprachmodell/ });
+    expect(model).toHaveValue("auto");
+    await userEvent.selectOptions(model, "realtime");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /^Stimme/ }), "cedar");
+    await userEvent.click(screen.getByRole("button", { name: "Aktuelle Auswahl probehören" }));
+    expect(await screen.findByLabelText("Stimmprobe")).toHaveAttribute("src", "blob:stimmprobe");
+    expect(calls.find((call) => call.url.endsWith("/agent/voice-preview"))?.body?.voice).toBe("cedar");
+    await userEvent.click(screen.getByRole("button", { name: "Änderungen speichern" }));
+    expect(await screen.findByText(/^Gespeichert –/)).toBeInTheDocument();
+    expect(calls.find((item) => item.method === "PUT")?.body).toMatchObject({ telephone_model: "realtime", voice: "cedar" });
   });
 
   it("kennzeichnet Änderungen, kann zurücksetzen und speichert mit Versionsschutz", async () => {

@@ -331,6 +331,7 @@ class AgentConfiguration(Base, TimestampMixin):
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
     company_name: Mapped[str] = mapped_column(String(200))
     operating_mode: Mapped[str] = mapped_column(String(30), default="agent")
+    telephone_model: Mapped[str] = mapped_column(String(30), default="auto", server_default="auto")
     message_greeting: Mapped[str] = mapped_column(Text, default="Guten Tag. Bitte schildern Sie Ihr Anliegen.")
     call_retention_days: Mapped[int] = mapped_column(Integer, default=30)
     call_email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

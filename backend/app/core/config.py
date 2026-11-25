@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     openai_api_key: str | None = None
     openai_realtime_model: str = "gpt-realtime-2.1"
-    openai_telephone_model: str | None = None
+    openai_telephone_model: str | None = "gpt-live-1.1"
     openai_realtime_voice: str = "marin"
     openai_realtime_max_session_minutes: int = 10
     openai_realtime_max_output_tokens: int = 1024

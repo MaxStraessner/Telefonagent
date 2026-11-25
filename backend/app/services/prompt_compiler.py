@@ -57,7 +57,7 @@ def compile_agent_prompt(bundle: AgentBundle, greeting: str, *, telephone: bool 
     config = bundle.configuration
     opening = (
         "Die telefonische Begrüßung mit Transparenzhinweis wurde bereits abgespielt. "
-        f"Ohne Wiederholung direkt zum Anliegen übergehen. Inhaltliche Vorlage für die Einstiegsfrage: {greeting}"
+        "Warte auf die erste Äußerung der anrufenden Person und gehe direkt darauf ein."
         if telephone else f"Verwende zu Gesprächsbeginn genau einmal diese Begrüßung: {greeting}"
     )
     if config.operating_mode == "answering_machine":

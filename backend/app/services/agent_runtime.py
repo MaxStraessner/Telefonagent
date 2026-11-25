@@ -18,11 +18,12 @@ from app.services.agent_configuration import AgentBundle, is_open_now, load_agen
 from app.services.capabilities import active_capabilities, realtime_tools
 from app.services.prompt_compiler import SECTION_NAMES, compile_agent_prompt
 from app.services.tool_projections import ToolProjectionError, canonical_tools_digest
-from app.services.voice_providers import LIVE_TELEPHONE_MODEL, LIVE_TELEPHONE_VOICES, telephone_model
+from app.services.voice_providers import telephone_model
 
 RUNTIME_MANIFEST_SCHEMA_VERSION = "1"
 SETTING_TARGETS = {
     "operating_mode": "tools",
+    "telephone_model": "session",
     "message_greeting": "prompt",
     "call_retention_days": "storage",
     "company_name": "prompt",
@@ -180,7 +181,8 @@ def build_runtime_config(
     else:
         greeting = config.standard_greeting if is_open_now(bundle, timezone_name) else config.outside_hours_greeting
     if config.operating_mode == "answering_machine":
-        greeting = config.message_greeting.replace("{Name}", config.company_name)
+        greeting = config.message_greeting
+    greeting = greeting.replace("{Name}", config.company_name)
     if config.turn_detection_type.value == "semantic_vad":
         turn_detection: dict[str, object] = {
             "type": "semantic_vad", "eagerness": config.turn_eagerness.value,
@@ -200,14 +202,9 @@ def build_runtime_config(
     if config.operating_mode == "answering_machine":
         capabilities = []
         tools = []
-    model = telephone_model(settings, tools) if telephone else settings.openai_realtime_model
-    voice = config.voice if model != LIVE_TELEPHONE_MODEL or config.voice in LIVE_TELEPHONE_VOICES else "marin"
-    first_response = (
-        "Die Begrüßung mit KI- und Verarbeitungshinweis wurde bereits abgespielt. "
-        "Steige jetzt ohne erneute Begrüßung direkt mit der passenden Einstiegsfrage ein. "
-        f"Berücksichtige den Inhalt dieser konfigurierten Begrüßung: {greeting}"
-        if telephone else "Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als "
-        f"Grundlage: {greeting}"
+    model = telephone_model(settings, tools, config.telephone_model) if telephone else settings.openai_realtime_model
+    first_response = "" if telephone else (
+        f"Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: {greeting}"
     )
     try:
         tools_digest = canonical_tools_digest(tools)
@@ -236,7 +233,7 @@ def build_runtime_config(
         "instructions": prompt,
         "prompt_digest": _digest(prompt),
         "model": model,
-        "voice": voice,
+        "voice": config.voice,
         "speed": config.speech_speed,
         "configuration_version": config.version,
         "source_digests": source_digests,
@@ -257,7 +254,7 @@ def build_runtime_config(
     )
     return AgentRuntimeConfig(
         bundle=bundle, prompt=prompt, greeting=greeting,
-        model=model, voice=voice, speed=config.speech_speed,
+        model=model, voice=config.voice, speed=config.speech_speed,
         turn_detection=turn_detection, tools=tools,
         tool_choice="auto" if tools else "none", capability_keys=[item.key for item in capabilities],
         prompt_sections=SECTION_NAMES, business_hours_status=business_hours_status,

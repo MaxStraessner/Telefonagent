@@ -53,14 +53,14 @@ def _reject_call() -> Response:
     return _xml_response(root)
 
 
-def _stream_twiml(settings: Settings, token: str, company_name: str) -> Response:
+def _stream_twiml(settings: Settings, token: str, greeting: str) -> Response:
     root = ET.Element("Response")
     notice = ET.SubElement(root, "Say", {"language": "de-DE"})
-    notice.text = f"Guten Tag, hier ist der KI-Telefonassistent für {company_name}. "
-    notice.text += (
-        "Das Gespräch wird als Text erfasst und ausgewertet."
-        if settings.openai_realtime_transcription_enabled else "Ihre Spracheingaben werden verarbeitet."
+    disclosure = (
+        "Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
+        if settings.openai_realtime_transcription_enabled else "Ich bin ein KI-Assistent."
     )
+    notice.text = f"{greeting} {disclosure}"
     connect = ET.SubElement(root, "Connect")
     stream = ET.SubElement(
         connect,
@@ -214,7 +214,7 @@ async def inbound_voice(
             call_sid=call_sid,
             phone_number=to_number,
         )
-        return _stream_twiml(settings, token, context.tenant.name)
+        return _stream_twiml(settings, token, call.runtime_manifest_snapshot["welcome_message"])
     except (TenantResolutionError, TwilioServiceError):
         db.rollback()
         _record_setup_failure(db, context, call, call_sid, route, caller_phone)

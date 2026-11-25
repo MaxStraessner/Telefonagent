@@ -285,10 +285,11 @@ class TwilioMediaBridge:
         if event["type"] == "session.created":
             await openai.send(json.dumps(session_update(self.runtime)))
             await self._await_session_updated(openai)
-            await openai.send(json.dumps({
-                "type": "response.create",
-                "response": {"instructions": self.runtime.manifest.initial_response_instructions},
-            }))
+            if self.runtime.manifest.initial_response_instructions:
+                await openai.send(json.dumps({
+                    "type": "response.create",
+                    "response": {"instructions": self.runtime.manifest.initial_response_instructions},
+                }))
             return
         if event["type"] == "error":
             raise _openai_rejection("openai_connection_rejected", event)
