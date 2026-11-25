@@ -173,17 +173,18 @@ def _validated_timezone(context: TenantContext) -> str:
 
 def build_runtime_config(
     db: Session, context: TenantContext, settings: Settings, *, test_mode: bool, telephone: bool = False,
+    bundle: AgentBundle | None = None,
 ) -> AgentRuntimeConfig:
-    bundle = load_agent_bundle(db, context.id)
+    bundle = bundle or load_agent_bundle(db, context.id)
     config = bundle.configuration
     timezone_name = _validated_timezone(context)
     business_hours_status = "open" if is_open_now(bundle, timezone_name) else "closed"
     if test_mode:
         greeting = config.test_greeting
-    else:
-        greeting = config.standard_greeting if is_open_now(bundle, timezone_name) else config.outside_hours_greeting
-    if config.operating_mode == "answering_machine":
+    elif config.operating_mode == "answering_machine":
         greeting = config.message_greeting
+    else:
+        greeting = config.standard_greeting if business_hours_status == "open" else config.outside_hours_greeting
     greeting = greeting.replace("{Name}", config.company_name)
     if config.turn_detection_type.value == "semantic_vad":
         turn_detection: dict[str, object] = {
@@ -201,10 +202,10 @@ def build_runtime_config(
             turn_detection["idle_timeout_ms"] = config.idle_timeout_ms
     capabilities = active_capabilities(bundle)
     tools = realtime_tools(bundle)
-    if config.operating_mode == "answering_machine":
-        capabilities = []
-        tools = []
-    model = telephone_model(settings, tools, config.telephone_model) if telephone else settings.openai_realtime_model
+    model = (
+        telephone_model(settings, has_actions=bool(tools), preference=config.telephone_model)
+        if telephone else settings.openai_realtime_model
+    )
     first_response = "" if telephone else (
         f"Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als Grundlage: {greeting}"
     )

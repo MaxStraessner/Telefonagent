@@ -19,6 +19,7 @@ export function manifestTurnDetection(manifest: RuntimeManifest) {
     threshold: vad.threshold,
     prefixPaddingMs: vad.prefix_padding_ms,
     silenceDurationMs: vad.silence_duration_ms,
+    ...(vad.idle_timeout_ms != null ? { idleTimeoutMs: vad.idle_timeout_ms } : {}),
     createResponse: vad.create_response,
     interruptResponse: vad.interrupt_response,
   };

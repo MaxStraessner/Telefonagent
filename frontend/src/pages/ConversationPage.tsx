@@ -103,7 +103,7 @@ function ConversationContent({ data }: { data: PlatformData }) {
           <ol>
             <li>Gespräch aktiv per Klick starten und Mikrofon freigeben.</li>
             <li>Natürlich sprechen; Pausen steuern die automatische Antwort.</li>
-            <li>Während der Assistent spricht, bleibt das Mikrofon gesperrt; danach wird es automatisch wieder freigegeben.</li>
+            <li>{runtime?.turn_detection.interrupt_response ? "Du kannst den Assistenten beim Sprechen unterbrechen." : "Nach der Antwort wird dein Mikrofon automatisch wieder freigegeben."}</li>
           </ol>
           <div className="privacy-note"><strong>Kontrollierte Terminwerkzeuge</strong><p>Der Agent erhält nur Terminarten, freie Zeitfenster und das Ergebnis bestätigter Buchungen. Inhalte bestehender Kalendereinträge werden nicht an das Sprachmodell übertragen.</p></div>
           {runtime && <div className="privacy-note"><strong>Wirksame Konfiguration · v{runtime.configuration_version}</strong><p>{runtime.company_name} · {runtime.assistant_name} · Deutsch · {runtime.style} · {runtime.voice} · {runtime.speed.toFixed(2)}× · {runtime.business_hours_status === "open" ? "simuliert geöffnet" : "simuliert geschlossen"} · {runtime.capability_keys.length} Fähigkeiten</p></div>}
@@ -122,12 +122,12 @@ function ConversationContent({ data }: { data: PlatformData }) {
         <section className="card diagnosis"><div className="section-heading"><h2>Technische Diagnose</h2><span>nicht persistent</span></div><dl>
           <div><dt>Zustand</dt><dd>{stateLabels[view.state]}</dd></div>
           <div><dt>Transport</dt><dd>{active ? (realtimeE2eStub ? "Lokaler Stub" : "WebRTC") : "—"}</dd></div>
-          <div><dt>Modell</dt><dd>{data.platformStatus.realtime_model}</dd></div>
-          <div><dt>Stimme</dt><dd>{data.platformStatus.realtime_voice}</dd></div>
+          <div><dt>Browser-Sprachmodell</dt><dd>{runtime?.model ?? data.platformStatus.realtime_model}</dd></div>
+          <div><dt>Browser-Stimme</dt><dd>{runtime?.voice ?? data.platformStatus.realtime_voice}</dd></div>
           <div><dt>Konfiguration</dt><dd>{runtime ? `Version ${runtime.configuration_version}` : "—"}</dd></div>
           <div><dt>Sprechtempo</dt><dd>{runtime ? `${runtime.speed.toFixed(2)}×` : "—"}</dd></div>
           <div><dt>Fähigkeiten</dt><dd>{runtime?.capability_keys.length ?? 0}</dd></div>
-          <div><dt>VAD</dt><dd>{view.vadSummary ?? "server_vad · beim Start geladen"}</dd></div>
+          <div><dt>VAD</dt><dd>{view.vadSummary ?? String(runtime?.turn_detection.type ?? "—")}</dd></div>
           <div><dt>Wiedergabe</dt><dd>{view.playbackStatus ? playbackLabels[view.playbackStatus] : "—"}</dd></div>
           <div><dt>Verbindungsaufbau</dt><dd>{metric(view.metrics.connectionMs)}</dd></div>
           <div><dt>Letzte Reaktion</dt><dd>{metric(view.metrics.lastResponseMs)}</dd></div>

@@ -34,8 +34,8 @@ from app.services.capabilities import active_capabilities
 from app.services.mail import mail_transport_available
 from app.services.prompt_compiler import compile_pronunciation_instruction
 from app.services.rate_limit import enforce_rate_limit
-from app.services.speech import prepare_greeting, render_speech
-from app.services.voice_providers import telephone_model
+from app.services.speech import prepare_greeting, render_speech, telephone_disclosure
+from app.services.voice_providers import LIVE_TELEPHONE_MODEL
 
 router = APIRouter(prefix="/agent", tags=["agent-configuration"])
 VOICE_OPTIONS = [
@@ -131,6 +131,9 @@ def test_session_summary(
 ) -> RuntimeSummaryResponse:
     enforce_rate_limit(f"agent-test:{context.id}:{user.id}", limit=30)
     runtime = build_runtime_config(db, context, settings, test_mode=True)
+    phone = build_runtime_config(db, context, settings, test_mode=False, telephone=True, bundle=runtime.bundle)
+    config = runtime.bundle.configuration
+    prepared_opening = config.operating_mode == "answering_machine" and config.integrated_greeting
     return RuntimeSummaryResponse(
         tenant_id=context.id, configuration_version=runtime.version,
         company_name=runtime.bundle.configuration.company_name,
@@ -139,7 +142,10 @@ def test_session_summary(
         style=runtime.bundle.configuration.tone,
         business_hours_status=runtime.business_hours_status,
         model=runtime.model,
-        telephone_model=telephone_model(settings, runtime.tools, runtime.bundle.configuration.telephone_model),
+        telephone_model=phone.model,
+        telephone_greeting=phone.greeting if prepared_opening else f"{phone.greeting} {telephone_disclosure(settings)}",
+        telephone_opening_voice=phone.voice if prepared_opening else None,
+        telephone_turn_detection="live_duplex" if phone.model == LIVE_TELEPHONE_MODEL else phone.turn_detection["type"],
         voice=runtime.voice, speed=runtime.speed,
         turn_detection=runtime.turn_detection,
         capability_keys=runtime.capability_keys,

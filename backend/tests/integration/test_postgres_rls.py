@@ -571,7 +571,8 @@ def test_platform_admin_and_sole_proprietor_set_up_answering_machine():
         }, json={**payload, "expected_version": saved.json()["version"]}).status_code == 409
         preview = company.post("/api/v1/agent/test-session", headers=headers).json()
         assert preview["company_name"] == name and preview["tool_names"] == []
-        assert name in preview["greeting"]
+        assert name in preview["telephone_greeting"]
+        assert preview["greeting"] == payload["test_greeting"]
         assert name in company.get("/api/v1/agent/prompt-preview").json()["prompt"]
         with owner_engine.connect() as connection:
             rows = connection.execute(text(

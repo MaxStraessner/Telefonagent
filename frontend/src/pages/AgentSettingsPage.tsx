@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../api/client";
+import { useRefreshPlatformStatus } from "../api/PlatformDataProvider";
 import type { AgentCatalog, AgentConfiguration, AgentFaq, AgentKnowledge, AgentKnowledgeService, AgentRule, AgentTopic, RuntimeSummary } from "../types/api";
 import { PageHeader } from "./shared";
 
@@ -11,11 +12,19 @@ const toneLabels: Record<AgentConfiguration["tone"], string> = { professional_bi
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+function turnDetectionLabel(mode: unknown): string {
+  if (mode === "live_duplex") return "GPT-Live (gleichzeitiges Hören und Sprechen)";
+  if (mode === "server_vad") return "Klassische Pausenerkennung";
+  if (mode === "semantic_vad") return "Semantische Sprecherwechsel";
+  return "—";
+}
+
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) { return <label className="agent-field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
 function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange: (value: boolean) => void; label: string; hint?: string }) { return <label className="agent-toggle"><input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} /><span><strong>{label}</strong>{hint && <small>{hint}</small>}</span></label>; }
 function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) { return <section className="card agent-section"><div className="section-heading"><div><h2>{title}</h2>{description && <p>{description}</p>}</div></div>{children}</section>; }
 
 export function AgentSettingsPage() {
+  const refreshPlatformStatus = useRefreshPlatformStatus();
   const [tab, setTab] = useState<Tab>("identity");
   const [config, setConfig] = useState<AgentConfiguration | null>(null);
   const [savedConfig, setSavedConfig] = useState<AgentConfiguration | null>(null);
@@ -65,6 +74,7 @@ export function AgentSettingsPage() {
         setConfig((current) => current ? { ...current, version: saved.version } : current); setSavedConfig((current) => current ? { ...current, version: saved.version } : current);
       } else {
         const saved = await api.saveAgentConfiguration(config); setConfig(saved); setSavedConfig(clone(saved));
+        refreshPlatformStatus?.();
         setKnowledge((current) => current ? { ...current, version: saved.version } : current); setSavedKnowledge((current) => current ? { ...current, version: saved.version } : current);
       }
       setStatus("Gespeichert – neue Sitzungen verwenden diese Konfiguration.");
@@ -103,7 +113,7 @@ export function AgentSettingsPage() {
     <fieldset className="agent-editor" disabled={(!canEdit && tab !== "test") || saving}>
       {tab === "identity" && <Section title="Betriebsmodus" description="Änderungen gelten nach dem Speichern für neue Anrufe. Laufende Gespräche behalten ihre Konfiguration."><div className="agent-form-grid">
         <Field label="Betriebsmodus"><select value={config.operating_mode ?? "agent"} onChange={(e) => update("operating_mode", e.target.value as AgentConfiguration["operating_mode"])}><option value="agent">Vollständiger KI-Telefonagent</option><option value="answering_machine">Intelligenter Anrufbeantworter</option></select></Field>
-        <Field label="Nachrichtenbegrüßung" hint="Dieser Text wird am Anfang des Anrufs vorgelesen. {Name} setzt den hinterlegten Namen ein."><textarea maxLength={700} rows={3} value={config.message_greeting ?? "Guten Tag. Bitte schildern Sie Ihr Anliegen."} onChange={(e) => update("message_greeting", e.target.value)} /></Field>
+        {config.operating_mode === "answering_machine" && <Field label="Nachrichtenbegrüßung" hint="Starttext für den Anrufbeantworter. {Name} setzt den hinterlegten Namen ein."><textarea maxLength={700} rows={3} value={config.message_greeting ?? "Guten Tag. Bitte schildern Sie Ihr Anliegen."} onChange={(e) => update("message_greeting", e.target.value)} /></Field>}
         {config.operating_mode === "answering_machine" && <Toggle
           checked={config.integrated_greeting ?? false}
           onChange={(value) => update("integrated_greeting", value)}
@@ -122,8 +132,27 @@ export function AgentSettingsPage() {
         {!config.call_email_transport_available && <p role="status">Der E-Mail-Versand ist auf dem Server noch nicht eingerichtet. Sie können die Empfängeradresse bereits speichern.</p>}
         <p>Änderungen der Adresse oder das Abschalten heben noch nicht gestartete Zustellungen auf. Bereits an den Mailserver übergebene Nachrichten können nicht zurückgerufen werden.</p>
       </Section>}
-      {tab === "identity" && <Section title="Identität" description="Diese Angaben bestimmen, als wer sich die Gesprächs-KI vorstellt."><div className="agent-form-grid"><Field label="Name im Gespräch" hint="Name des Unternehmens oder der Person, für die der Assistent Anrufe entgegennimmt."><input maxLength={200} value={config.company_name} onChange={(e) => update("company_name", e.target.value)} /></Field><Field label="Name des Assistenten"><input value={config.assistant_name} onChange={(e) => update("assistant_name", e.target.value)} /></Field><Field label="Rolle"><input value={config.assistant_role} onChange={(e) => update("assistant_role", e.target.value)} /></Field><Field label="Sprache"><select value={config.language} onChange={(e) => update("language", e.target.value as "de")}><option value="de">Deutsch</option></select></Field><Field label="Transparenzhinweis"><textarea rows={3} value={config.transparency_notice} onChange={(e) => update("transparency_notice", e.target.value)} /></Field><Field label="Anrede"><select value={config.address_formality} onChange={(e) => update("address_formality", e.target.value as AgentConfiguration["address_formality"])}><option value="formal">Sie</option><option value="informal">Du</option></select></Field></div></Section>}
-      {tab === "greeting" && <Section title="Begrüßung und Abschluss" description="Je nach Gesprächskontext wird genau eine Begrüßung verwendet."><div className="agent-form-stack"><Field label="Standardbegrüßung"><textarea rows={3} value={config.standard_greeting} onChange={(e) => update("standard_greeting", e.target.value)} /></Field><Field label="Außerhalb der Öffnungszeiten"><textarea rows={3} value={config.outside_hours_greeting} onChange={(e) => update("outside_hours_greeting", e.target.value)} /></Field><Field label="Testmodus"><textarea rows={3} value={config.test_greeting} onChange={(e) => update("test_greeting", e.target.value)} /></Field><Field label="Verabschiedung"><textarea rows={3} value={config.farewell} onChange={(e) => update("farewell", e.target.value)} /></Field></div></Section>}
+      {tab === "identity" && <Section title="Identität" description="Diese Angaben bestimmen, als wer sich die Gesprächs-KI vorstellt."><div className="agent-form-grid"><Field label="Name im Gespräch" hint="Name des Unternehmens oder der Person, für die der Assistent Anrufe entgegennimmt."><input maxLength={200} value={config.company_name} onChange={(e) => update("company_name", e.target.value)} /></Field><Field label="Name des Assistenten"><input value={config.assistant_name} onChange={(e) => update("assistant_name", e.target.value)} /></Field><Field label="Rolle"><input value={config.assistant_role} onChange={(e) => update("assistant_role", e.target.value)} /></Field><Field label="Sprache"><select value={config.language} onChange={(e) => update("language", e.target.value as "de")}><option value="de">Deutsch</option></select></Field><Field label="Transparenzhinweis im Browsertest" hint="Am Telefon gelten die Angaben aus der Telefonbegrüßung."><textarea rows={3} value={config.transparency_notice} onChange={(e) => update("transparency_notice", e.target.value)} /></Field><Field label="Anrede"><select value={config.address_formality} onChange={(e) => update("address_formality", e.target.value as AgentConfiguration["address_formality"])}><option value="formal">Sie</option><option value="informal">Du</option></select></Field></div></Section>}
+      {tab === "greeting" && <Section title="Begrüßung und Abschluss">
+        <div className="agent-form-stack">
+          {config.operating_mode === "answering_machine" ? (
+            <button className="button secondary" type="button" onClick={() => setTab("identity")}>Nachrichtenbegrüßung bearbeiten</button>
+          ) : <>
+            <Field label="Standardbegrüßung" hint="Telefonagent während der Öffnungszeiten.">
+              <textarea rows={3} value={config.standard_greeting} onChange={(e) => update("standard_greeting", e.target.value)} />
+            </Field>
+            <Field label="Außerhalb der Öffnungszeiten">
+              <textarea rows={3} value={config.outside_hours_greeting} onChange={(e) => update("outside_hours_greeting", e.target.value)} />
+            </Field>
+          </>}
+          <Field label="Begrüßung im Browsertest">
+            <textarea rows={3} value={config.test_greeting} onChange={(e) => update("test_greeting", e.target.value)} />
+          </Field>
+          <Field label="Verabschiedung">
+            <textarea rows={3} value={config.farewell} onChange={(e) => update("farewell", e.target.value)} />
+          </Field>
+        </div>
+      </Section>}
       {tab === "voice" && <Section title="Stimme und Sprechen">
         <div className="agent-form-grid">
           <Field label="Telefon-Sprachmodell" hint="Für deutschsprachige Anrufe wählt die Automatik GPT-Live 1.1. Aktive Kalenderwerkzeuge und Telefonie ohne Transkription verwenden GPT-Realtime.">
@@ -138,7 +167,7 @@ export function AgentSettingsPage() {
               {catalog.voices.map((voice) => <option value={voice.value} key={voice.value}>{voice.label}{voice.recommended ? " · empfohlen" : ""}</option>)}
             </select>
           </Field>
-          <Field label={`Geschwindigkeit · ${config.speech_speed.toFixed(2)}×`} hint="Gilt für Realtime-Gespräche und die Stimmprobe.">
+          <Field label={`Geschwindigkeit · ${config.speech_speed.toFixed(2)}×`} hint="Exaktes Tempo für Realtime, vorbereitete Ansage und Stimmprobe. GPT-Live erhält eine Vorgabe zum Sprechtempo.">
             <input type="range" min="0.25" max="1.5" step="0.05" value={config.speech_speed} onChange={(e) => update("speech_speed", Number(e.target.value))} />
           </Field>
           <Field label="Aussprache">
@@ -164,8 +193,8 @@ export function AgentSettingsPage() {
         <button type="button" className="button secondary" onClick={() => void preview()} disabled={previewing}>{previewing ? "Stimmprobe wird erzeugt …" : "Aktuelle Auswahl probehören"}</button>
         {previewUrl && <audio key={previewUrl} controls autoPlay src={previewUrl} aria-label="Stimmprobe" />}
       </Section>}
-      {tab === "conversation" && <ConversationEditor config={config} update={update} />}
-      {tab === "boundaries" && <Boundaries config={config} update={update} setConfig={setConfig} />}
+      {tab === "conversation" && <ConversationEditor config={config} update={update} liveTelephone={runtime?.telephone_turn_detection === "live_duplex"} />}
+      {tab === "boundaries" && <Boundaries config={config} update={update} setConfig={setConfig} calendarActive={config.operating_mode !== "answering_machine" && (runtime?.capability_keys.includes("calendar_booking") ?? false)} />}
       {tab === "knowledge" && <KnowledgeEditor knowledge={knowledge} setKnowledge={setKnowledge} updateProfile={updateProfile} />}
       {tab === "test" && <TestPanel runtime={runtime} canEdit={canEdit} refresh={refreshRuntime} />}
     </fieldset>
@@ -173,13 +202,76 @@ export function AgentSettingsPage() {
   </div>;
 }
 
-function ConversationEditor({ config, update }: { config: AgentConfiguration; update: <K extends keyof AgentConfiguration>(key: K, value: AgentConfiguration[K]) => void }) { return <Section title="Gesprächsverhalten" description="Stil und Sprecherwechsel wirken im Prompt und in der Realtime-Audiokonfiguration."><div className="agent-form-grid"><Field label="Stil"><select value={config.tone} onChange={(e) => update("tone", e.target.value as AgentConfiguration["tone"])}><option value="professional_binding">Professionell und verbindlich</option><option value="friendly_service">Freundlich und serviceorientiert</option><option value="calm_empathic">Ruhig und empathisch</option><option value="relaxed_personal">Locker und persönlich</option><option value="concise_factual">Kurz und sachlich</option><option value="custom">Individuell</option></select></Field>{config.tone === "custom" && <Field label="Individuelle Stilvorgabe"><textarea maxLength={1000} rows={3} value={config.custom_style_instructions} onChange={(e) => update("custom_style_instructions", e.target.value)} /></Field>}<Field label="Antwortlänge"><select value={config.response_length} onChange={(e) => update("response_length", e.target.value as AgentConfiguration["response_length"])}><option value="very_short">Sehr kurz</option><option value="short">Kurz</option><option value="balanced">Ausgewogen</option><option value="detailed">Ausführlicher</option></select></Field><Field label="Frageverhalten"><select value={config.question_style} onChange={(e) => update("question_style", e.target.value as AgentConfiguration["question_style"])}><option value="one_at_a_time">Eine Frage nach der anderen</option><option value="natural">Natürlicher Gesprächsfluss</option></select></Field><Toggle checked={config.interruptions_enabled} onChange={(value) => update("interruptions_enabled", value)} label="Anrufer darf die KI unterbrechen" hint="Bricht laufende Antworten bei neuer Sprache ab." /><Field label="Sprecherwechsel"><select value={config.turn_detection_type} onChange={(e) => update("turn_detection_type", e.target.value as AgentConfiguration["turn_detection_type"])}><option value="server_vad">Klassische Pausenerkennung</option><option value="semantic_vad">Semantische Sprecherwechsel</option></select></Field><Field label="Reaktionsgeschwindigkeit"><select value={config.turn_eagerness} onChange={(e) => update("turn_eagerness", e.target.value as AgentConfiguration["turn_eagerness"])}><option value="low">Geduldig</option><option value="medium">Ausgewogen</option><option value="high">Schnell</option></select></Field>{!config.simple_mode && config.turn_detection_type === "server_vad" && <><Field label={`VAD-Schwelle · ${config.vad_threshold}`}><input type="range" min="0" max="1" step="0.05" value={config.vad_threshold} onChange={(e) => update("vad_threshold", Number(e.target.value))} /></Field><Field label="Audiopräfix in ms"><input type="number" min="0" max="2000" value={config.prefix_padding_ms} onChange={(e) => update("prefix_padding_ms", Number(e.target.value))} /></Field><Toggle checked={config.idle_prompt_enabled} onChange={(value) => update("idle_prompt_enabled", value)} label="Bei längerer Stille kurz nachfragen" hint="Verwendet den serverseitigen Realtime-Idle-Timeout." />{config.idle_prompt_enabled && <Field label="Nachfrage nach Sekunden"><input type="number" min="5" max="30" value={config.idle_timeout_ms / 1000} onChange={(e) => update("idle_timeout_ms", Number(e.target.value) * 1000)} /></Field>}</>}</div></Section>; }
-
-function Boundaries({ config, update, setConfig }: { config: AgentConfiguration; update: <K extends keyof AgentConfiguration>(key: K, value: AgentConfiguration[K]) => void; setConfig: React.Dispatch<React.SetStateAction<AgentConfiguration | null>> }) {
+function ConversationEditor({ config, update, liveTelephone }: {
+  config: AgentConfiguration;
+  update: <K extends keyof AgentConfiguration>(key: K, value: AgentConfiguration[K]) => void;
+  liveTelephone: boolean;
+}) {
+  return <>
+    <Section title="Gesprächsstil">
+      <div className="agent-form-grid">
+        <Field label="Stil">
+          <select value={config.tone} onChange={(e) => update("tone", e.target.value as AgentConfiguration["tone"])}>
+            {Object.entries(toneLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </Field>
+        {config.tone === "custom" && <Field label="Individuelle Stilvorgabe">
+          <textarea maxLength={1000} rows={3} value={config.custom_style_instructions} onChange={(e) => update("custom_style_instructions", e.target.value)} />
+        </Field>}
+        <Field label="Antwortlänge">
+          <select value={config.response_length} onChange={(e) => update("response_length", e.target.value as AgentConfiguration["response_length"])}>
+            <option value="very_short">Sehr kurz</option><option value="short">Kurz</option>
+            <option value="balanced">Ausgewogen</option><option value="detailed">Ausführlicher</option>
+          </select>
+        </Field>
+        <Field label="Frageverhalten">
+          <select value={config.question_style} onChange={(e) => update("question_style", e.target.value as AgentConfiguration["question_style"])}>
+            <option value="one_at_a_time">Eine Frage nach der anderen</option><option value="natural">Natürlicher Gesprächsfluss</option>
+          </select>
+        </Field>
+      </div>
+    </Section>
+    <Section title="Sprecherwechsel mit Realtime" description={liveTelephone
+      ? "Diese Felder gelten im Browsertest. Dein aktuelles Telefonmodell GPT-Live steuert den Sprecherwechsel selbst."
+      : "Diese Felder gelten im Browsertest und bei Telefonanrufen mit GPT-Realtime."}>
+      <div className="agent-form-grid">
+        <Toggle checked={config.interruptions_enabled} onChange={(value) => update("interruptions_enabled", value)}
+          label="Anrufer darf die KI unterbrechen" hint="Bricht laufende Antworten bei neuer Sprache ab." />
+        <Field label="Sprecherwechsel">
+          <select value={config.turn_detection_type} onChange={(e) => update("turn_detection_type", e.target.value as AgentConfiguration["turn_detection_type"])}>
+            <option value="server_vad">Klassische Pausenerkennung</option><option value="semantic_vad">Semantische Sprecherwechsel</option>
+          </select>
+        </Field>
+        {config.turn_detection_type === "semantic_vad" && <Field label="Reaktionsgeschwindigkeit">
+          <select value={config.turn_eagerness} onChange={(e) => update("turn_eagerness", e.target.value as AgentConfiguration["turn_eagerness"])}>
+            <option value="low">Geduldig</option><option value="medium">Ausgewogen</option><option value="high">Schnell</option>
+          </select>
+        </Field>}
+        {!config.simple_mode && config.turn_detection_type === "server_vad" && <>
+          <Field label={`VAD-Schwelle · ${config.vad_threshold}`}>
+            <input type="range" min="0" max="1" step="0.05" value={config.vad_threshold} onChange={(e) => update("vad_threshold", Number(e.target.value))} />
+          </Field>
+          <Field label="Audiopräfix in ms">
+            <input type="number" min="0" max="2000" value={config.prefix_padding_ms} onChange={(e) => update("prefix_padding_ms", Number(e.target.value))} />
+          </Field>
+          <Field label="Sprechpause in ms">
+            <input type="number" min="200" max="3000" value={config.silence_duration_ms} onChange={(e) => update("silence_duration_ms", Number(e.target.value))} />
+          </Field>
+          <Toggle checked={config.idle_prompt_enabled} onChange={(value) => update("idle_prompt_enabled", value)}
+            label="Bei längerer Stille kurz nachfragen" hint="Gilt nach einer gesprochenen Realtime-Antwort." />
+          {config.idle_prompt_enabled && <Field label="Nachfrage nach Sekunden">
+            <input type="number" min="5" max="30" value={config.idle_timeout_ms / 1000} onChange={(e) => update("idle_timeout_ms", Number(e.target.value) * 1000)} />
+          </Field>}
+        </>}
+      </div>
+    </Section>
+  </>;
+}
+function Boundaries({ config, update, setConfig, calendarActive }: { config: AgentConfiguration; update: <K extends keyof AgentConfiguration>(key: K, value: AgentConfiguration[K]) => void; setConfig: React.Dispatch<React.SetStateAction<AgentConfiguration | null>>; calendarActive: boolean }) {
   const changeTopic = (index: number, patch: Partial<AgentTopic>) => setConfig((current) => current ? { ...current, topics: current.topics.map((item, i) => i === index ? { ...item, ...patch } : item) } : current);
   const changeRule = (index: number, patch: Partial<AgentRule>) => setConfig((current) => current ? { ...current, custom_rules: current.custom_rules.map((item, i) => i === index ? { ...item, ...patch } : item) } : current);
   const toggleUncertainty = (value: AgentConfiguration["uncertainty_modes"][number], enabled: boolean) => update("uncertainty_modes", enabled ? [...new Set([...config.uncertainty_modes, value])] : config.uncertainty_modes.filter((item) => item !== value));
-  return <><Section title="Aufgaben und Grenzen"><div className="agent-form-stack"><Field label="Hauptaufgabe"><textarea rows={4} value={config.primary_task} onChange={(e) => update("primary_task", e.target.value)} /></Field><Field label="Themenfremde Fragen"><select value={config.off_topic_mode} onChange={(e) => update("off_topic_mode", e.target.value as AgentConfiguration["off_topic_mode"])}><option value="strict">Strikt zurückweisen</option><option value="brief_redirect">Kurz antworten und zurückführen</option><option value="limited_smalltalk">Begrenzten Smalltalk zulassen</option></select></Field>{!config.simple_mode && <Field label="Zusätzliche Vorgabe für sachfremde Fragen"><textarea rows={3} value={config.off_topic_behavior} onChange={(e) => update("off_topic_behavior", e.target.value)} /></Field>}<div className="agent-checkbox-group"><strong>Bei Unsicherheit</strong><Toggle checked={config.uncertainty_modes.includes("acknowledge")} onChange={(enabled) => toggleUncertainty("acknowledge", enabled)} label="Unsicherheit offen benennen" /><Toggle checked={config.uncertainty_modes.includes("ask_clarifying")} onChange={(enabled) => toggleUncertainty("ask_clarifying", enabled)} label="Rückfrage stellen" /><Toggle checked={config.uncertainty_modes.includes("offer_contact")} onChange={(enabled) => toggleUncertainty("offer_contact", enabled)} label="Allgemeinen Kontaktweg anbieten" hint="Nur hinterlegte Kontaktdaten; keine Weiterleitung oder Rückrufzusage." /></div>{!config.simple_mode && <Field label="Zusätzliche Unsicherheitsvorgabe"><textarea rows={3} value={config.uncertainty_behavior} onChange={(e) => update("uncertainty_behavior", e.target.value)} /></Field>}<Field label="Fallback-Antwort"><textarea rows={3} value={config.fallback_message} onChange={(e) => update("fallback_message", e.target.value)} /></Field></div></Section><Section title="Erlaubte und verbotene Themen" description="Aktive Einträge werden getrennt in den Laufzeit-Prompt übernommen."><div className="agent-repeaters">{config.topics.map((item, index) => <div className="agent-repeater" key={item.id ?? index}><Toggle checked={item.is_active} onChange={(value) => changeTopic(index, { is_active: value })} label="Aktiv" /><select aria-label="Themenart" value={item.topic_type} onChange={(e) => changeTopic(index, { topic_type: e.target.value as AgentTopic["topic_type"] })}><option value="allowed">Erlaubt</option><option value="forbidden">Verboten</option></select><input aria-label="Thema" value={item.label} onChange={(e) => changeTopic(index, { label: e.target.value })} /><textarea aria-label="Themenanweisung" rows={2} value={item.instructions} onChange={(e) => changeTopic(index, { instructions: e.target.value })} /><button type="button" className="text-button" onClick={() => update("topics", config.topics.filter((_, i) => i !== index))}>Entfernen</button></div>)}<button type="button" className="button secondary" onClick={() => update("topics", [...config.topics, { label: "", instructions: "", topic_type: "allowed", is_active: true, sort_order: config.topics.length }])}>Thema hinzufügen</button></div></Section>{!config.simple_mode && <Section title="Zusätzliche Regeln" description="Festen Sicherheits- und Plattformregeln immer untergeordnet."><div className="agent-repeaters">{config.custom_rules.map((item, index) => <div className="agent-repeater compact" key={item.id ?? index}><Toggle checked={item.is_active} onChange={(value) => changeRule(index, { is_active: value })} label="Aktiv" /><textarea aria-label="Zusätzliche Regel" rows={2} value={item.rule_text} onChange={(e) => changeRule(index, { rule_text: e.target.value })} /><button type="button" className="text-button" onClick={() => update("custom_rules", config.custom_rules.filter((_, i) => i !== index))}>Entfernen</button></div>)}<button type="button" className="button secondary" onClick={() => update("custom_rules", [...config.custom_rules, { rule_text: "", is_active: true, sort_order: config.custom_rules.length }])}>Regel hinzufügen</button></div></Section>}<Section title="Fähigkeiten"><div className="placeholder-panel"><p>Keine Aktionswerkzeuge verfügbar</p><small>Die KI darf informieren, aber keine Termine buchen, ändern, übertragen oder Rückrufe auslösen.</small></div></Section></>;
+  return <><Section title="Aufgaben und Grenzen"><div className="agent-form-stack"><Field label="Hauptaufgabe"><textarea rows={4} value={config.primary_task} onChange={(e) => update("primary_task", e.target.value)} /></Field><Field label="Themenfremde Fragen"><select value={config.off_topic_mode} onChange={(e) => update("off_topic_mode", e.target.value as AgentConfiguration["off_topic_mode"])}><option value="strict">Strikt zurückweisen</option><option value="brief_redirect">Kurz antworten und zurückführen</option><option value="limited_smalltalk">Begrenzten Smalltalk zulassen</option></select></Field>{!config.simple_mode && <Field label="Zusätzliche Vorgabe für sachfremde Fragen"><textarea rows={3} value={config.off_topic_behavior} onChange={(e) => update("off_topic_behavior", e.target.value)} /></Field>}<div className="agent-checkbox-group"><strong>Bei Unsicherheit</strong><Toggle checked={config.uncertainty_modes.includes("acknowledge")} onChange={(enabled) => toggleUncertainty("acknowledge", enabled)} label="Unsicherheit offen benennen" /><Toggle checked={config.uncertainty_modes.includes("ask_clarifying")} onChange={(enabled) => toggleUncertainty("ask_clarifying", enabled)} label="Rückfrage stellen" /><Toggle checked={config.uncertainty_modes.includes("offer_contact")} onChange={(enabled) => toggleUncertainty("offer_contact", enabled)} label="Allgemeinen Kontaktweg anbieten" hint="Nur hinterlegte Kontaktdaten; keine Weiterleitung oder Rückrufzusage." /></div>{!config.simple_mode && <Field label="Zusätzliche Unsicherheitsvorgabe"><textarea rows={3} value={config.uncertainty_behavior} onChange={(e) => update("uncertainty_behavior", e.target.value)} /></Field>}<Field label="Fallback-Antwort"><textarea rows={3} value={config.fallback_message} onChange={(e) => update("fallback_message", e.target.value)} /></Field></div></Section><Section title="Erlaubte und verbotene Themen" description="Aktive Einträge werden getrennt in den Laufzeit-Prompt übernommen."><div className="agent-repeaters">{config.topics.map((item, index) => <div className="agent-repeater" key={item.id ?? index}><Toggle checked={item.is_active} onChange={(value) => changeTopic(index, { is_active: value })} label="Aktiv" /><select aria-label="Themenart" value={item.topic_type} onChange={(e) => changeTopic(index, { topic_type: e.target.value as AgentTopic["topic_type"] })}><option value="allowed">Erlaubt</option><option value="forbidden">Verboten</option></select><input aria-label="Thema" value={item.label} onChange={(e) => changeTopic(index, { label: e.target.value })} /><textarea aria-label="Themenanweisung" rows={2} value={item.instructions} onChange={(e) => changeTopic(index, { instructions: e.target.value })} /><button type="button" className="text-button" onClick={() => update("topics", config.topics.filter((_, i) => i !== index))}>Entfernen</button></div>)}<button type="button" className="button secondary" onClick={() => update("topics", [...config.topics, { label: "", instructions: "", topic_type: "allowed", is_active: true, sort_order: config.topics.length }])}>Thema hinzufügen</button></div></Section>{!config.simple_mode && <Section title="Zusätzliche Regeln" description="Festen Sicherheits- und Plattformregeln immer untergeordnet."><div className="agent-repeaters">{config.custom_rules.map((item, index) => <div className="agent-repeater compact" key={item.id ?? index}><Toggle checked={item.is_active} onChange={(value) => changeRule(index, { is_active: value })} label="Aktiv" /><textarea aria-label="Zusätzliche Regel" rows={2} value={item.rule_text} onChange={(e) => changeRule(index, { rule_text: e.target.value })} /><button type="button" className="text-button" onClick={() => update("custom_rules", config.custom_rules.filter((_, i) => i !== index))}>Entfernen</button></div>)}<button type="button" className="button secondary" onClick={() => update("custom_rules", [...config.custom_rules, { rule_text: "", is_active: true, sort_order: config.custom_rules.length }])}>Regel hinzufügen</button></div></Section>}<Section title="Fähigkeiten"><div className="placeholder-panel"><p>{calendarActive ? "Kalender und Terminbuchung" : "Keine Aktionswerkzeuge aktiv"}</p><small>{calendarActive ? "Eine Buchung benötigt die Bestätigung der anrufenden Person." : "Dieser Modus kann informieren und Nachrichten entgegennehmen."}</small></div></Section></>;
 }
 
 function KnowledgeEditor({ knowledge, setKnowledge, updateProfile }: { knowledge: AgentKnowledge; setKnowledge: React.Dispatch<React.SetStateAction<AgentKnowledge | null>>; updateProfile: <K extends keyof AgentKnowledge["profile"]>(key: K, value: AgentKnowledge["profile"][K]) => void }) {
@@ -191,5 +283,37 @@ function KnowledgeEditor({ knowledge, setKnowledge, updateProfile }: { knowledge
 
 function TestPanel({ runtime, canEdit, refresh }: { runtime: RuntimeSummary | null; canEdit: boolean; refresh: () => Promise<void> }) {
   const [prompt, setPrompt] = useState<string | null>(null);
-  return <Section title="Wirksame Testkonfiguration" description="Das Browser-Testgespräch nutzt GPT-Realtime. Hier sehen Sie auch das aktive Telefonmodell.">{runtime ? <><dl className="runtime-summary"><div><dt>Version</dt><dd>{runtime.configuration_version}</dd></div><div><dt>Unternehmen</dt><dd>{runtime.company_name}</dd></div><div><dt>Assistent</dt><dd>{runtime.assistant_name}</dd></div><div><dt>Sprache</dt><dd>{runtime.language === "de" ? "Deutsch" : runtime.language}</dd></div><div><dt>Stil</dt><dd>{toneLabels[runtime.style]}</dd></div><div><dt>Geschäftszeiten</dt><dd>{runtime.business_hours_status === "open" ? "Simuliert geöffnet" : "Simuliert geschlossen"}</dd></div><div><dt>Browser-Sprachmodell</dt><dd>{runtime.model}</dd></div>{runtime.telephone_model && <div><dt>Telefon-Sprachmodell</dt><dd>{runtime.telephone_model}</dd></div>}<div><dt>Stimme</dt><dd>{runtime.voice}</dd></div><div><dt>Tempo</dt><dd>{runtime.speed.toFixed(2)}×</dd></div><div><dt>Sprecherwechsel</dt><dd>{String(runtime.turn_detection.type)}</dd></div><div><dt>Fähigkeiten</dt><dd>{runtime.capability_keys.length ? runtime.capability_keys.join(", ") : "Keine"}</dd></div><div><dt>Werkzeuge</dt><dd>{runtime.tool_names.length ? runtime.tool_names.join(", ") : "Keine"}</dd></div></dl><div className="runtime-greeting"><strong>Testbegrüßung</strong><p>{runtime.greeting}</p></div><div className="agent-test-actions"><button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>{canEdit && <button type="button" className="button secondary" onClick={() => void api.agentPromptPreview().then((value) => setPrompt(value.prompt))}>Kompilierten Prompt anzeigen</button>}<Link className="button primary" to="/testgespraech">Testgespräch starten</Link></div>{prompt && <details className="prompt-preview" open><summary>Kompilierter Prompt · feste Regeln haben Vorrang</summary><pre>{prompt}</pre></details>}</> : <button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>}</Section>;
+  return <Section title="Wirksame Testkonfiguration" description="Gespeicherte Einstellungen für Browsertest und echte Anrufe.">
+    {runtime ? <>
+      <dl className="runtime-summary">
+        <div><dt>Version</dt><dd>{runtime.configuration_version}</dd></div>
+        <div><dt>Unternehmen</dt><dd>{runtime.company_name}</dd></div>
+        <div><dt>Assistent</dt><dd>{runtime.assistant_name}</dd></div>
+        <div><dt>Sprache</dt><dd>{runtime.language === "de" ? "Deutsch" : runtime.language}</dd></div>
+        <div><dt>Stil</dt><dd>{toneLabels[runtime.style]}</dd></div>
+        <div><dt>Geschäftszeiten</dt><dd>{runtime.business_hours_status === "open" ? "Geöffnet" : "Geschlossen"}</dd></div>
+        <div><dt>Browser-Sprachmodell</dt><dd>{runtime.model}</dd></div>
+        {runtime.telephone_model && <div><dt>Telefon-Sprachmodell</dt><dd>{runtime.telephone_model}</dd></div>}
+        <div><dt>Gesprächsstimme</dt><dd>{runtime.voice}</dd></div>
+        <div><dt>Realtime-Tempo</dt><dd>{runtime.speed.toFixed(2)}×</dd></div>
+        <div><dt>Sprecherwechsel im Browsertest</dt><dd>{turnDetectionLabel(runtime.turn_detection.type)}</dd></div>
+        {runtime.telephone_turn_detection && <div><dt>Sprecherwechsel am Telefon</dt><dd>{turnDetectionLabel(runtime.telephone_turn_detection)}</dd></div>}
+        <div><dt>Fähigkeiten</dt><dd>{runtime.capability_keys.length ? runtime.capability_keys.join(", ") : "Keine"}</dd></div>
+        <div><dt>Werkzeuge</dt><dd>{runtime.tool_names.length ? runtime.tool_names.join(", ") : "Keine"}</dd></div>
+      </dl>
+      <div className="runtime-greeting"><strong>Begrüßung im Browsertest</strong><p>{runtime.greeting}</p></div>
+      {runtime.telephone_greeting && <div className="runtime-greeting">
+        <strong>Telefonbegrüßung · {runtime.telephone_opening_voice ?? "Telefonansage"}</strong>
+        <p>{runtime.telephone_greeting}</p>
+      </div>}
+      <div className="agent-test-actions">
+        <button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>
+        {canEdit && <button type="button" className="button secondary" onClick={() => void api.agentPromptPreview().then((value) => setPrompt(value.prompt))}>Browser-Prompt anzeigen</button>}
+        <Link className="button primary" to="/testgespraech">Testgespräch starten</Link>
+      </div>
+      {prompt && <details className="prompt-preview" open>
+        <summary>Kompilierter Prompt · feste Regeln haben Vorrang</summary><pre>{prompt}</pre>
+      </details>}
+    </> : <button type="button" className="button secondary" onClick={() => void refresh()}>Konfiguration neu laden</button>}
+  </Section>;
 }

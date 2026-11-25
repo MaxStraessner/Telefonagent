@@ -100,6 +100,10 @@ def test_telephone_model_preference_changes_calls_without_changing_browser_model
         assert runtime["model"] == "gpt-realtime-2.1"
         assert runtime["telephone_model"] == effective
         assert runtime["voice"] == "coral"
+        status = client.get("/api/v1/platform/status").json()
+        assert status["telephone_model"] == runtime["telephone_model"]
+        assert status["telephone_voice"] == status["realtime_voice"] == "coral"
+        assert client.get("/api/v1/agent/capabilities").json() == []
     legacy_payload = {key: value for key, value in payload.items() if key != "telephone_model"}
     legacy_save = client.put("/api/v1/agent/config", json={**legacy_payload, "expected_version": version})
     assert legacy_save.status_code == 200 and legacy_save.json()["telephone_model"] == "gpt-live-1.1"
@@ -138,7 +142,10 @@ def test_integrated_greeting_is_prepared_once_and_invalid_text_keeps_current_ver
     assert saved_again.status_code == 200 and len(generated) == 1
     runtime = client.post("/api/v1/agent/test-session")
     assert runtime.status_code == 200
-    assert "schriftlich ausrichten" in runtime.json()["greeting"]
+    assert runtime.json()["greeting"] == original["test_greeting"]
+    assert "schriftlich ausrichten" in runtime.json()["telephone_greeting"]
+    assert runtime.json()["telephone_opening_voice"] == "coral"
+    assert runtime.json()["telephone_turn_detection"] == "live_duplex"
     restore = {**configuration_write(original), "expected_version": saved_again.json()["version"]}
     assert client.put("/api/v1/agent/config", json=restore).status_code == 200
 

@@ -18,6 +18,7 @@ from app.services.call_lifecycle import CallLifecycleService
 from app.services.call_processing import erase_call_content, process_tenant_calls
 from app.services.conversation_tools import ConversationToolDispatcher
 from app.services.tool_audit import ToolAudit
+from app.services.twilio_media import session_update
 from app.services.voice_providers import LiveProtocol, RealtimeProtocol, select_voice_protocol
 from app.voice_evaluation import evaluate_audio
 
@@ -51,13 +52,24 @@ def test_mode_changes_preserve_call_snapshot_and_block_tools(db, client):
     context = TenantContext(id=t.id, tenant=t)
     response = client.get("/api/v1/agent/config").json()
     original = {k: v for k, v in response.items() if k not in {"tenant_id", "version", "updated_at", "can_edit", "role", "call_email_transport_available"}}
-    update = {**original, "expected_version": response["version"], "operating_mode": "answering_machine", "message_greeting": "Guten Tag bei Beispiel. Was möchten Sie uns mitteilen?"}
+    update = {
+        **original, "expected_version": response["version"], "operating_mode": "answering_machine",
+        "message_greeting": "Guten Tag bei Beispiel. Was möchten Sie uns mitteilen?",
+        "test_greeting": "Hier ist der Browsertest.", "telephone_model": "realtime",
+        "tone": "custom", "custom_style_instructions": "Sprich besonders herzlich.",
+        "idle_prompt_enabled": True, "idle_timeout_ms": 12000, "silence_duration_ms": 800,
+    }
     assert client.put("/api/v1/agent/config", json=update).status_code == 200
     db.expire_all()
-    runtime = build_runtime_config(db, context, Settings(), test_mode=False)
+    runtime = build_runtime_config(db, context, Settings(), test_mode=False, telephone=True)
     assert runtime.tools == [] and runtime.tool_choice == "none"
     assert runtime.greeting == update["message_greeting"]
     assert "Anrufbeantworter" in runtime.prompt
+    assert "Sprich besonders herzlich." in runtime.prompt
+    assert "finalize_appointment_booking" not in runtime.prompt
+    assert build_runtime_config(db, context, Settings(), test_mode=True).greeting == update["test_greeting"]
+    vad = session_update(runtime)["session"]["audio"]["input"]["turn_detection"]
+    assert vad["idle_timeout_ms"] == 12000 and vad["silence_duration_ms"] == 800
     item, _ = CallLifecycleService(db, t.id).provision_provider_call(CallChannel.telephone, "CA" + uuid4().hex, runtime)
     dispatcher = ConversationToolDispatcher(db, Settings(), context, item.id)
     result = asyncio.run(dispatcher.execute("list_bookable_services", {}, call_id="blocked", latest_confirmed_user_utterance=None))
