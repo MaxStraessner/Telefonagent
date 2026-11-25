@@ -1,7 +1,4 @@
-import logging
-
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import (
@@ -37,12 +34,10 @@ from app.services.capabilities import active_capabilities
 from app.services.mail import mail_transport_available
 from app.services.prompt_compiler import compile_pronunciation_instruction
 from app.services.rate_limit import enforce_rate_limit
-from app.services.realtime import build_safety_identifier
+from app.services.speech import prepare_greeting, render_speech
 from app.services.voice_providers import telephone_model
 
 router = APIRouter(prefix="/agent", tags=["agent-configuration"])
-logger = logging.getLogger(__name__)
-AUDIO_SPEECH_URL = "https://api.openai.com/v1/audio/speech"
 VOICE_OPTIONS = [
     ("marin", "Marin", True), ("cedar", "Cedar", True), ("coral", "Coral", False),
     ("sage", "Sage", False), ("alloy", "Alloy", False), ("ash", "Ash", False),
@@ -64,7 +59,7 @@ def get_configuration(
 
 
 @router.put("/config", response_model=AgentConfigurationResponse)
-def put_configuration(
+async def put_configuration(
     payload: AgentConfigurationUpdate,
     context: TenantContext = Depends(get_tenant_context),
     user: UserContext = Depends(require_agent_admin),
@@ -74,7 +69,12 @@ def put_configuration(
     enforce_rate_limit(f"agent-config:{context.id}:{user.id}", limit=20)
     if payload.call_email_enabled and not mail_transport_available(settings):
         raise HTTPException(status_code=409, detail={"code": "mail_not_configured", "message": "Der SMTP-Versand muss zuerst auf dem Server eingerichtet werden."})
-    result = configuration_response(update_configuration(db, context, user, payload), user)
+    current = load_agent_bundle(db, context.id).configuration
+    if "integrated_greeting" not in payload.model_fields_set:
+        payload = payload.model_copy(update={"integrated_greeting": current.integrated_greeting})
+    audio, digest = await prepare_greeting(settings, context, payload, current)
+    updated = update_configuration(db, context, user, payload, greeting_audio=audio, greeting_audio_digest=digest)
+    result = configuration_response(updated, user)
     result.call_email_transport_available = mail_transport_available(settings)
     return result
 
@@ -169,11 +169,6 @@ async def voice_preview(
     settings: Settings = Depends(get_settings),
 ) -> Response:
     enforce_rate_limit(f"voice-preview:{context.id}:{user.id}", limit=10)
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "voice_preview_not_configured", "message": "Die Stimmprobe ist serverseitig noch nicht konfiguriert."},
-        )
     request_payload = {
         "model": "gpt-4o-mini-tts", "voice": payload.voice, "speed": payload.speed,
         "input": payload.text, "response_format": "mp3",
@@ -183,30 +178,5 @@ async def voice_preview(
             payload.pronunciation_instructions,
         ),
     }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=4.0)) as client:
-            upstream = await client.post(
-                AUDIO_SPEECH_URL,
-                headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
-                    "OpenAI-Safety-Identifier": build_safety_identifier(context, settings),
-                },
-                json=request_payload,
-            )
-    except httpx.TimeoutException as exc:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail={"code": "voice_preview_timeout", "message": "Die Stimmprobe antwortet nicht rechtzeitig."},
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"code": "voice_preview_unavailable", "message": "Die Stimmprobe ist derzeit nicht erreichbar."},
-        ) from exc
-    if not upstream.is_success:
-        logger.warning("OpenAI voice preview rejected", extra={"provider_status": upstream.status_code})
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"code": "voice_preview_rejected", "message": "Die gewählte Stimme konnte nicht wiedergegeben werden."},
-        )
-    return Response(content=upstream.content, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+    audio = await render_speech(settings, context, request_payload)
+    return Response(content=audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})

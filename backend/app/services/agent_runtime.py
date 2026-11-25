@@ -25,6 +25,7 @@ SETTING_TARGETS = {
     "operating_mode": "tools",
     "telephone_model": "session",
     "message_greeting": "prompt",
+    "integrated_greeting": "session",
     "call_retention_days": "storage",
     "company_name": "prompt",
     "assistant_name": "prompt",

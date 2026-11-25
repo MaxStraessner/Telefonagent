@@ -104,6 +104,12 @@ export function AgentSettingsPage() {
       {tab === "identity" && <Section title="Betriebsmodus" description="Änderungen gelten nach dem Speichern für neue Anrufe. Laufende Gespräche behalten ihre Konfiguration."><div className="agent-form-grid">
         <Field label="Betriebsmodus"><select value={config.operating_mode ?? "agent"} onChange={(e) => update("operating_mode", e.target.value as AgentConfiguration["operating_mode"])}><option value="agent">Vollständiger KI-Telefonagent</option><option value="answering_machine">Intelligenter Anrufbeantworter</option></select></Field>
         <Field label="Nachrichtenbegrüßung" hint="Dieser Text wird am Anfang des Anrufs vorgelesen. {Name} setzt den hinterlegten Namen ein."><textarea maxLength={700} rows={3} value={config.message_greeting ?? "Guten Tag. Bitte schildern Sie Ihr Anliegen."} onChange={(e) => update("message_greeting", e.target.value)} /></Field>
+        {config.operating_mode === "answering_machine" && <Toggle
+          checked={config.integrated_greeting ?? false}
+          onChange={(value) => update("integrated_greeting", value)}
+          label="Begrüßung in gewählter Stimme"
+          hint="Der Anruf beginnt mit Ihrem Text. Erwähnen Sie darin die KI und dass Sie das Anliegen schriftlich festhalten."
+        />}
         <Field label="Gesprächsinhalte aufbewahren (Tage)" hint="Danach werden Transkript, Auswertung und Kontaktdaten automatisch gelöscht. Separat gebuchte Termine bleiben erhalten."><input type="number" min={1} max={365} value={config.call_retention_days ?? 30} onChange={(e) => update("call_retention_days", Number(e.target.value))} /></Field>
         <p>{config.operating_mode === "answering_machine" ? "Der Anrufbeantworter nimmt Nachrichten auf Deutsch entgegen." : "Unternehmenswissen und freigeschaltete Kalenderfunktionen stehen zur Verfügung."}</p>
       </div></Section>}

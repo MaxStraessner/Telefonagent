@@ -31,6 +31,7 @@ class AgentConfigurationData(BaseModel):
     operating_mode: Literal["agent", "answering_machine"] = "agent"
     telephone_model: TelephoneModel = "auto"
     message_greeting: str = Field(default="Guten Tag. Bitte schildern Sie Ihr Anliegen.", min_length=1, max_length=700)
+    integrated_greeting: bool = False
     call_retention_days: int = Field(default=30, ge=1, le=365)
     call_email_enabled: bool = False
     call_email_recipient: str | None = Field(default=None, max_length=320)

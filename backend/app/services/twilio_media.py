@@ -20,6 +20,7 @@ from app.api.dependencies import TenantContext
 from app.core.config import Settings
 from app.services.agent_runtime import AgentRuntimeConfig
 from app.services.conversation_tools import ConversationToolDispatcher
+from app.services.speech import TELEPHONE_SAMPLE_RATE
 from app.services.tool_projections import outbound_wire_tools
 from app.services.voice_providers import LIVE_TELEPHONE_MODEL, LiveProtocol, RealtimeProtocol
 
@@ -225,6 +226,7 @@ class TwilioMediaBridge:
         *,
         connector: Callable[[Settings, AgentRuntimeConfig], Any] = openai_connection,
         transcript_sink: Callable[[dict], None] | None = None,
+        greeting_audio: bytes | None = None,
     ) -> None:
         self.twilio = twilio
         self.settings = settings
@@ -235,6 +237,7 @@ class TwilioMediaBridge:
         self.initial_sequence = initial_sequence
         self.connector = connector
         self.transcript_sink = transcript_sink
+        self.greeting_audio = greeting_audio
         self.seen_events: set[str] = set()
         self.segment_text: dict[str, str] = {}
         self.segment_states: dict[str, str] = {}
@@ -254,6 +257,8 @@ class TwilioMediaBridge:
             async with asyncio.timeout(
                 self.runtime.manifest.maximum_session_minutes * 60
             ):
+                if self.greeting_audio and not await self._play_greeting(self.greeting_audio):
+                    return
                 async with self.connector(self.settings, self.runtime) as openai:
                     await self._start_openai(openai)
                     sender = asyncio.create_task(self._send_twilio())
@@ -320,44 +325,67 @@ class TwilioMediaBridge:
                 return
             await self.twilio.send_json(event)
 
+    async def _next_twilio_event(self, last_sequence: int) -> dict:
+        raw = await asyncio.wait_for(self.twilio.receive_text(), timeout=STREAM_IDLE_TIMEOUT_SECONDS)
+        event = _decode_event(raw)
+        try:
+            sequence = int(event["sequenceNumber"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TwilioMediaError("invalid_sequence") from exc
+        if sequence != last_sequence + 1:
+            raise TwilioMediaError("invalid_sequence")
+        if str(event.get("streamSid") or "") != self.stream_sid:
+            raise TwilioMediaError("stream_context_mismatch")
+        return event
+
+    async def _play_greeting(self, audio: bytes) -> bool:
+        mark_name = "prepared-greeting"
+        frame_bytes = TELEPHONE_SAMPLE_RATE * 2
+        try:
+            async with asyncio.timeout(len(audio) / TELEPHONE_SAMPLE_RATE + 8):
+                for start in range(0, len(audio), frame_bytes):
+                    payload = base64.b64encode(audio[start:start + frame_bytes]).decode("ascii")
+                    await self.twilio.send_json({"event": "media", "streamSid": self.stream_sid, "media": {"payload": payload}})
+                await self.twilio.send_json({"event": "mark", "streamSid": self.stream_sid, "mark": {"name": mark_name}})
+                while True:
+                    event = await self._next_twilio_event(self.initial_sequence)
+                    self.initial_sequence += 1
+                    kind = event.get("event")
+                    if kind == "mark" and (event.get("mark") or {}).get("name") == mark_name:
+                        return True
+                    if kind == "stop":
+                        break
+                    if kind not in {"media", "dtmf", "mark"}:
+                        raise TwilioMediaError("unsupported_twilio_event")
+        except WebSocketDisconnect:
+            pass
+        except TimeoutError as exc:
+            raise TwilioMediaError("greeting_playback_timeout") from exc
+        self.twilio_stopped = True
+        return False
+
     async def _receive_twilio(self, openai: Any) -> None:
         last_sequence = self.initial_sequence
         try:
             while True:
-                raw = await asyncio.wait_for(
-                    self.twilio.receive_text(), timeout=STREAM_IDLE_TIMEOUT_SECONDS
-                )
-                event = _decode_event(raw)
-                try:
-                    sequence = int(event["sequenceNumber"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise TwilioMediaError("invalid_sequence") from exc
-                if sequence != last_sequence + 1:
-                    raise TwilioMediaError("invalid_sequence")
-                last_sequence = sequence
+                event = await self._next_twilio_event(last_sequence)
+                last_sequence += 1
                 kind = event.get("event")
                 if kind == "media":
                     if str((event.get("media") or {}).get("track") or "") != "inbound":
                         raise TwilioMediaError("invalid_media_track")
-                    if str(event.get("streamSid") or "") != self.stream_sid:
-                        raise TwilioMediaError("stream_context_mismatch")
                     payload = _validate_audio((event.get("media") or {}).get("payload"))
                     await openai.send(json.dumps(self._input_audio(payload)))
                 elif kind == "mark":
-                    if str(event.get("streamSid") or "") != self.stream_sid:
-                        raise TwilioMediaError("stream_context_mismatch")
                     self.playback.acknowledge(str((event.get("mark") or {}).get("name") or ""))
                 elif kind == "dtmf":
                     dtmf = event.get("dtmf") or {}
                     if (
-                        str(event.get("streamSid") or "") != self.stream_sid
-                        or str(dtmf.get("track") or "") != "inbound_track"
+                        str(dtmf.get("track") or "") != "inbound_track"
                         or str(dtmf.get("digit") or "") not in "0123456789*#ABCD"
                     ):
                         raise TwilioMediaError("invalid_dtmf_event")
                 elif kind == "stop":
-                    if str(event.get("streamSid") or "") != self.stream_sid:
-                        raise TwilioMediaError("stream_context_mismatch")
                     self.twilio_stopped = True
                     return
                 else:

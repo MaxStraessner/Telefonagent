@@ -635,8 +635,11 @@ def test_twilio_resolvers_keep_two_numbers_and_call_sids_tenant_isolated():
     engine.dispose()
 
 
-@pytest.mark.parametrize(("mode", "uses_live"), [("agent", False), ("answering_machine", False), ("answering_machine", True)])
-def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, uses_live, monkeypatch):
+@pytest.mark.parametrize(("mode", "uses_live", "integrated_greeting"), [
+    ("agent", False, False), ("answering_machine", False, False), ("answering_machine", True, False),
+    ("answering_machine", True, True),
+])
+def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, uses_live, integrated_greeting, monkeypatch):
     """Actual HTTP/WS and database layers; only provider I/O is simulated."""
     from app.services import call_analysis, call_processing
     suffix = uuid4().hex[:10]
@@ -653,6 +656,10 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
         openai_telephone_model=LIVE_TELEPHONE_MODEL,
         smtp_host="smtp.example.test", smtp_from_address="agent@example.test",
         twilio_auth_token="synthetic-twilio-test-token", twilio_stream_token_secret="qa-call-token-secret-with-at-least-thirty-two-bytes")
+    async def speech(_, __, payload):
+        assert payload["voice"] == "coral" and payload["response_format"] == "pcm"
+        return bytes(6 * 160)
+    monkeypatch.setattr("app.services.speech.render_speech", speech)
     with Session(migrator, expire_on_commit=False) as db:
         tenant, _ = ProvisioningService(db).provision_tenant(slug=username, name="Synthetic QA " + mode,
             industry="services", timezone_name="Europe/Berlin", username=username, display_name="QA Admin", email=None, password=password)
@@ -663,6 +670,9 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
         config.call_email_enabled = True
         config.call_email_recipient = "owner@example.test"
         config.message_greeting = "Guten Tag, hier ist der Assistent für {Name}. Welche Nachricht möchten Sie hinterlassen?"
+        config.integrated_greeting = integrated_greeting
+        if integrated_greeting:
+            config.message_greeting = "Hier ist der KI-Assistent für {Name}. Was darf ich ihm schriftlich ausrichten?"
         config.standard_greeting = config.outside_hours_greeting = "Willkommen bei {Name}. Was kann ich für Sie tun?"
         db.add(AgentCapability(tenant_id=tenant.id, capability_key="calendar_booking", is_active=True))
         db.add(TenantInboundRoute(tenant_id=tenant.id, route_type="phone_number", normalized_identifier=phone, is_active=True))
@@ -745,12 +755,15 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
             validator = RequestValidator(settings.twilio_auth_token)
             response = client.post("/api/v1/twilio/voice", data=params, headers={"X-Twilio-Signature": validator.compute_signature(voice_url(settings), params)})
             root = ET.fromstring(response.text)
-            assert [child.tag for child in root][:2] == ["Say", "Connect"]
-            assert len(root.findall("Say")) == 1
-            company = f"Synthetic QA {mode}"
-            opening = (f"Guten Tag, hier ist der Assistent für {company}. Welche Nachricht möchten Sie hinterlassen?"
-                       if mode == "answering_machine" else f"Willkommen bei {company}. Was kann ich für Sie tun?")
-            assert root.find("Say").text == f"{opening} Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
+            if integrated_greeting:
+                assert [child.tag for child in root] == ["Connect", "Hangup"]
+            else:
+                assert [child.tag for child in root][:2] == ["Say", "Connect"]
+                assert len(root.findall("Say")) == 1
+                company = f"Synthetic QA {mode}"
+                opening = (f"Guten Tag, hier ist der Assistent für {company}. Welche Nachricht möchten Sie hinterlassen?"
+                           if mode == "answering_machine" else f"Willkommen bei {company}. Was kann ich für Sie tun?")
+                assert root.find("Say").text == f"{opening} Ich bin eine KI und halte Ihr Anliegen schriftlich fest."
             token = root.find(".//Parameter").attrib["value"]
             # A setting change between webhook and media handshake must only
             # affect future calls, including when Twilio retries the webhook.
@@ -759,6 +772,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
                 config.operating_mode = "agent" if mode == "answering_machine" else "answering_machine"
                 config.message_greeting = config.standard_greeting = config.outside_hours_greeting = "Neue Begrüßung."
                 config.voice = "cedar"
+                config.integrated_greeting = False
                 config.version += 1
                 db.commit()
             duplicate = client.post("/api/v1/twilio/voice", data=params, headers={"X-Twilio-Signature": validator.compute_signature(voice_url(settings), params)})
@@ -770,7 +784,18 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
                 ws.send_json({"event": "start", "sequenceNumber": "1", "streamSid": stream_sid, "start": {
                     "accountSid": settings.twilio_account_sid, "callSid": call_sid, "streamSid": stream_sid, "tracks": ["inbound"],
                     "customParameters": {"call_token": token}, "mediaFormat": {"encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1}}})
-                ws.send_json({"event": "media", "sequenceNumber": "2", "streamSid": stream_sid, "media": {"track": "inbound", "payload": "AA=="}})
+                next_sequence = 2
+                if integrated_greeting:
+                    from base64 import b64decode
+                    announcement = ws.receive_json()
+                    assert announcement["event"] == "media"
+                    assert b64decode(announcement["media"]["payload"]) == b"\xff" * 160
+                    mark = ws.receive_json()
+                    assert mark["event"] == "mark" and not sent
+                    ws.send_json({"event": "media", "sequenceNumber": "2", "streamSid": stream_sid, "media": {"track": "inbound", "payload": "/w=="}})
+                    ws.send_json({"event": "mark", "sequenceNumber": "3", "streamSid": stream_sid, "mark": mark["mark"]})
+                    next_sequence = 4
+                ws.send_json({"event": "media", "sequenceNumber": str(next_sequence), "streamSid": stream_sid, "media": {"track": "inbound", "payload": "AA=="}})
                 while ws.receive_json().get("event") != "media":
                     pass
                 # Check incremental persistence before the transport is ended.
@@ -799,11 +824,12 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
                         "X-Twilio-Signature": validator.compute_signature(stream_status_url(settings), stop_params),
                     })
                     assert stopped.status_code == 204
-                ws.send_json({"event": "stop", "sequenceNumber": "3", "streamSid": stream_sid})
+                ws.send_json({"event": "stop", "sequenceNumber": str(next_sequence + 1), "streamSid": stream_sid})
             with runtime_sessions() as db:
                 bind_tenant_context(db, tenant_id)
                 saved = db.get(CallSession, call_id)
                 assert saved.ended_at and saved.status == "ended"
+                assert saved.prepared_greeting_audio is None
                 if uses_live:
                     assert saved.documentation_status == "complete"
                     assert len(saved.transcript) == 1 and "0170 0000001" in saved.transcript[0]["text"]
@@ -840,6 +866,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, us
             assert client.get(f"/api/v1/calls/{TELEPHONE_CALL_A}").status_code == 404
             if uses_live:
                 assert [event["type"] for event in sent] == ["session.start", "session.input_audio.append", "session.close"]
+                assert sent[1]["audio"] == "AA=="
                 live_config = sent[0]["session"]
                 assert live_config["model"] == LIVE_TELEPHONE_MODEL and live_config["store"] is False
                 assert live_config["audio"]["format"] == {"type": "audio/pcmu", "rate": 8000}

@@ -12,11 +12,13 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     Time,
     UniqueConstraint,
     Uuid,
+    false,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -333,6 +335,9 @@ class AgentConfiguration(Base, TimestampMixin):
     operating_mode: Mapped[str] = mapped_column(String(30), default="agent")
     telephone_model: Mapped[str] = mapped_column(String(30), default="auto", server_default="auto")
     message_greeting: Mapped[str] = mapped_column(Text, default="Guten Tag. Bitte schildern Sie Ihr Anliegen.")
+    integrated_greeting: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    greeting_audio_digest: Mapped[str | None] = mapped_column(String(64))
+    greeting_audio: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     call_retention_days: Mapped[int] = mapped_column(Integer, default=30)
     call_email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     call_email_recipient: Mapped[str | None] = mapped_column(String(320))
@@ -723,6 +728,7 @@ class CallSession(Base):
     configuration_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     runtime_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     runtime_manifest_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    prepared_greeting_audio: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     applied_configuration: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     configuration_diff: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     configuration_status: Mapped[str] = mapped_column(String(50), default="pending")

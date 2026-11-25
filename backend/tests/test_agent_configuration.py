@@ -115,6 +115,31 @@ def test_invalid_voice_speed_and_empty_required_fields_are_rejected(client):
     assert response.status_code == 422
 
 
+def test_integrated_greeting_is_prepared_once_and_invalid_text_keeps_current_version(monkeypatch, client):
+    generated = []
+
+    async def synthesize(_, __, payload):
+        generated.append(payload)
+        return bytes(960)
+
+    monkeypatch.setattr("app.services.speech.render_speech", synthesize)
+    original = client.get("/api/v1/agent/config").json()
+    payload = {**configuration_write(original), "expected_version": original["version"],
+               "operating_mode": "answering_machine", "integrated_greeting": True, "voice": "coral"}
+    invalid = client.put("/api/v1/agent/config", json={**payload, "message_greeting": "Hallo, was kann ich ausrichten?"})
+    assert invalid.status_code == 422 and invalid.json()["error"]["code"] == "greeting_disclosure_missing"
+    assert not generated
+    payload["message_greeting"] = "Hier ist die KI-Assistentin von {Name}. Was kann ich ihm schriftlich ausrichten?"
+    saved = client.put("/api/v1/agent/config", json=payload)
+    assert saved.status_code == 200 and saved.json()["integrated_greeting"] is True
+    assert generated[0]["voice"] == "coral"
+    assert generated[0]["input"] == payload["message_greeting"].replace("{Name}", original["company_name"])
+    saved_again = client.put("/api/v1/agent/config", json={**payload, "expected_version": saved.json()["version"]})
+    assert saved_again.status_code == 200 and len(generated) == 1
+    restore = {**configuration_write(original), "expected_version": saved_again.json()["version"]}
+    assert client.put("/api/v1/agent/config", json=restore).status_code == 200
+
+
 def test_member_can_read_but_cannot_write(client):
     member = UserContext(
         id=uuid4(),
@@ -233,7 +258,7 @@ class PreviewClient:
 
 
 def test_voice_preview_is_server_side_and_returns_audio(monkeypatch, client):
-    monkeypatch.setattr("app.api.v1.agent.httpx.AsyncClient", PreviewClient)
+    monkeypatch.setattr("app.services.speech.httpx.AsyncClient", PreviewClient)
     app.dependency_overrides[get_settings] = lambda: configured_settings()
     response = client.post("/api/v1/agent/voice-preview", json={"voice": "marin", "speed": 1.0, "text": "Guten Tag", "pronunciation_style": "regional", "regional_accent": "north_german", "pronunciation_instructions": ""})
     assert response.status_code == 200
