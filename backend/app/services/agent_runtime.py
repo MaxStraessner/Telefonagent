@@ -18,6 +18,7 @@ from app.services.agent_configuration import AgentBundle, is_open_now, load_agen
 from app.services.capabilities import active_capabilities, realtime_tools
 from app.services.prompt_compiler import SECTION_NAMES, compile_agent_prompt
 from app.services.tool_projections import ToolProjectionError, canonical_tools_digest
+from app.services.voice_providers import LIVE_TELEPHONE_MODEL, LIVE_TELEPHONE_VOICES, telephone_model
 
 RUNTIME_MANIFEST_SCHEMA_VERSION = "1"
 SETTING_TARGETS = {
@@ -168,7 +169,7 @@ def _validated_timezone(context: TenantContext) -> str:
 
 
 def build_runtime_config(
-    db: Session, context: TenantContext, settings: Settings, *, test_mode: bool,
+    db: Session, context: TenantContext, settings: Settings, *, test_mode: bool, telephone: bool = False,
 ) -> AgentRuntimeConfig:
     bundle = load_agent_bundle(db, context.id)
     config = bundle.configuration
@@ -199,6 +200,15 @@ def build_runtime_config(
     if config.operating_mode == "answering_machine":
         capabilities = []
         tools = []
+    model = telephone_model(settings, tools) if telephone else settings.openai_realtime_model
+    voice = config.voice if model != LIVE_TELEPHONE_MODEL or config.voice in LIVE_TELEPHONE_VOICES else "marin"
+    first_response = (
+        "Die Begrüßung mit KI- und Verarbeitungshinweis wurde bereits abgespielt. "
+        "Steige jetzt ohne erneute Begrüßung direkt mit der passenden Einstiegsfrage ein. "
+        f"Berücksichtige den Inhalt dieser konfigurierten Begrüßung: {greeting}"
+        if telephone else "Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als "
+        f"Grundlage: {greeting}"
+    )
     try:
         tools_digest = canonical_tools_digest(tools)
     except ToolProjectionError as exc:
@@ -209,7 +219,7 @@ def build_runtime_config(
                 "message": "Der kanonische Realtime-Toolvertrag ist ungültig konfiguriert.",
             },
         ) from exc
-    prompt = compile_agent_prompt(bundle, greeting)
+    prompt = compile_agent_prompt(bundle, greeting, telephone=telephone)
     booking = db.scalar(
         select(BookingConfiguration).where(BookingConfiguration.tenant_id == context.id)
     )
@@ -222,14 +232,11 @@ def build_runtime_config(
         "assistant_name": config.assistant_name,
         "language": config.language,
         "welcome_message": greeting,
-        "initial_response_instructions": (
-            "Begrüße die anrufende Person jetzt. Verwende diese Begrüßung als "
-            f"Grundlage: {greeting}"
-        ),
+        "initial_response_instructions": first_response,
         "instructions": prompt,
         "prompt_digest": _digest(prompt),
-        "model": settings.openai_realtime_model,
-        "voice": config.voice,
+        "model": model,
+        "voice": voice,
         "speed": config.speech_speed,
         "configuration_version": config.version,
         "source_digests": source_digests,
@@ -250,7 +257,7 @@ def build_runtime_config(
     )
     return AgentRuntimeConfig(
         bundle=bundle, prompt=prompt, greeting=greeting,
-        model=settings.openai_realtime_model, voice=config.voice, speed=config.speech_speed,
+        model=model, voice=voice, speed=config.speech_speed,
         turn_detection=turn_detection, tools=tools,
         tool_choice="auto" if tools else "none", capability_keys=[item.key for item in capabilities],
         prompt_sections=SECTION_NAMES, business_hours_status=business_hours_status,

@@ -38,6 +38,7 @@ from app.services.mail import mail_transport_available
 from app.services.prompt_compiler import compile_pronunciation_instruction
 from app.services.rate_limit import enforce_rate_limit
 from app.services.realtime import build_safety_identifier
+from app.services.voice_providers import telephone_model
 
 router = APIRouter(prefix="/agent", tags=["agent-configuration"])
 logger = logging.getLogger(__name__)
@@ -137,7 +138,8 @@ def test_session_summary(
         language=runtime.bundle.configuration.language,
         style=runtime.bundle.configuration.tone,
         business_hours_status=runtime.business_hours_status,
-        model=runtime.model, voice=runtime.voice, speed=runtime.speed,
+        model=runtime.model, telephone_model=telephone_model(settings, runtime.tools),
+        voice=runtime.voice, speed=runtime.speed,
         turn_detection=runtime.turn_detection,
         capability_keys=runtime.capability_keys,
         tool_names=[str(item.get("name", "")) for item in runtime.tools], greeting=runtime.greeting,

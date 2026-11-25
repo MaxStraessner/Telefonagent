@@ -27,8 +27,9 @@ from app.services.call_lifecycle import CallLifecycleService
 from app.services.call_processing import erase_call_content
 from app.services.provisioning import ProvisioningService
 from app.services.tenant_resolution import InboundRouteTenantResolver
-from app.services.twilio import media_url, voice_url
-from app.services.twilio_media import TwilioMediaBridge
+from app.services.twilio import media_url, stream_status_url, voice_url
+from app.services.twilio_media import TwilioLiveMediaBridge, TwilioMediaBridge
+from app.services.voice_providers import LIVE_TELEPHONE_MODEL
 
 
 def test_background_worker_discovers_work_without_user_context(monkeypatch):
@@ -634,8 +635,8 @@ def test_twilio_resolvers_keep_two_numbers_and_call_sids_tenant_isolated():
     engine.dispose()
 
 
-@pytest.mark.parametrize("mode", ["agent", "answering_machine"])
-def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, monkeypatch):
+@pytest.mark.parametrize(("mode", "uses_live"), [("agent", False), ("answering_machine", False), ("answering_machine", True)])
+def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, uses_live, monkeypatch):
     """Actual HTTP/WS and database layers; only provider I/O is simulated."""
     from app.services import call_analysis, call_processing
     suffix = uuid4().hex[:10]
@@ -649,6 +650,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
     settings = Settings(app_env="test", database_url=RUNTIME_URL, cors_origins="http://testserver",
         app_base_url="https://qa.example.test", auth_hmac_secret="qa-test-hmac-at-least-thirty-two-bytes",
         openai_api_key="synthetic-never-used-key", twilio_account_sid="AC" + "1" * 32,
+        openai_telephone_model=LIVE_TELEPHONE_MODEL if uses_live or mode == "agent" else None,
         smtp_host="smtp.example.test", smtp_from_address="agent@example.test",
         twilio_auth_token="synthetic-twilio-test-token", twilio_stream_token_secret="qa-call-token-secret-with-at-least-thirty-two-bytes")
     with Session(migrator, expire_on_commit=False) as db:
@@ -677,12 +679,21 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
     class FakeOpenAI:
         def __init__(self):
             self.queue = asyncio.Queue()
-            self.queue.put_nowait({"type": "session.created"})
+            if not uses_live:
+                self.queue.put_nowait({"type": "session.created"})
         async def send(self, raw):
             event = json.loads(raw)
             sent.append(event)
             if event["type"] == "session.update":
                 self.queue.put_nowait({"type": "session.updated"})
+            if event["type"] == "session.start":
+                self.queue.put_nowait({"type": "session.started"})
+            if event["type"] == "session.input_audio.append":
+                self.queue.put_nowait({"type": "session.input_transcript.delta", "event_id": "qa-live-1", "delta": "Ich bin Anna Beispiel.", "start_ms": 300, "end_ms": 900})
+                self.queue.put_nowait({"type": "session.output_audio.delta", "delta": "AA=="})
+            if event["type"] == "session.close":
+                self.queue.put_nowait({"type": "session.input_transcript.delta", "event_id": "qa-live-2", "delta": " Bitte rufen Sie mich morgen zurück. Meine Telefonnummer ist 0170 0000001.", "start_ms": 900, "end_ms": 2000})
+                self.queue.put_nowait({"type": "session.closed"})
             if event["type"] == "input_audio_buffer.append":
                 for incoming in [
                     {"type": "response.output_audio_transcript.done", "item_id": "greeting", "transcript": "Guten Tag. Wie kann ich helfen?"},
@@ -699,10 +710,11 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
     @asynccontextmanager
     async def connector(*args):
         yield FakeOpenAI()
-    class Bridge(TwilioMediaBridge):
+    bridge_base = TwilioLiveMediaBridge if uses_live else TwilioMediaBridge
+    class Bridge(bridge_base):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs, connector=connector)
-    monkeypatch.setattr("app.api.v1.twilio.TwilioMediaBridge", Bridge)
+    monkeypatch.setattr(f"app.api.v1.twilio.{bridge_base.__name__}", Bridge)
     def no_external_actions(*args, **kwargs):
         raise AssertionError("Calendar provider must not be called in this scenario")
     monkeypatch.setattr("app.services.calendar_booking.create_calendar_provider", no_external_actions)
@@ -730,7 +742,10 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
             validator = RequestValidator(settings.twilio_auth_token)
             response = client.post("/api/v1/twilio/voice", data=params, headers={"X-Twilio-Signature": validator.compute_signature(voice_url(settings), params)})
             root = ET.fromstring(response.text)
-            assert root.find("Say") is not None and "transkribiert" in root.find("Say").text
+            assert [child.tag for child in root][:2] == ["Say", "Connect"]
+            assert len(root.findall("Say")) == 1
+            assert f"KI-Telefonassistent für Synthetic QA {mode}" in root.find("Say").text
+            assert "als Text erfasst und ausgewertet" in root.find("Say").text
             token = root.find(".//Parameter").attrib["value"]
             # A setting change between webhook and media handshake must only
             # affect future calls, including when Twilio retries the webhook.
@@ -754,6 +769,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
                     bind_tenant_context(db, tenant_id)
                     saved = db.scalar(select(CallSession).where(CallSession.provider_session_id == call_sid))
                     assert saved.transcript[-1]["text"].startswith("Ich bin Anna Beispiel")
+                    assert saved.transcript[-1]["state"] == ("provisional" if uses_live else "confirmed")
                     call_id = saved.id
                     assert saved.status == "connected" and saved.analysis_status == "pending"
                 # A competing media connection must not finish the owned stream.
@@ -768,13 +784,24 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
                     bind_tenant_context(db, tenant_id)
                     saved = db.get(CallSession, call_id)
                     assert saved.status == "connected" and saved.ended_at is None
+                if uses_live:
+                    stop_params = {"CallSid": call_sid, "AccountSid": settings.twilio_account_sid, "StreamEvent": "stream-stopped"}
+                    stopped = client.post("/api/v1/twilio/stream-status", data=stop_params, headers={
+                        "X-Twilio-Signature": validator.compute_signature(stream_status_url(settings), stop_params),
+                    })
+                    assert stopped.status_code == 204
                 ws.send_json({"event": "stop", "sequenceNumber": "3", "streamSid": stream_sid})
             with runtime_sessions() as db:
                 bind_tenant_context(db, tenant_id)
                 saved = db.get(CallSession, call_id)
                 assert saved.ended_at and saved.status == "ended"
-                saved.analysis_next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-                db.commit()
+                if uses_live:
+                    assert saved.documentation_status == "complete"
+                    assert len(saved.transcript) == 1 and "0170 0000001" in saved.transcript[0]["text"]
+                    assert saved.analysis_next_attempt_at <= datetime.now(timezone.utc)
+                else:
+                    saved.analysis_next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                    db.commit()
             async def stop_cycle(*args):
                 raise asyncio.CancelledError
             with monkeypatch.context() as scoped:
@@ -791,7 +818,7 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
             detail = client.get(f"/api/v1/calls/{call_id}").json()
             assert detail["analysis_status"] == "completed" and detail["caller_name"] == "Anna Beispiel"
             assert detail["callback_required"] is True and detail["operating_mode"] == mode
-            assert detail["voice_model"] == settings.openai_realtime_model
+            assert detail["voice_model"] == (LIVE_TELEPHONE_MODEL if uses_live else settings.openai_realtime_model)
             assert detail["appointments"] == []
             assert detail["summary_preview"] == detail["summary"]
             if mode == "answering_machine":
@@ -802,15 +829,23 @@ def test_signed_webhook_to_automatic_analysis_and_history_with_real_rls(mode, mo
             else:
                 assert mails == [] and detail["notification_status"] == "not_requested"
             assert client.get(f"/api/v1/calls/{TELEPHONE_CALL_A}").status_code == 404
-            tool_output = next(event["item"]["output"] for event in sent if event["type"] == "conversation.item.create")
-            if mode == "answering_machine":
-                assert sent[0]["session"]["tools"] == []
-                assert json.loads(tool_output)["error_code"] == "actions_disabled"
+            if uses_live:
+                assert [event["type"] for event in sent] == ["session.start", "session.input_audio.append", "session.close"]
+                live_config = sent[0]["session"]
+                assert live_config["model"] == LIVE_TELEPHONE_MODEL and live_config["store"] is False
+                assert live_config["audio"]["format"] == {"type": "audio/pcmu", "rate": 8000}
+                assert live_config["delegation"]["responses"]["tool_choice"] == "none"
                 assert detail["actions"] == []
             else:
-                assert sent[0]["session"]["tools"]
-                assert json.loads(tool_output)["success"] is True
-                assert detail["actions"][0]["tool_name"] == "list_bookable_services"
+                tool_output = next(event["item"]["output"] for event in sent if event["type"] == "conversation.item.create")
+                if mode == "answering_machine":
+                    assert sent[0]["session"]["tools"] == []
+                    assert json.loads(tool_output)["error_code"] == "actions_disabled"
+                    assert detail["actions"] == []
+                else:
+                    assert sent[0]["session"]["tools"]
+                    assert json.loads(tool_output)["success"] is True
+                    assert detail["actions"][0]["tool_name"] == "list_bookable_services"
             with runtime_sessions() as db:
                 bind_tenant_context(db, tenant_id)
                 assert db.scalar(select(CalendarBooking.id)) is None

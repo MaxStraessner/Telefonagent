@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import CallChannel, CallSession
 from app.services.agent_runtime import AgentRuntimeConfig
 from app.services.gmail_notifications import queue_gmail_notification
+from app.services.voice_providers import LIVE_TELEPHONE_MODEL
 
 TERMINAL_CALL_STATUSES = frozenset({"ended", "cancelled", "failed", "abandoned"})
 
@@ -149,13 +150,27 @@ class CallLifecycleService:
         call.transcript = ordered
         call.transcript_revision = (call.transcript_revision or 0) + 1
         if call.ended_at:
-            from datetime import timedelta
             call.analysis_status = "pending"
             call.analysis_lease_token = None
             call.analysis_attempts = 0
             call.analysis_next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=10)
             if call.status == "ended" and not call.error_code:
                 call.documentation_status = "complete" if all(item.get("state", "confirmed") != "provisional" for item in ordered) else "incomplete"
+        call.updated_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+    def checkpoint_live_transcript(self, call_id: UUID, turns: list[dict]) -> None:
+        call = self.db.scalar(select(CallSession).where(
+            CallSession.id == call_id,
+            CallSession.tenant_id == self.tenant_id,
+            CallSession.status == "connected",
+            CallSession.content_deleted_at.is_(None),
+        ).with_for_update().execution_options(populate_existing=True))
+        if call is None or call.transcript == turns:
+            self.db.rollback()
+            return
+        call.transcript = turns
+        call.transcript_revision = (call.transcript_revision or 0) + 1
         call.updated_at = datetime.now(timezone.utc)
         self.db.commit()
 
@@ -166,7 +181,7 @@ class CallLifecycleService:
         status: str = "ended",
         phase: str = "stream_cleanup",
         error_code: str | None = None,
-        transcript: list[dict[str, str]] | None = None,
+        transcript: list[dict] | None = None,
     ) -> None:
         call = self.db.scalar(select(CallSession).where(
             CallSession.id == call_id,
@@ -179,7 +194,8 @@ class CallLifecycleService:
             self.db.rollback()
             return
         now = datetime.now(timezone.utc)
-        if call.status not in TERMINAL_CALL_STATUSES:
+        ending = call.status not in TERMINAL_CALL_STATUSES
+        if ending:
             call.status = status
             call.ended_at = now
             call.failure_phase = phase
@@ -189,14 +205,17 @@ class CallLifecycleService:
             call.error_code = error_code
             call.failure_phase = phase
             call.documentation_status = "incomplete"
-        if transcript is not None and not call.content_deleted_at and not call.transcript_revision:
+        live_final = call.voice_model == LIVE_TELEPHONE_MODEL and transcript is not None
+        if live_final and transcript != call.transcript:
             call.transcript = transcript
-        if call.documentation_status == "recording":
-            complete = status == "ended" and not call.error_code and bool(call.transcript) and all(turn.get("state", "confirmed") != "provisional" for turn in call.transcript)
+            call.transcript_revision = (call.transcript_revision or 0) + 1
+        elif transcript is not None and not call.transcript_revision:
+            call.transcript = transcript
+        if call.documentation_status == "recording" or live_final:
+            complete = call.status == "ended" and not call.error_code and bool(call.transcript) and all(turn.get("state", "confirmed") != "provisional" for turn in call.transcript)
             call.documentation_status = "complete" if complete else "incomplete"
-        if call.channel == CallChannel.telephone and call.analysis_status == "pending":
-            from datetime import timedelta
-            call.analysis_next_attempt_at = now + timedelta(seconds=10)
+        if call.channel == CallChannel.telephone and call.analysis_status == "pending" and (ending or live_final):
+            call.analysis_next_attempt_at = now if live_final else now + timedelta(seconds=10)
         if call.ended_at is not None:
             start = call.started_at or call.connected_at
             if start is not None:

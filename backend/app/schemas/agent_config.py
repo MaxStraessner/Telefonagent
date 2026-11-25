@@ -225,6 +225,7 @@ class RuntimeSummaryResponse(BaseModel):
     style: str
     business_hours_status: Literal["open", "closed"]
     model: str
+    telephone_model: str
     voice: str
     speed: float
     turn_detection: dict[str, object]

@@ -271,6 +271,7 @@ export interface Capability { key: string; label: string; description: string; a
 export interface AgentCatalog { voices: VoiceOption[]; capabilities: Capability[]; }
 export interface RuntimeSummary {
   tenant_id: string; configuration_version: number; company_name: string; assistant_name: string; language: string; style: AgentConfiguration["tone"]; business_hours_status: "open" | "closed"; model: string; voice: string; speed: number;
+  telephone_model?: string;
   turn_detection: Record<string, unknown>; capability_keys: string[]; tool_names: string[]; greeting: string; prompt_sections: string[];
 }
 export interface PromptPreview { configuration_version: number; prompt: string; sections: string[]; }

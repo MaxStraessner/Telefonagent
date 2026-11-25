@@ -30,7 +30,8 @@ from app.services.twilio import (
     verify_call_token,
     voice_url,
 )
-from app.services.twilio_media import TwilioMediaBridge, TwilioMediaError
+from app.services.twilio_media import TwilioLiveMediaBridge, TwilioMediaBridge, TwilioMediaError
+from app.services.voice_providers import LIVE_TELEPHONE_MODEL
 
 router = APIRouter(prefix="/twilio", tags=["twilio"])
 logger = logging.getLogger(__name__)
@@ -52,10 +53,14 @@ def _reject_call() -> Response:
     return _xml_response(root)
 
 
-def _stream_twiml(settings: Settings, token: str) -> Response:
+def _stream_twiml(settings: Settings, token: str, company_name: str) -> Response:
     root = ET.Element("Response")
     notice = ET.SubElement(root, "Say", {"language": "de-DE"})
-    notice.text = "Sie sprechen mit einem KI-Assistenten. Dieses Gespräch wird als Text transkribiert und ausgewertet. Wenn Sie dies nicht wünschen, legen Sie bitte auf und nutzen Sie einen anderen Kontaktweg."
+    notice.text = f"Guten Tag, hier ist der KI-Telefonassistent für {company_name}. "
+    notice.text += (
+        "Das Gespräch wird als Text erfasst und ausgewertet."
+        if settings.openai_realtime_transcription_enabled else "Ihre Spracheingaben werden verarbeitet."
+    )
     connect = ET.SubElement(root, "Connect")
     stream = ET.SubElement(
         connect,
@@ -195,7 +200,7 @@ async def inbound_voice(
         lifecycle = CallLifecycleService(db, context.id)
         call = lifecycle.find_provider_call(CallChannel.telephone, call_sid)
         if call is None:
-            runtime = build_runtime_config(db, context, settings, test_mode=False)
+            runtime = build_runtime_config(db, context, settings, test_mode=False, telephone=True)
             call, _ = lifecycle.provision_provider_call(
                 CallChannel.telephone, call_sid, runtime,
                 phone_number_id=route.id, caller_phone=caller_phone,
@@ -209,7 +214,7 @@ async def inbound_voice(
             call_sid=call_sid,
             phone_number=to_number,
         )
-        return _stream_twiml(settings, token)
+        return _stream_twiml(settings, token, context.tenant.name)
     except (TenantResolutionError, TwilioServiceError):
         db.rollback()
         _record_setup_failure(db, context, call, call_sid, route, caller_phone)
@@ -351,25 +356,19 @@ async def media_stream(
                 raise ValueError("runtime_tenant_mismatch")
         except (TypeError, ValueError) as exc:
             raise TwilioMediaError("runtime_snapshot_invalid") from exc
-        CallLifecycleService(db, context.id).connect(call.id)
+        lifecycle = CallLifecycleService(db, context.id)
+        lifecycle.connect(call.id)
         stream_owned = True
-        dispatcher = ConversationToolDispatcher(
-            db, settings, context, call.id
-        )
-        bridge = TwilioMediaBridge(
-            websocket,
-            settings,
-            context,
-            runtime,
-            stream_sid,
-            dispatcher,
-            initial_sequence,
-            transcript_sink=lambda turn: CallLifecycleService(db, context.id).save_segment(call.id, turn),
-        )
+        dispatcher = ConversationToolDispatcher(db, settings, context, call.id)
+        bridge_args = (websocket, settings, context, runtime, stream_sid, dispatcher, initial_sequence)
+        if runtime.model == LIVE_TELEPHONE_MODEL:
+            bridge = TwilioLiveMediaBridge(
+                *bridge_args, transcript_checkpoint=lambda turns: lifecycle.checkpoint_live_transcript(call.id, turns),
+            )
+        else:
+            bridge = TwilioMediaBridge(*bridge_args, transcript_sink=lambda turn: lifecycle.save_segment(call.id, turn))
         await bridge.run()
-        CallLifecycleService(db, context.id).finish(
-            call.id, transcript=bridge.transcript, error_code=bridge.documentation_error
-        )
+        lifecycle.finish(call.id, transcript=bridge.transcript, error_code=bridge.documentation_error)
     except WebSocketDisconnect:
         if context and call and stream_owned:
             CallLifecycleService(db, context.id).finish(
